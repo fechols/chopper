@@ -47,29 +47,6 @@ pub const LIMIT: i32 = 1000 * 16;
 pub const LINES: i32 = crate::floor::VIEW_LINES as i32;
 pub const BANDS: usize = crate::floor::VIEW_BANDS as usize;
 
-/// `sin` of `a`/256 turn, Q14, a quarter wave.
-const SIN_Q: [i16; 65] = [
-    0, 402, 804, 1205, 1606, 2006, 2404, 2801, 3196, 3590, 3981, 4370, 4756, 5139, 5520, 5897, 6270, 6639,
-    7005, 7366, 7723, 8076, 8423, 8765, 9102, 9434, 9760, 10080, 10394, 10702, 11003, 11297, 11585, 11866,
-    12140, 12406, 12665, 12916, 13160, 13395, 13623, 13842, 14053, 14256, 14449, 14635, 14811, 14978, 15137,
-    15286, 15426, 15557, 15679, 15791, 15893, 15986, 16069, 16143, 16207, 16261, 16305, 16340, 16364, 16379,
-    16384,
-];
-
-pub fn sin(a: u8) -> i16 {
-    let q = (a & 63) as usize;
-    match a >> 6 {
-        0 => SIN_Q[q],
-        1 => SIN_Q[64 - q],
-        2 => -SIN_Q[q],
-        _ => -SIN_Q[64 - q],
-    }
-}
-
-pub fn cos(a: u8) -> i16 {
-    sin(a.wrapping_add(64))
-}
-
 /// Scene block (`format::SCENE`, fetched whole to `layout::SCENE_RAM`): `[0]` length u16, `[2]` meshes
 /// u8, mesh table at [`scene::MESHES`]. The object directory and records live in the REU
 /// (`format::OBJ_DIR`, `format::OBJ_RECORDS`).
@@ -85,7 +62,8 @@ pub mod scene {
     /// Directory entry (one per grid cell, then one per big-grid cell): the first object (u16, an index
     /// into the records), the count (u8) and the largest bounding radius among them (u8, texels).
     pub const DIR_ENTRY: usize = 4;
-    /// Object record: u, v u16 (texels · 32), base height i16 (Q4 texels), yaw u8 (256 a turn), mesh u8.
+    /// Object record: u, v u16 (texels · 32), base height i16 (Q4 texels), yaw u8
+    /// (256 a turn, quarter turns only: the top two bits), mesh u8.
     pub const OBJECT: usize = 8;
     /// Vertex: u, v (east, north) and h (up), i8 in quarter texels << shift.
     pub const VERTEX: usize = 3;
@@ -494,15 +472,18 @@ fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], l
     // Level of detail: a simpler mesh far away.
     let (lod, lod_z) = (scene[m + 8], (scene[m + 9] as i32) << 4);
     let m = if lod != 0xFF && c[2] > lod_z { scene::MESHES + lod as usize * scene::MESH } else { m };
-    // Mesh (a, up, b) → world: a rotation by `yaw` about up; then world → camera.
-    let (cy, sy) = (cos(yaw), sin(yaw));
+    // Mesh (a, up, b) → world: `yaw` in quarter turns about up (columns swapped or negated, no
+    // multiplies); then world → camera.
     let rt = &look.rt;
     let rot: [[i16; 3]; 3] = core::array::from_fn(|j| {
-        [
-            ((mul(rt[j][0], cy) - mul(rt[j][2], sy)) >> 14) as i16,
-            rt[j][1],
-            ((mul(rt[j][0], sy) + mul(rt[j][2], cy)) >> 14) as i16,
-        ]
+        let (a, b) = (rt[j][0], rt[j][2]);
+        let (c0, c2) = match yaw >> 6 {
+            0 => (a, b),
+            1 => (b.wrapping_neg(), a),
+            2 => (a.wrapping_neg(), b.wrapping_neg()),
+            _ => (b, a.wrapping_neg()),
+        };
+        [c0, rt[j][1], c2]
     });
     let ob = Obj {
         verts: rd16(scene, m),

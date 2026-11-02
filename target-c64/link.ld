@@ -47,7 +47,7 @@ SECTIONS {
         *(.text.floor_draw .text.geo_helpers .text.turbo_probe)
     } >vicrom AT>boot
     .bandtext : {
-        *(.text.geo_walk .rodata.sinq .text.geo_xform)
+        *(.text.geo_walk .text.geo_xform)
     } >bandram AT>boot
     .bandtext2 : {
         *(.text.geo_activate .text.ssetup .text.tri_row .rodata.tri_tables)

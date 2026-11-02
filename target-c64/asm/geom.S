@@ -2116,8 +2116,8 @@ ACC    = $CC    ; (4) 32-bit work
 ODX    = $D0    ; (2) the object's offset from the camera (world, Q4): east, up, north
 ODY    = $D2
 ODZ    = $D4
-YC     = $D6    ; (2) cos(yaw)
-YS     = $D8    ; (2) sin(yaw)
+YC     = $D6    ; (2) the rotation's first column entry
+YS     = $D8    ; (2) its third
 JR     = $DA    ; row offset (0, 6, 12)
 JO     = $DB    ; output offset (0, 2, 4)
 PDR    = $BB    ; the radius POPD is for ($FF: none yet)
@@ -2567,90 +2567,70 @@ wobject:
     bcs 3f              ; lod_z >= z
     lda LODV
     jsr meshp
-3:  ; cos, sin of yaw
+3:  ; rotation rows (`geom::object`): yaw in quarter turns q (bits 7-6), columns (a, b) = rt[j][0], rt[j][2]:
+    ; q 0: (a, b), 1: (-b, a), 2: (-a, -b), 3: (b, -a); the middle column is rt[j][1]
     ldy #6
     lda (RECP),y
-    pha
-    clc
-    adc #64
-    jsr sin8
-    lda AL
-    sta YC
-    lda AH
-    sta YC+1
-    pla
-    jsr sin8
-    lda AL
-    sta YS
-    lda AH
-    sta YS+1
-    ; rotation rows: (rt0 cy - rt2 sy) >> 14, rt1, (rt0 sy + rt2 cy) >> 14
-    lda #0
-    sta JR
-5:  ldx JR
+    sta JO
+    ldx #0
+5:  stx JR
+    bit JO
+    bvs 6f
     lda W_RT,x
-    sta AL
+    sta YC
     lda W_RT+1,x
-    sta AH
-    lda YC
-    sta BL
-    lda YC+1
-    sta BH
-    jsr smul
-    jsr acc_ldp
-    ldx JR
+    sta YC+1
     lda W_RT+4,x
-    sta AL
+    sta YS
     lda W_RT+5,x
-    sta AH
-    lda YS
-    sta BL
-    lda YS+1
-    sta BH
-    jsr smul
-    jsr acc_subp
-    jsr acc_q14
-    ldx JR
-    lda ACC+2
+    sta YS+1
+    jmp 7f
+6:  lda W_RT+4,x            ; odd quarters: swapped
+    sta YC
+    lda W_RT+5,x
+    sta YC+1
+    lda W_RT,x
+    sta YS
+    lda W_RT+1,x
+    sta YS+1
+7:  lda JO                  ; the first negated for q 1, 2: bit 7 of yaw + 64
+    clc
+    adc #$40
+    bpl 8f
+    sec
+    lda #0
+    sbc YC
+    sta YC
+    lda #0
+    sbc YC+1
+    sta YC+1
+8:  bit JO                  ; the second for q 2, 3
+    bpl 9f
+    sec
+    lda #0
+    sbc YS
+    sta YS
+    lda #0
+    sbc YS+1
+    sta YS+1
+9:  ldx JR
+    lda YC
     sta MROT,x
-    lda ACC+3
+    lda YC+1
     sta MROT+1,x
     lda W_RT+2,x
     sta MROT+2,x
     lda W_RT+3,x
     sta MROT+3,x
-    lda W_RT,x
-    sta AL
-    lda W_RT+1,x
-    sta AH
     lda YS
-    sta BL
-    lda YS+1
-    sta BH
-    jsr smul
-    jsr acc_ldp
-    ldx JR
-    lda W_RT+4,x
-    sta AL
-    lda W_RT+5,x
-    sta AH
-    lda YC
-    sta BL
-    lda YC+1
-    sta BH
-    jsr smul
-    jsr acc_addp
-    jsr acc_q14
-    ldx JR
-    lda ACC+2
     sta MROT+4,x
-    lda ACC+3
+    lda YS+1
     sta MROT+5,x
     txa
     clc
     adc #6
-    sta JR
-    cmp #18
+    tax
+    cpx #18
     beq 10f
     jmp 5b
 10: ; the rest of GEO_ARGS: vertices, faces, shift, origin
@@ -3044,42 +3024,5 @@ accpos:
 1:  clc
     rts
 
-; AL:AH = sin(A / 256 turn), Q14 (`geom::sin`: a quarter wave and its symmetries).
-sin8:
-    tax
-    and #63
-    sta ACC
-    txa
-    and #64
-    beq 1f
-    ; second / fourth quarter: 64 - q
-    sec
-    lda #64
-    sbc ACC
-    sta ACC
-1:  lda ACC
-    asl
-    tay
-    lda sinq,y
-    sta AL
-    lda sinq+1,y
-    sta AH
-    txa
-    bpl 2f
-    sec
-    lda #0
-    sbc AL
-    sta AL
-    lda #0
-    sbc AH
-    sta AH
-2:  rts
 .size geo_walk, .-geo_walk
 
-.section .rodata.sinq,"a",@progbits
-sinq:
-    .word 0, 402, 804, 1205, 1606, 2006, 2404, 2801, 3196, 3590, 3981, 4370, 4756, 5139, 5520, 5897
-    .word 6270, 6639, 7005, 7366, 7723, 8076, 8423, 8765, 9102, 9434, 9760, 10080, 10394, 10702, 11003, 11297
-    .word 11585, 11866, 12140, 12406, 12665, 12916, 13160, 13395, 13623, 13842, 14053, 14256, 14449, 14635, 14811, 14978
-    .word 15137, 15286, 15426, 15557, 15679, 15791, 15893, 15986, 16069, 16143, 16207, 16261, 16305, 16340, 16364, 16379
-    .word 16384

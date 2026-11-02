@@ -345,7 +345,8 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
         };
         let y = ((o.y * Q as f32).round() as i16).to_le_bytes();
         let ([u0, u1], [v0, v1]) = (u.to_le_bytes(), v.to_le_bytes());
-        lists[at].push([u0, u1, v0, v1, y[0], y[1], o.yaw, o.mesh]);
+        // Yaw to the nearest quarter turn (`geom::object` turns meshes by quarters only).
+        lists[at].push([u0, u1, v0, v1, y[0], y[1], o.yaw.wrapping_add(32) & 0xC0, o.mesh]);
     }
     let (mut dir, mut records) = (Vec::new(), Vec::new());
     for l in &lists {
