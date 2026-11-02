@@ -298,15 +298,15 @@ fn clamp(v: i32) -> i16 {
 
 /// Screen position (Q4 pixels) of a camera-space point with `z >= NEAR`.
 ///
-/// `1/z` comes from the reciprocal table: `z = m·2^e`, `1/z ~ recip(m) / 2^(26+e)`, so
-/// `x·1280/z = (x·recip(m) >> 8)·5 / 2^(10+e)` and `−y·2128/z = (−y·recip(m) >> 8)·133 / 2^(14+e)`.
+/// `1/z` comes from the reciprocal table: `z = m·2^e`, `1/z ~ recip(m) / 2^(26+e)`, so with the scaled
+/// reciprocals `rx = recip(m)·5 >> 3` and `ry = recip(m)·133 >> 8` (both u16, once per point),
+/// `x·1280/z = x·rx / 2^(15+e)` and `−y·2128/z = −y·ry / 2^(14+e)`.
 pub fn project(x: i16, y: i16, z: i16) -> (i16, i16) {
     let (m, e) = fixed::norm(z as u16);
-    let r = fixed::recip(m);
-    let qx = mulsu(x, r) >> 8;
-    let qy = mulsu(y.wrapping_neg(), r) >> 8;
-    let sx = 80 * 16 + sar(qx * 5, (10 + e) as u8);
-    let sy = 68 * 16 + sar((qy << 7) + (qy << 2) + qy, (14 + e) as u8);
+    let r = fixed::recip(m) as u32;
+    let (rx, ry) = ((r * 5 >> 3) as u16, (r * 133 >> 8) as u16);
+    let sx = 80 * 16 + sar(mulsu(x, rx), (15 + e) as u8);
+    let sy = 68 * 16 + sar(mulsu(y.wrapping_neg(), ry), (14 + e) as u8);
     (clamp(sx), clamp(sy))
 }
 

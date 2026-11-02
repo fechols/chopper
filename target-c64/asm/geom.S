@@ -206,21 +206,6 @@ pv:
     sta V+3
     rts
 
-; V = P >> 8 (arithmetic)
-qp:
-    lda P1
-    sta V
-    lda P2
-    sta V+1
-    lda P3
-    sta V+2
-    cmp #$80
-    lda #0
-    adc #$ff
-    eor #$ff
-    sta V+3
-    rts
-
 ; V >>= A (arithmetic, A = 0..31)
 sarv:
     tay
@@ -259,33 +244,6 @@ shlv:
     rol V+1
     rol V+2
     rol V+3
-    rts
-
-copyq:
-    lda V
-    sta Q
-    lda V+1
-    sta Q+1
-    lda V+2
-    sta Q+2
-    lda V+3
-    sta Q+3
-    rts
-
-addq:
-    clc
-    lda V
-    adc Q
-    sta V
-    lda V+1
-    adc Q+1
-    sta V+1
-    lda V+2
-    adc Q+2
-    sta V+2
-    lda V+3
-    adc Q+3
-    sta V+3
     rts
 
 ; V (i32) -> V:V+1 clamped to -16000..16000.
@@ -366,37 +324,59 @@ setr:
     sta BH
     rts
 
-; (PX, PY, PZ) -> S1:S1+1 = sx, S1+2:S1+3 = sy (`geom::project`; PZ >= NEAR): 80 + 80x/z, 68 - 133y/z.
+; (PX, PY, PZ) -> S1:S1+1 = sx, S1+2:S1+3 = sy (`geom::project`; PZ >= NEAR): 80 + 80x/z, 68 - 133y/z,
+; with rx = recip * 5 >> 3 and ry = recip * 133 >> 8 once per point.
 project:
     lda PZ
     sta M
     lda PZ+1
     sta M+1
     jsr norm
-    lda E
+    ; rx = (r << 2 + r) >> 3
+    lda RL
+    sta Q
+    lda RH
+    sta Q+1
+    lda #0
+    sta Q+2
+    asl Q
+    rol Q+1
+    rol Q+2
+    asl Q
+    rol Q+1
+    rol Q+2
     clc
-    adc #10
-    sta SHF
-    ; sx = 1280 + ((x * r >> 8) * 5 >> s)
+    lda Q
+    adc RL
+    sta Q
+    lda Q+1
+    adc RH
+    sta Q+1
+    lda Q+2
+    adc #0
+    .rept 3
+    lsr
+    ror Q+1
+    ror Q
+    .endr
+    ; sx = 1280 + (x * rx) >> (15 + e)
     lda PX
     sta AL
     lda PX+1
     sta AH
-    jsr setr
+    lda Q
+    sta BL
+    lda Q+1
+    sta BH
     jsr smulsu
-    jsr qp
-    jsr copyq
-    jsr shlv
-    jsr shlv
-    jsr addq
-    lda SHF
+    jsr pv
+    lda E
+    clc
+    adc #15
     jsr sarv
     clc
-    lda V
-    adc #$00            ; 1280 = $0500
-    sta V
     lda V+1
-    adc #$05
+    adc #$05            ; 1280 = $0500
     sta V+1
     lda V+2
     adc #0
@@ -409,7 +389,48 @@ project:
     sta S1
     lda V+1
     sta S1+1
-    ; sy = 1088 + ((-y * r >> 8) * 133 >> (14 + e))
+    ; ry = (r << 7 + r << 2 + r) >> 8
+    lda RH
+    lsr
+    sta Q+2
+    lda RL
+    ror
+    sta Q+1
+    lda #0
+    ror
+    sta Q               ; r << 7
+    lda RL
+    sta V
+    lda RH
+    sta V+1
+    lda #0
+    sta V+2
+    asl V
+    rol V+1
+    rol V+2
+    asl V
+    rol V+1
+    rol V+2             ; r << 2
+    clc
+    lda V
+    adc RL
+    sta V
+    lda V+1
+    adc RH
+    sta V+1
+    lda V+2
+    adc #0
+    sta V+2             ; r << 2 + r
+    clc
+    lda Q
+    adc V
+    lda Q+1
+    adc V+1
+    sta BL
+    lda Q+2
+    adc V+2
+    sta BH
+    ; sy = 1088 + (-y * ry) >> (14 + e)
     sec
     lda #0
     sbc PY
@@ -417,19 +438,8 @@ project:
     lda #0
     sbc PY+1
     sta AH
-    jsr setr
     jsr smulsu
-    jsr qp
-    jsr copyq           ; Q = q
-    jsr shlv
-    jsr shlv
-    jsr shlv
-    jsr shlv
-    jsr shlv
-    jsr addq            ; 33q
-    jsr shlv
-    jsr shlv
-    jsr addq            ; 133q
+    jsr pv
     lda E
     clc
     adc #14
