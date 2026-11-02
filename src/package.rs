@@ -17,7 +17,7 @@ pub fn bake(world: &World) -> Vec<u8> {
         for v in 0..n {
             for u in 0..n {
                 let bank = floor::tile_bank(k as u8, (u >> 8) as u8, (v >> 8) as u8) as usize;
-                reu[bank << 16 | (v & 255) << 8 | (u & 255)] = level[v * n + u];
+                reu[bank << 16 | (v & 255) << 8 | (u & 255)] = world::dither(level[v * n + u], u, v);
             }
         }
     }

@@ -222,7 +222,7 @@ fn tiles_map_to_their_banks_and_the_sea_beyond() {
     let w = crate::world::generate(1983);
     for (u, v) in [(0usize, 0usize), (255, 256), (1024, 760), (2047, 2047), (1500, 33)] {
         let a = floor::texel_addr(0, (u as i32) << 8, (v as i32) << 8) as usize;
-        assert_eq!(reu[a], w.texels[v * 2048 + u], "texel ({u}, {v})");
+        assert_eq!(reu[a], crate::world::dither(w.texels[v * 2048 + u], u, v), "texel ({u}, {v})");
     }
 }
 

@@ -160,6 +160,24 @@ fn paint_pad(world: &mut World, pad: Pad) {
 }
 
 /// Mip level `k` (1..LEVELS-1) from level `k − 1`: the most common byte of each 2×2 block.
+/// Texel `(u, v)`'s byte as stored: dither patterns shifted by whole pixels from texel to texel, so the
+/// odd pixels of a pattern do not land in the same screen columns line after line (the floor copies
+/// a texel byte to a screen byte, always 4-pixel aligned). A pattern with period 2 alternates its
+/// phase in a checkerboard; one with period 4 takes one of 4 rotations at random. Solid colours are
+/// unchanged; the fields' stripes keep their phase.
+pub fn dither(byte: u8, u: usize, v: usize) -> u8 {
+    if byte == texel::FIELD_A || byte == texel::FIELD_B {
+        return byte;
+    }
+    let r = if byte.rotate_right(4) == byte {
+        (u + v) as u32 & 1
+    } else {
+        let h = (u as u32).wrapping_mul(0x9E37_79B1) ^ (v as u32).wrapping_mul(0x85EB_CA77);
+        (h ^ h >> 15).wrapping_mul(0x2C1B_3C6D) >> 30
+    };
+    byte.rotate_right(2 * r)
+}
+
 pub fn mips(level0: &[u8]) -> Vec<Vec<u8>> {
     let mut levels = vec![level0.to_vec()];
     for k in 1..LEVELS as usize {
