@@ -5,7 +5,7 @@ fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let compiler = env::var("MOS_CLANG").unwrap_or_else(|_| "mos-c64-clang".into());
-    for name in ["startup", "reu", "floor", "poly", "tri", "fixed", "geom", "spans"] {
+    for name in ["startup", "reu", "floor", "poly", "tri", "fixed", "geom", "spans", "blit"] {
         let source = root.join(format!("asm/{name}.S"));
         println!("cargo:rerun-if-changed={}", source.display());
         let object = out.join(format!("{name}.o"));

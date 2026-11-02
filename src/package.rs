@@ -23,6 +23,7 @@ pub fn bake(world: &World) -> Vec<u8> {
     }
     let sea = (SEA_BANK as usize) << 16;
     reu[sea..sea + 0x10000].fill(world::texel::WATER);
+    crate::scene::install(&mut reu, &crate::scene::bake(world));
     let h = HEADER as usize;
     reu[h..h + 8].copy_from_slice(MAGIC);
     reu[h + H_VERSION as usize..][..2].copy_from_slice(&PACKAGE_VERSION.to_le_bytes());
@@ -58,17 +59,36 @@ pub struct FloorStats {
     pub io_writes: u32,
     pub spans: u32,
     pub ground_spans: u32,
+    /// The geometry: objects drawn, triangles (and sprites) set up, dropped.
+    pub geom: crate::geom::Stats,
+    pub tris: u8,
+    pub dropped: u8,
 }
 
-/// Draw the view's bands into `buf` exactly as the C64 does: per band, per drawn line, the runs into the
-/// line buffer, copied into the stage, the stage published to the bitmap.
-pub fn render_floor(m: &mut Machine, buf: Buffer, cam: &FloorCam, doubled: bool) -> FloorStats {
+/// The scene block of an image (`format::SCENE`, its length in its first two bytes).
+pub fn scene_block(reu: &[u8]) -> Vec<u8> {
+    let at = SCENE as usize;
+    let len = reu[at] as usize | (reu[at + 1] as usize) << 8;
+    reu[at..at + len.max(crate::geom::scene::MESHES)].to_vec()
+}
+
+/// Draw the view's bands into `buf` exactly as the C64 does: the objects sorted first; then per band,
+/// per drawn line, the runs into the line buffer, copied into the stage; the band's objects over them;
+/// the stage published to the bitmap.
+pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, doubled: bool) -> FloorStats {
+    use crate::geom::{self, Bands, View, Verts, Work};
     use crate::hw::Hw;
     let mut st = FloorStats::default();
+    let mut work = Box::new(Work::new());
+    let mut verts = Box::new(Verts::new());
+    st.geom = geom::draw(m, scene, &View { cam: *cam, pop: 0 }, &mut work, &mut verts);
+    let mut bands = Bands::new(&work);
     let rays = Rays::new(cam);
-    let mut shadow = floor::floor_begin(m);
+    let mut shadow;
     let mut spans = [Span::default(); MAX_SPANS];
     for band in 0..VIEW_BANDS {
+        // (Sprites fetch from the REU between bands: the floor starts each band afresh, as on the C64.)
+        shadow = floor::floor_begin(m);
         for line in (0..8u8).step_by(if doubled { 2 } else { 1 }) {
             let a = rays.line(band * 8 + line as u16);
             let n = floor::make_line(cam, &rays, &a, floor::haze_byte(line, doubled), &mut spans);
@@ -79,12 +99,14 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, cam: &FloorCam, doubled: bool)
             st.io_writes += c.io_writes;
             floor::copy_line(m, LINEBUF, STAGE, line, doubled);
         }
+        bands.band(m, &work, band as usize, STAGE);
         for i in 0..layout::ROW_STRIDE {
             let b = m.peek(STAGE + i);
             m.poke(buf.bitmap + band * layout::ROW_STRIDE + i, b);
         }
     }
     let _ = COLS;
+    (st.tris, st.dropped) = (bands.tris, bands.dropped);
     st
 }
 
@@ -93,7 +115,8 @@ pub fn render(reu: &[u8], tick: u16, doubled: bool) -> (Machine, FloorStats) {
     let mut m = Machine::new(reu);
     setup(&mut m, BUFFERS[0]);
     let (cam, _yaw) = crate::pilot::autopilot(tick);
-    let st = render_floor(&mut m, BUFFERS[0], &cam, doubled);
+    let scene = scene_block(reu);
+    let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)
 }
 

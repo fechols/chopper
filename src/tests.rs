@@ -3,18 +3,6 @@ use crate::layout::BUFFERS;
 use crate::model::Machine;
 use std::sync::OnceLock;
 
-/// mode7's race-track scene (placeholder objects until chopper's own) installed in an otherwise empty
-/// image, for the geometry tests.
-fn scene_image() -> &'static Vec<u8> {
-    static P: OnceLock<Vec<u8>> = OnceLock::new();
-    P.get_or_init(|| {
-        let mut reu = vec![0u8; crate::format::IMAGE_END as usize];
-        let (block, records) = crate::scene::bake();
-        crate::scene::install(&mut reu, &block, &records);
-        reu
-    })
-}
-
 /// The scene block as the C64 fetches it.
 fn scene(reu: &[u8]) -> &[u8] {
     let s = crate::format::SCENE as usize;
@@ -22,27 +10,28 @@ fn scene(reu: &[u8]) -> &[u8] {
     &reu[s..s + len]
 }
 
-/// mode7's lap camera at `tick` (2,048 a lap), looking along the circuit.
-fn lap_camera(tick: u16) -> crate::geom::Camera {
-    use std::f32::consts::TAU;
-    let t = (tick % 2048) as f32 / 2048.0;
-    let p = crate::scene::centre(t);
-    let q = crate::scene::centre(t + 0.25 / 2048.0);
-    let a = (q[0] - p[0]).atan2(-(q[1] - p[1]));
-    let wrap = |v: f32| ((v * 256.0).round() as i64).rem_euclid(65536) as u16;
-    crate::geom::Camera { x: wrap(p[0]), y: wrap(p[1]), angle: ((a / TAU * 256.0).round() as i32).rem_euclid(256) as u8, pop: crate::geom::POP }
+/// The autopilot's view at `tick`.
+fn lap_view(tick: u16) -> crate::geom::View {
+    crate::geom::View { cam: crate::pilot::autopilot(tick).0, pop: 0 }
 }
 
-/// Lap frame `tick`'s objects drawn whole into buffer 0 of a model of the scene image.
+/// Autopilot frame `tick`'s objects drawn whole into buffer 0 of a model of the package.
 fn render_objects(tick: u16) -> (Machine, crate::geom::Stats) {
-    let reu = scene_image();
+    let reu = package();
     let mut m = Machine::new(reu);
     let mut work = Box::new(crate::geom::Work::new());
-    let mut st = crate::geom::draw(&mut m, scene(reu), lap_camera(tick), BUFFERS[0].bitmap, &mut work, &mut Box::new(crate::geom::Verts::new()));
-    let (tris, top, dropped) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
-    (st.tris, st.top_row) = (tris, top);
+    let mut st = crate::geom::draw(&mut m, scene(reu), &lap_view(tick), &mut work, &mut Box::new(crate::geom::Verts::new()));
+    let (tris, dropped) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+    st.tris = tris;
     st.dropped = st.dropped.saturating_add(dropped);
     (m, st)
+}
+
+/// A camera at map position (u, v) and height h (texels) with the given orientation (256ths of a turn
+/// for yaw, degrees for pitch and roll).
+fn camera_at(u: f64, v: f64, h: f64, yaw: u16, pitch: i32, roll: i32) -> FloorCam {
+    let m = crate::camera::Matrix14::orientation(yaw, (pitch * 182) as u16, (roll * 182) as u16);
+    FloorCam { u: (u * 256.0) as i32, v: (v * 256.0) as i32, h: (h * 256.0) as u16, r: m.m }
 }
 
 fn package() -> &'static Vec<u8> {
@@ -318,7 +307,8 @@ fn triangles_cover_the_pixel_centres_inside_them() {
         let codes = m.codes(buf);
         let p: Vec<(f64, f64)> = (0..3).map(|k| (t.x[k] as f64 / 16.0, t.y[k] as f64 / 16.0)).collect();
         let edge = |a: (f64, f64), b: (f64, f64), x: f64, y: f64| (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0);
-        for y in 0..200 {
+        // (The triangle pipeline draws the view's lines only, above the cockpit.)
+        for y in 0..crate::geom::LINES as usize {
             for x in 0..160 {
                 let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
                 let e = [edge(p[0], p[1], cx, cy), edge(p[1], p[2], cx, cy), edge(p[2], p[0], cx, cy)];
@@ -337,19 +327,20 @@ fn triangles_cover_the_pixel_centres_inside_them() {
 
 #[test]
 fn a_face_toward_the_camera_is_drawn_and_away_is_culled() {
-    use crate::geom::{Camera, Work, draw};
-    use crate::scene::{Material, Mesh, Object, bake_with};
-    // Camera at (128, 128) looking along -v (angle 0); a wall 20 texels ahead.
-    for (toward, want) in [(1.0f32, 2u8), (-1.0, 0)] {
+    use crate::geom::{View, Work, draw};
+    use crate::scene::{Material, Mesh, Object, bake_with, install};
+    // Camera at (128, 128), 4 texels up, looking north (+v); a wall 20 texels ahead, across the view.
+    for (toward, want) in [(-1.0f32, 2u8), (1.0, 0)] {
         let mut mesh = Mesh::default();
-        mesh.quad([[-4.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 0.0, 8.0], [-4.0, 0.0, 8.0]], [0.0, toward, 0.0], Material::Red);
-        let (scene, records) = bake_with(&[mesh], &[Object { x: 128.0, y: 108.0, yaw: 0, mesh: 0 }]);
-        let mut image = vec![0u8; crate::format::REU_SIZE as usize];
-        crate::scene::install(&mut image, &scene, &records);
+        mesh.quad([[-4.0, 0.0, 0.0], [4.0, 0.0, 0.0], [4.0, 0.0, 8.0], [-4.0, 0.0, 8.0]], [0.0, toward, 0.0], Material::Wall);
+        let baked = bake_with(&[mesh], &[Object { u: 128.0, v: 148.0, y: 0.0, yaw: 0, mesh: 0 }]);
+        let mut image = vec![0u8; crate::format::IMAGE_END as usize];
+        install(&mut image, &baked);
         let mut m = Machine::new(&image);
         let mut work = Box::new(Work::new());
-        draw(&mut m, &scene, Camera { x: 128 << 8, y: 128 << 8, angle: 0, pop: crate::geom::POP }, BUFFERS[0].bitmap, &mut work, &mut Box::new(crate::geom::Verts::new()));
-        let (tris, _, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+        let view = View { cam: camera_at(128.0, 128.0, 4.0, 0, 0, 0), pop: 1 };
+        draw(&mut m, &baked.block, &view, &mut work, &mut Box::new(crate::geom::Verts::new()));
+        let (tris, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
         assert_eq!(tris, want, "normal along v {toward}");
     }
 }
@@ -357,7 +348,7 @@ fn a_face_toward_the_camera_is_drawn_and_away_is_culled() {
 #[test]
 fn the_geometry_frames_draw_inside_ram() {
     let mut total = 0u32;
-    for tick in (0..2048u16).step_by(128) {
+    for tick in (0..crate::pilot::LAP).step_by(256) {
         let (m, st) = render_objects(tick);
         assert_eq!((m.stats.stray_writes, st.dropped), (0, 0), "tick {tick}");
         total += st.tris as u32;
@@ -377,92 +368,109 @@ fn the_reciprocal_divide_stays_close_to_the_exact_one() {
 }
 
 #[test]
-fn projection_matches_the_floor_camera() {
-    use crate::geom::project;
-    // A ground point straight ahead at distance d lands on the line the floor puts there.
-    for d in [8.0f64, 13.0, 20.0, 50.0, 100.0] {
-        let (sx, sy) = project(0, 0, (d * 16.0) as i16);
-        let want = 48.0 + 160.0 * 12.0 / d;
-        assert!((sx as f64 / 16.0 - 80.0).abs() < 0.07, "{d}: x {sx}");
-        assert!((sy as f64 / 16.0 - want).abs() < 0.2, "{d}: y {} want {want}", sy as f64 / 16.0);
+fn a_ground_point_projects_onto_the_floor_byte_that_samples_it() {
+    // Random cameras (pitch, roll): for floor bytes on the ground, the exact ground point each samples,
+    // taken into camera space and projected, lands within a pixel of that byte's sample point.
+    use crate::geom::{Look, View, project};
+    let mut rng = Rng(0x5eed_1234);
+    let mut checked = 0;
+    for _ in 0..200 {
+        let cam = camera_at(1024.0, 1024.0, 4.0 + rng.below(40) as f64, rng.next() as u16, rng.below(60) as i32 - 45, rng.below(121) as i32 - 60);
+        let look = Look::new(&View { cam, pop: 0 });
+        for y in (0..VIEW_LINES).step_by(7) {
+            for (b, p) in exact_line(&cam, y).iter().enumerate() {
+                let Some((u, v)) = *p else { continue };
+                let d = [(u - 1024.0) * 16.0, -(cam.h as f64 / 16.0), (v - 1024.0) * 16.0];
+                if d[0].abs() > 2000.0 || d[2].abs() > 2000.0 {
+                    continue;
+                }
+                let c = look.to_camera(d.map(|x| x.round() as i16));
+                if c[2] < crate::geom::NEAR {
+                    continue;
+                }
+                let (sx, sy) = project(c[0] as i16, c[1] as i16, c[2] as i16);
+                let (ex, ey) = ((4 * b + 2) as f64, y as f64 + 0.5);
+                let (dx, dy) = (sx as f64 / 16.0 - ex, sy as f64 / 16.0 - ey);
+                // Q4 positions and the truncated rotation move a near point by up to ~1/z of the focal
+                // length; the reciprocal adds 1/1024 of the offset from the centre.
+                let tol = 0.5 + 200.0 / c[2] as f64;
+                assert!(dx.abs() < tol && dy.abs() < tol, "{cam:?} line {y} byte {b} (z {}): off by ({dx:.2}, {dy:.2})", c[2]);
+                checked += 1;
+            }
+        }
     }
+    assert!(checked > 10_000, "{checked}");
 }
 
 #[test]
 fn the_grid_visits_every_object_the_cull_accepts() {
-    // Brute force: every object of the scene against the per-object cull, at many cameras; each one the
-    // cull accepts must sit in a cell of that angle's visibility list (or the global list).
-    use crate::geom::{CELL_PAD, NEAR, Q, cell_of, cos, pop_depth, pop_scale, sin, visible_cells};
-    let (block, records) = crate::scene::bake();
+    // Brute force: every object of the package against the per-object cull, at many cameras; the grid
+    // walk must accept exactly as many (a cell skipped wrongly would lose some).
+    use crate::geom::{Look, SPAN, View, pop_depth, sphere_visible};
+    use crate::format::{OBJ_RECORDS};
+    let reu = package();
+    let block = scene(reu);
+    let n = {
+        let w = crate::world::generate(1983);
+        crate::scene::objects(&w).len()
+    };
+    let records = &reu[OBJ_RECORDS as usize..][..8 * n];
     let mut rng = Rng(0xC0FFEE);
-    let lists: Vec<Vec<(i8, i8, u8)>> = (0..=255u8).map(visible_cells).collect();
-    let dir = u16::from_le_bytes([block[4], block[5]]) as usize;
-    let global = (u16::from_le_bytes([block[dir + 1024], block[dir + 1025]]) as usize, block[dir + 1026] as usize);
-    for case in 0..3000 {
+    let mut total = 0u32;
+    for case in 0..400 {
         let cam = if case % 2 == 0 {
-            lap_camera(rng.below(2048) as u16)
+            crate::pilot::autopilot(rng.below(crate::pilot::LAP as u32) as u16).0
         } else {
-            crate::geom::Camera { x: rng.next() as u16, y: rng.next() as u16, angle: rng.next() as u8, pop: 0 }
+            camera_at(300.0 + rng.below(1450) as f64, 300.0 + rng.below(1450) as f64, 2.0 + rng.below(60) as f64, rng.next() as u16, rng.below(70) as i32 - 50, rng.below(121) as i32 - 60)
         };
-        let (cx, cy) = cell_of(cam.x, cam.y);
-        let (c, s) = (cos(cam.angle), sin(cam.angle));
-        // A random pop-in size; cells the walk skips for it must hold nothing the cull accepts.
-        let pop = [1u8, 2, 4, 6, 10, 20, 80, 255][rng.below(8) as usize];
-        let scale = pop_scale(pop);
-        for (k, rec) in records.chunks(6).enumerate() {
-            let (ox, oy, mesh) = (u16::from_le_bytes([rec[0], rec[1]]), u16::from_le_bytes([rec[2], rec[3]]), rec[5] as usize);
-            let rt = block[8 + mesh * 10 + 7];
-            let r = rt as i32 * Q;
-            let dx = (ox.wrapping_sub(cam.x) as i16 >> 4) as i32;
-            let dy = (oy.wrapping_sub(cam.y) as i16 >> 4) as i32;
-            if dx.abs() > crate::geom::SPAN || dy.abs() > crate::geom::SPAN {
+        let pop = [0u8, 1, 2, 4, 8][rng.below(5) as usize];
+        let view = View { cam, pop };
+        let look = Look::new(&view);
+        let mut want = 0u32;
+        for rec in records.chunks(8) {
+            let (ou, ov) = (u16::from_le_bytes([rec[0], rec[1]]), u16::from_le_bytes([rec[2], rec[3]]));
+            let oy = i16::from_le_bytes([rec[4], rec[5]]);
+            let (dx, dz) = ((((ou as i32) << 3) - cam.u) >> 4, (((ov as i32) << 3) - cam.v) >> 4);
+            if dx.abs() > SPAN || dz.abs() > SPAN {
                 continue;
             }
-            let x0 = (dx * c as i32 + dy * s as i32) >> 14;
-            let z0 = (dx * s as i32 - dy * c as i32) >> 14;
-            if z0 + r < NEAR || z0 - r > pop_depth(rt, scale) || x0.abs() - r > z0 + r {
-                continue;
+            let rad = block[8 + rec[7] as usize * 10 + 7];
+            let c = look.to_camera([dx as i16, oy.wrapping_sub(look.y), dz as i16]);
+            if sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale)) {
+                want += 1;
             }
-            if (global.0..global.0 + global.1).contains(&k) {
-                continue;
-            }
-            assert!(r <= CELL_PAD * Q);
-            let (ocx, ocy) = cell_of(ox, oy);
-            let off = (((ocx as i8 - cx as i8 + 8).rem_euclid(16) - 8), ((ocy as i8 - cy as i8 + 8).rem_euclid(16) - 8));
-            let entry = lists[cam.angle as usize].iter().find(|e| (e.0, e.1) == off);
-            let Some(&(_, _, near)) = entry else { panic!("case {case}: object {k} at cell offset {off:?} accepted but not listed ({cam:?})") };
-            let at = dir + 4 * (ocy as usize * 16 + ocx as usize);
-            let rmax = block[at + 3];
-            let walked = (near as i32) << 4 <= pop_depth(rmax, scale) + ((rmax as i32) << 4);
-            assert!(walked, "case {case}: object {k} accepted but its cell (nearest {near}, largest radius {rmax}) skipped at pop {pop}");
         }
+        let mut m = Machine::new(reu);
+        let mut work = Box::new(crate::geom::Work::new());
+        let st = crate::geom::draw(&mut m, block, &view, &mut work, &mut Box::new(crate::geom::Verts::new()));
+        assert_eq!(st.objects as u32, want.min(255), "case {case}: {cam:?} pop {pop}");
+        total += want;
     }
-    let longest = lists.iter().map(|l| l.len()).max().unwrap();
-    assert!(longest < 200, "{longest} cells in a list");
+    assert!(total > 2000, "only {total} objects accepted");
 }
 
 #[test]
 fn band_rendering_equals_whole_triangle_painting() {
     // Per pixel, drawing band by band (each triangle one row per band, in painter's order) must equal
-    // painting whole triangles back to front, on real lap frames.
+    // painting whole triangles back to front, on real autopilot frames.
     use crate::geom::{Verts, Work, draw, raster, raster_bands};
-    let reu = scene_image();
+    let reu = package();
     let buf = BUFFERS[0];
     let mut checked = 0;
-    for tick in (0..2048u16).step_by(64) {
+    for tick in (0..crate::pilot::LAP).step_by(128) {
         let mut a = Machine::new(reu);
         let mut work = Box::new(Work::new());
-        draw(&mut a, scene(reu), lap_camera(tick), buf.bitmap, &mut work, &mut Box::new(Verts::new()));
+        draw(&mut a, scene(reu), &lap_view(tick), &mut work, &mut Box::new(Verts::new()));
         let mut b = Machine::new(&[]);
         b.ram.copy_from_slice(&a.ram);
-        let (whole, top_a) = raster(&mut a, &work, buf.bitmap);
-        let (banded, top_b, dropped) = raster_bands(&mut b, &work, buf.bitmap);
+        let whole = raster(&mut a, &work, buf.bitmap);
+        let (banded, dropped) = raster_bands(&mut b, &work, buf.bitmap);
         assert_eq!(dropped, 0, "tick {tick}");
-        assert_eq!((whole, top_a), (banded, top_b), "tick {tick}");
+        assert_eq!(whole, banded, "tick {tick}");
         assert_eq!(a.ram[buf.bitmap as usize..][..8000], b.ram[buf.bitmap as usize..][..8000], "tick {tick}");
         checked += whole as u32;
     }
-    assert!(checked > 500, "only {checked} triangles");
+    assert!(checked > 200, "only {checked} triangles");
 }
 
 #[test]
@@ -475,7 +483,6 @@ fn a_full_pool_drops_the_later_triangles() {
         push(&mut w, [10 * 16, (60 + (k % 50)) * 16, 10 * 16], [30 * 16, 40 * 16, 90 * 16], (k % 4) as u8, 200 - k as u8);
     }
     let mut m = Machine::new(&[]);
-    let (tris, top, dropped) = raster_bands(&mut m, &w, BUFFERS[0].bitmap);
-    assert_eq!((tris as usize, dropped as usize, top), (POOL, 120 - POOL, 3));
+    let (tris, dropped) = raster_bands(&mut m, &w, BUFFERS[0].bitmap);
+    assert_eq!((tris as usize, dropped as usize), (POOL, 120 - POOL));
 }
-

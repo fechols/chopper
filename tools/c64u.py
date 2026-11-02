@@ -90,15 +90,20 @@ class Device:
                 sock.sendall(struct.pack('<HH', 0xff1f, len(secret)) + secret)
                 if receive(sock, 1) != b'\x01':
                     raise RuntimeError('DMA authentication failed')
-            # The first chunk (the image header, its magic) goes last: a booting PRG must never see a
-            # header before the rest has arrived (it would find the image incomplete and erase the magic).
+            # The chunk holding the image header (its magic, `format::HEADER`) goes last: a booting PRG
+            # must never see a header before the rest has arrived (it would load a scene not yet there).
             offsets = list(range(0, len(data), 32768))
-            for offset in offsets[1:] + offsets[:1]:
+            last = [o for o in offsets if o <= HEADER < o + 32768] or offsets[:1]
+            for offset in [o for o in offsets if o not in last] + last:
                 chunk = data[offset:offset + 32768]
                 payload = (address + offset).to_bytes(3, 'little') + chunk
                 sock.sendall(struct.pack('<HH', 0xff07, len(payload)) + payload)
             sock.sendall(struct.pack('<HH', 0xff0e, 0))
             receive(sock, receive(sock, 1)[0])
+
+
+# `format::HEADER`: the image header's REU address (chopper's is in bank 86).
+HEADER = 86 << 16
 
 
 def status(dev):

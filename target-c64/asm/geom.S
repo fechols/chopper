@@ -1,5 +1,6 @@
-; MODE 7 geometry kernels. References in src/geom.rs (`xform`, `faces`, `raster` + `setup`); the host
-; runs those, the C64 runs these, and `tools/emu.py` checks whole frames byte for byte.
+; Geometry kernels (from ../mode7, made full 3D for chopper). References in src/geom.rs (`xform`,
+; `faces`, `Bands` + `setup`); the host runs those, the C64 runs these, and `tools/emu.py` checks whole
+; frames byte for byte.
 ;
 ;   geo_xform():  one object's vertices -> camera space and screen (VERTS arrays)
 ;   geo_faces():  one object's faces -> backface cull, depth key, push into the buckets (WORK);
@@ -11,34 +12,37 @@
 ; Zero page: $C0-$EF and $F0-$FF (floor.S's, free while the floor is not drawing); fixed.S has $90-$9B,
 ; poly.S / tri.S $A0-$B3.
 
-GA     = $C7C0
+GA     = $8E00
 VPTR   = GA + 0
 NV     = GA + 2
 FPTR   = GA + 3
 NF     = GA + 5
 SHR    = GA + 6
 TT     = GA + 7
-X0     = GA + 8
-Z0     = GA + 10
-CC     = GA + 12
-SS     = GA + 14
-BMP    = GA + 16
-TRIS   = GA + 18
-TOP    = GA + 19
+ORGX   = GA + 8     ; i16 x 3: the object's origin in camera space
+MROT   = GA + 14    ; i16 x 9: mesh (u, up, v) -> camera, row-major
+BMP    = GA + 32
+TRIS   = GA + 34
+TOP    = GA + 35
+; The view (`geom::LINES`, `geom::BANDS`): the lines above the cockpit.
+LINES  = 136
+NBANDS = 17
+; The near plane (`geom::NEAR`, Q4): 2 texels.
+NEARZ  = 32
 PATE   = $C7E0
 PATO   = $C7F0
 
-VERTS  = $9800
+VERTS  = $9800          ; `geom::Verts`: ten arrays of MAX_VERTS (64)
 VXL    = VERTS + $000
-VXH    = VERTS + $080
-VYL    = VERTS + $100
-VYH    = VERTS + $180
-VZL    = VERTS + $200
-VZH    = VERTS + $280
-SXL    = VERTS + $300
-SXH    = VERTS + $380
-SYL    = VERTS + $400
-SYH    = VERTS + $480
+VXH    = VERTS + $040
+VYL    = VERTS + $080
+VYH    = VERTS + $0C0
+VZL    = VERTS + $100
+VZH    = VERTS + $140
+SXL    = VERTS + $180
+SXH    = VERTS + $1C0
+SYL    = VERTS + $200
+SYH    = VERTS + $240
 
 WORK   = $E000
 TX0L   = WORK + $000
@@ -362,7 +366,7 @@ setr:
     sta BH
     rts
 
-; (PX, PY, PZ) -> S1:S1+1 = sx, S1+2:S1+3 = sy (`geom::project`; PZ >= NEAR).
+; (PX, PY, PZ) -> S1:S1+1 = sx, S1+2:S1+3 = sy (`geom::project`; PZ >= NEAR): 80 + 80x/z, 68 - 133y/z.
 project:
     lda PZ
     sta M
@@ -405,9 +409,9 @@ project:
     sta S1
     lda V+1
     sta S1+1
-    ; sy = 768 + (((192 - y) * r >> 8) * 10 >> s)
+    ; sy = 1088 + ((-y * r >> 8) * 133 >> (14 + e))
     sec
-    lda #192
+    lda #0
     sbc PY
     sta AL
     lda #0
@@ -416,19 +420,26 @@ project:
     jsr setr
     jsr smulsu
     jsr qp
+    jsr copyq           ; Q = q
     jsr shlv
-    jsr copyq
     jsr shlv
     jsr shlv
-    jsr addq
-    lda SHF
+    jsr shlv
+    jsr shlv
+    jsr addq            ; 33q
+    jsr shlv
+    jsr shlv
+    jsr addq            ; 133q
+    lda E
+    clc
+    adc #14
     jsr sarv
     clc
     lda V
-    adc #$00            ; 768 = $0300
+    adc #$40            ; 1088 = $0440
     sta V
     lda V+1
-    adc #$03
+    adc #$04
     sta V+1
     lda V+2
     adc #0
@@ -453,12 +464,66 @@ sxa:
     rts
 
 ; ---------------------------------------------------------------------------------------------------
-; geo_xform: x = x0 + (a*cc + b*ss) >> sh, z = z0 + (a*ss - b*cc) >> sh, y = h << t; project if z >= 128.
+; geo_xform: per vertex (a, b, h) (u, v, up): P_j = org_j + (m[j][0]*a + m[j][1]*h + m[j][2]*b) >> sh
+; for j = x, y, z; project if z >= NEARZ. The vertex components are bytes, so each product is |c| times
+; |m| by two 8x8 quarter-square lookups with the tables pointed at |c| once per component (the products
+; are exact: the same sums as `geom::xform`).
+
+MAB    = $8F00          ; |m|, 9 x u16 (row-major), set once per object
+MSG    = $8F12          ; m's sign bytes, 9
+SA     = $C3            ; (9) the three sums, 24-bit each
+CSGN   = $E7            ; the component's sign
+KCOL   = $E8            ; the component's column (0 a, 1 h, 2 b)
+JIDX   = $E9            ; the row
+XT0    = $F0            ; |m| of the entry
+XT1    = $F1
+XP0    = $F2            ; the product, 24-bit (+ a spare byte)
+XP1    = $F3
+XP2    = $F4
+XP3    = $F5
+PLA = $80
+PHA = $82
+NLA = $84
+NHA = $86
+
+; \rlo:\rhi = |c| * Y (the tables at |c|)
+.macro XPROD rlo, rhi
+    lda (PLA),y
+    sec
+    sbc (NLA),y
+    sta \rlo
+    lda (PHA),y
+    sbc (NHA),y
+    sta \rhi
+.endm
 
 .section .text.geo_xform,"ax",@progbits
 .globl geo_xform
 .type geo_xform,@function
 geo_xform:
+    ; |m| and the signs, once per object
+    ldx #0
+1:  txa
+    asl
+    tay
+    lda MROT+1,y
+    sta MSG,x
+    bpl 2f
+    sec
+    lda #0
+    sbc MROT,y
+    sta MAB,y
+    lda #0
+    sbc MROT+1,y
+    sta MAB+1,y
+    jmp 3f
+2:  lda MROT,y
+    sta MAB,y
+    lda MROT+1,y
+    sta MAB+1,y
+3:  inx
+    cpx #9
+    bne 1b
     lda VPTR
     sta VP
     lda VPTR+1
@@ -470,142 +535,57 @@ xloop:
     cmp NV
     bcc 1f
     rts
-1:  ldy #0
-    lda (VP),y
-    jsr sxa
-    lda AL
-    sta VA
-    lda AH
-    sta VA+1
-    iny
-    lda (VP),y
-    jsr sxa
-    lda AL
-    sta VB
-    lda AH
-    sta VB+1
-    iny
-    lda (VP),y
-    jsr sxa
-    lda AL
-    sta PY
-    lda AH
-    sta PY+1
-    ldx TT
-2:  asl PY
-    rol PY+1
+1:  lda #0
+    ldx #8
+2:  sta SA,x
     dex
-    bne 2b
-    ; S1 = a*cc + b*ss
-    lda VA
-    sta AL
-    lda VA+1
-    sta AH
-    lda CC
-    sta BL
-    lda CC+1
-    sta BH
-    jsr smul
-    lda P0
-    sta S1
-    lda P1
-    sta S1+1
-    lda P2
-    sta S1+2
-    lda P3
-    sta S1+3
-    lda VB
-    sta AL
-    lda VB+1
-    sta AH
-    lda SS
-    sta BL
-    lda SS+1
-    sta BH
-    jsr smul
-    clc
-    lda S1
-    adc P0
-    sta S1
-    lda S1+1
-    adc P1
-    sta S1+1
-    lda S1+2
-    adc P2
-    sta S1+2
-    lda S1+3
-    adc P3
-    sta S1+3
-    ; S2 = a*ss - b*cc
-    lda VA
-    sta AL
-    lda VA+1
-    sta AH
-    lda SS
-    sta BL
-    lda SS+1
-    sta BH
-    jsr smul
-    lda P0
-    sta S2
-    lda P1
-    sta S2+1
-    lda P2
-    sta S2+2
-    lda P3
-    sta S2+3
-    lda VB
-    sta AL
-    lda VB+1
-    sta AH
-    lda CC
-    sta BL
-    lda CC+1
-    sta BH
-    jsr smul
+    bpl 2b
+    ldy #0
+    lda (VP),y
+    ldx #0
+    jsr xcomp
+    ldy #2
+    lda (VP),y
+    ldx #1
+    jsr xcomp
+    ldy #1
+    lda (VP),y
+    ldx #2
+    jsr xcomp
+    ; P_j = org_j + (S_j >> sh): bytes 1-2 of the 24-bit sum, then sh - 8 more bits
+    ldx #0              ; S_j offset (0, 3, 6)
+    ldy #0              ; P_j offset (0, 2, 4)
+3:  lda SA+1,x
+    sta V
+    lda SA+2,x
+    sta V+1
+    stx JIDX
+    lda SHR
     sec
-    lda S2
-    sbc P0
-    sta S2
-    lda S2+1
-    sbc P1
-    sta S2+1
-    lda S2+2
-    sbc P2
-    sta S2+2
-    lda S2+3
-    sbc P3
-    sta S2+3
-    ; x = x0 + (S1 >> sh)
-    ldx #3
-3:  lda S1,x
-    sta V,x
+    sbc #8
+    beq 5f
+    tax
+4:  lda V+1
+    cmp #$80
+    ror V+1
+    ror V
     dex
-    bpl 3b
-    lda SHR
-    jsr sarv
-    clc
+    bne 4b
+5:  clc
     lda V
-    adc X0
-    sta PX
+    adc ORGX,y
+    sta PX,y
     lda V+1
-    adc X0+1
-    sta PX+1
-    ; z = z0 + (S2 >> sh)
-    ldx #3
-4:  lda S2,x
-    sta V,x
-    dex
-    bpl 4b
-    lda SHR
-    jsr sarv
+    adc ORGX+1,y
+    sta PX+1,y
+    lda JIDX
     clc
-    lda V
-    adc Z0
-    sta PZ
-    lda V+1
-    adc Z0+1
-    sta PZ+1
+    adc #3
+    tax
+    iny
+    iny
+    cpy #6
+    bne 3b
     ldx I
     lda PX
     sta VXL,x
@@ -619,12 +599,12 @@ xloop:
     sta VZL,x
     lda PZ+1
     sta VZH,x
-    ; project when z >= 128
+    ; project when z >= NEARZ
     lda PZ+1
     bmi 6f
     bne 5f
     lda PZ
-    cmp #128
+    cmp #NEARZ
     bcc 6f
 5:  jsr project
     ldx I
@@ -644,6 +624,83 @@ xloop:
     inc VP+1
 7:  inc I
     jmp xloop
+
+; Component A (i8) of column X into the three sums: S_j += c * m[j][X].
+xcomp:
+    cmp #0
+    bne 1f
+    rts
+1:  stx KCOL
+    sta CSGN
+    bpl 2f
+    eor #$ff
+    clc
+    adc #1
+2:  sta PLA
+    sta PHA
+    eor #$ff
+    sta NLA
+    sta NHA
+    lda #0
+    sta JIDX
+3:  ; entry e = 3j + k: x = e, y = 2e
+    lda JIDX
+    asl
+    adc JIDX
+    adc KCOL
+    tax
+    asl
+    tay
+    lda MAB,y
+    sta XT0
+    lda MAB+1,y
+    sta XT1
+    ldy XT0
+    XPROD XP0, XP1
+    ldy XT1
+    XPROD XP2, XP3
+    clc
+    lda XP1
+    adc XP2
+    sta XP1
+    lda XP3
+    adc #0
+    sta XP2
+    ; S_j at SA + 3j
+    lda JIDX
+    asl
+    adc JIDX
+    tay
+    lda MSG,x
+    eor CSGN
+    bmi 4f
+    clc
+    lda SA,y
+    adc XP0
+    sta SA,y
+    lda SA+1,y
+    adc XP1
+    sta SA+1,y
+    lda SA+2,y
+    adc XP2
+    sta SA+2,y
+    jmp 5f
+4:  sec
+    lda SA,y
+    sbc XP0
+    sta SA,y
+    lda SA+1,y
+    sbc XP1
+    sta SA+1,y
+    lda SA+2,y
+    sbc XP2
+    sta SA+2,y
+5:  inc JIDX
+    lda JIDX
+    cmp #3
+    beq 6f
+    jmp 3b
+6:  rts
 .size geo_xform, .-geo_xform
 
 ; ---------------------------------------------------------------------------------------------------
@@ -710,7 +767,7 @@ front:
     bmi 2f
     bne 1f
     lda VZL,x
-    cmp #128
+    cmp #NEARZ
     bcc 2f
 1:  inc CNT
 2:  rts
@@ -846,7 +903,8 @@ tryface:
     inc WN
 9:  rts
 
-; A = clamp((za + zb + zc) >> 5, 0, 255)
+; A = the depth key of z sum s = za + zb + zc (`geom::depth_key`): s >> 5 below 6144, then
+; 192 + (s - 6144) >> 8, clamped to 0..255.
 facekey:
     ldx IA
     lda VZL,x
@@ -865,8 +923,8 @@ facekey:
     bmi 3f
     bne 2f
     lda V+1
-    cmp #$20
-    bcs 2f
+    cmp #$18
+    bcs 4f
     asl
     asl
     asl
@@ -878,6 +936,11 @@ facekey:
     lsr
     lsr
     ora Q
+    rts
+4:  cmp #$58
+    bcs 2f
+    clc
+    adc #192 - $18
     rts
 2:  lda #255
     rts
@@ -994,7 +1057,7 @@ tsetup:
     sta LA
 2:  lda LA
     sta FIRST
-    ; end = min(line_at(y2), 200); none if negative
+    ; end = min(line_at(y2), LINES); none if negative
     LINEAT 2
     lda LA+1
     bpl 3f
@@ -1004,7 +1067,7 @@ tsetup:
     lda LA
     cmp #201
     bcc 5f
-4:  lda #200
+4:  lda #LINES
     sta LA
 5:  lda LA
     sta ENDL
@@ -1301,7 +1364,7 @@ geo_bin:
     sta TRISC
     sta DROPC
     sta TRIS
-    lda #25
+    lda #NBANDS
     sta TOP
     lda #255
     sta KEY
@@ -1315,7 +1378,25 @@ btri:
 3:  sta IDX
     ldx NSEQ
     sta SEQTRI,x
-    ; the first band: line_at(min y), < 200
+    ; A sprite's first band: its top line (whole lines, not Q4), < LINES.
+    ldx IDX
+    lda TSHADE,x
+    bpl 20f
+    lda TY0H,x
+    bpl 21f
+    jmp 7f              ; above the screen: band 0
+21: beq 22f
+    jmp 9f              ; >= 256: below
+22: lda TY0L,x
+    cmp #LINES
+    bcc 23f
+    jmp 9f
+23: lsr
+    lsr
+    lsr
+    jmp 8f
+20:
+    ; A triangle's first band: line_at(min y), < LINES
     ldx IDX
     lda TY0L,x
     sta TYL
@@ -1350,7 +1431,7 @@ btri:
     bmi 7f              ; above the screen: band 0
     bne 9f              ; >= 256: below
     lda LA
-    cmp #200
+    cmp #LINES
     bcs 9f
     lsr
     lsr
@@ -1405,7 +1486,13 @@ anext:
     tax
     lda SEQTRI,x
     sta IDX
-    jsr tsetup
+    tax
+    lda TSHADE,x
+    bpl 15f
+    jsr ssetup
+    jmp 16f
+15: jsr tsetup
+16:
     bcs 13f
     jmp 3f              ; nothing to draw (long branches as bxx/jmp)
 13: lda NFREE
@@ -1525,6 +1612,15 @@ dloop:
 1:  tax
     lda ACT,x
     tax
+    lda SLOT + 24 * POOL,x
+    cmp #$ff
+    bne 4f
+    jsr sprite_band     ; a sprite: its lines in this band
+    ldx KK
+    lda ACT,x
+    tax
+    jmp 5f
+4:
     .irp f, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26
     lda SLOT + \f * POOL,x
     sta TRI_ARGS + \f
@@ -1543,7 +1639,7 @@ dloop:
     lda TRI_ARGS + \f
     sta SLOT + \f * POOL,x
     .endr
-    ; keep it while it ends below this band
+5:  ; keep it while it ends below this band
     lda LIMIT
     cmp SLOT + 26 * POOL,x
     bcs 2f
@@ -1559,3 +1655,1431 @@ dloop:
 3:  inc KK
     jmp dloop
 .size geo_draw, .-geo_draw
+
+; ---------------------------------------------------------------------------------------------------
+; Sprites (`sprite::place`, `sprite::sprite_band`): items with TSHADE bit 7. x0 = left pixel, x1 / x2 =
+; the phase block (REU, lo 16, bank | band shift << 8), y0 = top line, y1 = height, y2 = byte columns.
+; A sprite's slot: 0-2 block, 3 band shift, 4 height, 5-6 top, 7 first on-screen column of the sprite,
+; 8 columns, 9 screen column, 24 = $FF (a sprite), 26 end line.
+
+SPRITE_BSTART = $8D80
+SPRITE_OFFS   = $8D90
+SPRITE_CHUNK  = $F500
+JOB           = $8D70
+
+; zero page (geo_draw's callees: tri_row uses $A0-$B3, draw_cols_asm $F0-$FF)
+SBL   = $C0             ; (2) left >> 2, the sprite's first byte column on screen
+J0    = $C2             ; (2)
+J1    = $C4             ; (2)
+SBOT  = $C6             ; (2) top + height
+
+; ssetup: sprite IDX's screen clip into TRI_ARGS (the slot layout above); carry = visible.
+.section .text.ssetup,"ax",@progbits
+ssetup:
+    ldx IDX
+    lda TX1L,x
+    sta TRI_ARGS+0
+    lda TX1H,x
+    sta TRI_ARGS+1
+    lda TX2L,x
+    sta TRI_ARGS+2
+    lda TX2H,x
+    sta TRI_ARGS+3
+    lda TY1L,x
+    sta TRI_ARGS+4
+    lda TY0L,x
+    sta TRI_ARGS+5
+    lda TY0H,x
+    sta TRI_ARGS+6
+    ; base = left >> 2
+    lda TX0L,x
+    sta SBL
+    lda TX0H,x
+    sta SBL+1
+    .rept 2
+    lda SBL+1
+    cmp #$80
+    ror SBL+1
+    ror SBL
+    .endr
+    ; j0 = max(-base, 0)
+    lda SBL+1
+    bpl 1f
+    sec
+    lda #0
+    sbc SBL
+    sta J0
+    lda #0
+    sbc SBL+1
+    sta J0+1
+    jmp 2f
+1:  lda #0
+    sta J0
+    sta J0+1
+2:  ; j1 = min(wb, 40 - base)
+    sec
+    lda #40
+    sbc SBL
+    sta J1
+    lda #0
+    sbc SBL+1
+    sta J1+1
+    bmi 3f              ; negative: below wb
+    bne 4f              ; >= 256: wb
+    lda J1
+    cmp TY2L,x
+    bcc 3f
+4:  lda TY2L,x
+    sta J1
+    lda #0
+    sta J1+1
+3:  ; visible columns: j0 < j1 (signed)
+    lda J0
+    cmp J1
+    lda J0+1
+    sbc J1+1
+    bvc 5f
+    eor #$80
+5:  bmi 6f
+    clc
+    rts
+6:  ; vertical: top < LINES and top + h > 0
+    lda TY0H,x
+    bmi 7f
+    bne 8f
+    lda TY0L,x
+    cmp #LINES
+    bcc 7f
+8:  clc
+    rts
+7:  clc
+    lda TY0L,x
+    adc TY1L,x
+    sta SBOT
+    lda TY0H,x
+    adc #0
+    sta SBOT+1
+    bmi 8b
+    ora SBOT
+    beq 8b
+    ; end = min(top + h, LINES)
+    lda SBOT+1
+    bne 9f
+    lda SBOT
+    cmp #LINES
+    bcc 10f
+9:  lda #LINES
+10: sta TRI_ARGS+26
+    lda J0
+    sta TRI_ARGS+7
+    lda J1
+    sec
+    sbc J0
+    sta TRI_ARGS+8
+    lda SBL
+    clc
+    adc J0
+    sta TRI_ARGS+9
+    lda #$ff
+    sta TRI_ARGS+24
+    sec
+    rts
+.size ssetup, .-ssetup
+
+; sprite_band(X = slot, BAND): the sprite's lines in this band into STAGE (`sprite::sprite_band`).
+SPBLK  = $C8            ; (3) the phase block
+SPSH   = $CB            ; band shift
+SPH    = $CC            ; height
+SPTOP  = $CD            ; (2) top line
+SPJ0   = $CF
+SPNC   = $D0
+SPCOL  = $D1
+SPT    = $D2            ; first sprite line drawn
+SPB    = $D3            ; end sprite line
+SPSB   = $D4            ; sprite band
+SPEND  = $D5            ; last sprite band
+SPBA   = $D6            ; (3) the sprite band's REU address
+SPLO   = $D9            ; (2) band * 8 - top
+DMAC   = $DB            ; (2) C64 address
+DMAR   = $DD            ; (3) REU address
+DMAL   = $E0            ; (2) length
+
+.section .text.sprite_band,"ax",@progbits
+sprite_band:
+    lda SLOT + 0 * POOL,x
+    sta SPBLK
+    lda SLOT + 1 * POOL,x
+    sta SPBLK+1
+    lda SLOT + 2 * POOL,x
+    sta SPBLK+2
+    lda SLOT + 3 * POOL,x
+    sta SPSH
+    lda SLOT + 4 * POOL,x
+    sta SPH
+    lda SLOT + 5 * POOL,x
+    sta SPTOP
+    lda SLOT + 6 * POOL,x
+    sta SPTOP+1
+    lda SLOT + 7 * POOL,x
+    sta SPJ0
+    lda SLOT + 8 * POOL,x
+    sta SPNC
+    lda SLOT + 9 * POOL,x
+    sta SPCOL
+    ; lo = band * 8 - top
+    lda BAND
+    asl
+    asl
+    asl
+    sec
+    sbc SPTOP
+    sta SPLO
+    lda #0
+    sbc SPTOP+1
+    sta SPLO+1
+    ; t = max(lo, 0); b = min(lo + 8, h); nothing if t >= b
+    bmi 1f
+    bne 9f              ; lo >= 256 > h: below the sprite
+    lda SPLO
+    sta SPT
+    jmp 2f
+1:  lda #0
+    sta SPT
+2:  clc
+    lda SPLO
+    adc #8
+    sta SPB
+    lda SPLO+1
+    adc #0
+    bmi 9f              ; lo + 8 < 0: above the sprite
+    bne 3f
+    lda SPB
+    cmp SPH
+    bcc 4f
+3:  lda SPH
+    sta SPB
+4:  lda SPT
+    cmp SPB
+    bcc 5f
+9:  rts
+5:  ; sprite bands t >> shift ..= (b - 1) >> shift (a shift of 9: band 0)
+    lda SPT
+    ldy SPSH
+    jsr shr8
+    sta SPSB
+    lda SPB
+    sec
+    sbc #1
+    ldy SPSH
+    jsr shr8
+    sta SPEND
+    lda #0
+    sta $df0a           ; incrementing addresses (floor_row restores the floor's mode)
+sbloop:
+    ; the band's start: 3 bytes at block + 3 * sb
+    lda SPSB
+    asl
+    clc
+    adc SPSB
+    clc
+    adc SPBLK
+    sta DMAR
+    lda SPBLK+1
+    adc #0
+    sta DMAR+1
+    lda SPBLK+2
+    adc #0
+    sta DMAR+2
+    lda #<SPRITE_BSTART
+    sta DMAC
+    lda #>SPRITE_BSTART
+    sta DMAC+1
+    lda #3
+    sta DMAL
+    lda #0
+    sta DMAL+1
+    jsr dma
+    clc
+    lda SPBLK
+    adc SPRITE_BSTART
+    sta SPBA
+    lda SPBLK+1
+    adc SPRITE_BSTART+1
+    sta SPBA+1
+    lda SPBLK+2
+    adc SPRITE_BSTART+2
+    sta SPBA+2
+    ; the on-screen columns' offsets: 2 * (ncols + 1) bytes at band + 2 * j0
+    lda SPJ0
+    asl
+    php
+    clc
+    adc SPBA
+    sta DMAR
+    lda SPBA+1
+    adc #0
+    sta DMAR+1
+    lda SPBA+2
+    adc #0
+    sta DMAR+2
+    plp
+    bcc 6f
+    inc DMAR+1
+    bne 6f
+    inc DMAR+2
+6:  lda #<SPRITE_OFFS
+    sta DMAC
+    lda #>SPRITE_OFFS
+    sta DMAC+1
+    lda SPNC
+    clc
+    adc #1
+    asl
+    sta DMAL
+    lda #0
+    rol
+    sta DMAL+1
+    jsr dma
+    ; their records: offs[0] .. offs[ncols]
+    lda SPNC
+    asl
+    tay
+    clc
+    lda SPBA
+    adc SPRITE_OFFS
+    sta DMAR
+    lda SPBA+1
+    adc SPRITE_OFFS+1
+    sta DMAR+1
+    lda SPBA+2
+    adc #0
+    sta DMAR+2
+    sec
+    lda SPRITE_OFFS,y
+    sbc SPRITE_OFFS
+    sta DMAL
+    lda SPRITE_OFFS+1,y
+    sbc SPRITE_OFFS+1
+    sta DMAL+1
+    lda #<SPRITE_CHUNK
+    sta DMAC
+    lda #>SPRITE_CHUNK
+    sta DMAC+1
+    jsr dma
+    ; draw_cols_asm: DST = STAGE + col * 8, Y = top - band * 8, lines [t, b), the chunk
+    lda SPCOL
+    asl
+    asl
+    asl
+    sta JOB+0           ; col * 8: low byte, then col >> 5
+    lda SPCOL
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
+    sta JOB+1
+    clc
+    lda JOB+0
+    adc #<STAGE
+    sta JOB+0
+    lda JOB+1
+    adc #>STAGE
+    sta JOB+1
+    lda BAND
+    asl
+    asl
+    asl
+    sta SPLO
+    sec
+    lda SPTOP
+    sbc SPLO
+    sta JOB+2
+    lda SPTOP+1
+    sbc #0
+    sta JOB+3
+    lda SPT
+    sta JOB+4
+    lda #0
+    sta JOB+5
+    sta JOB+7
+    lda SPB
+    sta JOB+6
+    lda #<SPRITE_CHUNK
+    sta JOB+8
+    lda #>SPRITE_CHUNK
+    sta JOB+9
+    lda SPNC
+    sta JOB+10
+    jsr draw_cols_asm
+    lda SPSB
+    cmp SPEND
+    bcs 7f
+    inc SPSB
+    jmp sbloop
+7:  rts
+
+; A >> Y (Y = 0..9; >= 8 gives 0)
+shr8:
+    cpy #8
+    bcc 1f
+    lda #0
+    rts
+1:  cpy #0
+    beq 2f
+    lsr
+    dey
+    jmp 1b
+2:  rts
+
+; One REU fetch: DMAL bytes from DMAR (24-bit) to DMAC ($DF0A is 0). The C64U reloads the whole address
+; from the values last written on any address write, so all three are written.
+dma:
+    lda DMAC
+    sta $df02
+    lda DMAC+1
+    sta $df03
+    lda DMAR
+    sta $df04
+    lda DMAR+1
+    sta $df05
+    lda DMAR+2
+    sta $df06
+    lda DMAL
+    sta $df07
+    lda DMAL+1
+    sta $df08
+    lda #$91
+    sta $df01
+    rts
+.size sprite_band, .-sprite_band
+
+; ---------------------------------------------------------------------------------------------------
+; geo_walk(): the frame's objects, from the REU grids into the depth buckets (`geom::draw`, `grid`,
+; `cell`, `object`: the same integer steps). Arguments in WALK_ARGS (`geom::walk`, written each frame
+; by `geom::walk_args`); the buckets must be empty (`Work::clear`). Per grid: each row's directory
+; entries fetched to DIR_RAM; each cell whose sphere may be in view and whose largest object would have
+; popped in is fetched to CELL_RAM; each object culled, its rotation and origin put in GEO_ARGS, then
+; geo_xform and geo_faces.
+;
+; Zero page: $A0-$BA the walk (kept across geo_xform / geo_faces), $C0-$DB the object and the sphere
+; test (free outside geo_xform / geo_faces / project).
+
+WA      = $C6A0
+W_RT    = WA + 0
+W_U     = WA + 18
+W_V     = WA + 22
+W_Y     = WA + 26
+W_SCALE = WA + 28
+W_GRIDS = WA + 30
+W_OBJ   = WA + 92
+W_CELLS = WA + 93
+G_DIR    = 0
+G_STRIDE = 3
+G_NU     = 5
+G_NV     = 6
+G_BASE   = 7
+G_EU     = 13
+G_EV     = 19
+G_R      = 25
+G_FAR    = 27
+G_RN     = 29
+GRID_LEN = 31
+
+DIR_RAM   = $8E40
+CELL_RAM  = $C910
+CELL_MAX  = 44
+SCENE_RAM = $8000
+OBJ_BANK  = 88
+FARQ      = 5120        ; geom::FAR
+SPANQ     = 9216        ; geom::SPAN
+
+GP     = $A0    ; (2) the grid's GridWalk
+ROWN   = $A2    ; rows left
+COLK   = $A3    ; cell in the row
+DIRA   = $A4    ; (3) the row's directory entries (REU)
+ROWC   = $A7    ; (6) the row's first cell centre (camera space)
+CCV    = $AD    ; (6) this cell's centre
+RECP   = $B3    ; (2) the object record
+RECN   = $B5    ; records left in the cell
+MP     = $B6    ; (2) the mesh record
+POPD   = $B8    ; (2) a pop depth
+LODV   = $BA
+
+SX     = $C0    ; (2) sphere centre x, y, z (camera space, Q4); the object's origin
+SY     = $C2
+SZ     = $C4
+SR     = $C6    ; (2) radius
+SF     = $C8    ; (2) reach
+RHALF  = $CA    ; (2)
+ACC    = $CC    ; (4) 32-bit work
+ODX    = $D0    ; (2) the object's offset from the camera (world, Q4): east, up, north
+ODY    = $D2
+ODZ    = $D4
+YC     = $D6    ; (2) cos(yaw)
+YS     = $D8    ; (2) sin(yaw)
+JR     = $DA    ; row offset (0, 6, 12)
+JO     = $DB    ; output offset (0, 2, 4)
+PDR    = $BB    ; the radius POPD is for ($FF: none yet)
+SGNB   = $DC    ; acc_sub's sign byte (V's: free outside geo_xform)
+
+.section .text.geo_walk,"ax",@progbits
+.globl geo_walk
+.type geo_walk,@function
+geo_walk:
+    lda #$ff
+    sta PDR
+    lda #0
+    sta W_OBJ
+    sta W_CELLS
+    lda #<W_GRIDS
+    sta GP
+    lda #>W_GRIDS
+    sta GP+1
+    jsr wgrid
+    lda #<(W_GRIDS + GRID_LEN)
+    sta GP
+    lda #>(W_GRIDS + GRID_LEN)
+    sta GP+1
+    jmp wgrid
+
+; One grid (`geom::grid`).
+wgrid:
+    ldy #G_NV
+    lda (GP),y
+    bne 1f
+    rts
+1:  sta ROWN
+    ldy #0
+2:  lda (GP),y
+    sta DIRA,y
+    iny
+    cpy #3
+    bne 2b
+    ldy #G_BASE
+    ldx #0
+3:  lda (GP),y
+    sta ROWC,x
+    iny
+    inx
+    cpx #6
+    bne 3b
+wrow:
+    ; this row's entries -> DIR_RAM (nu * 4 bytes)
+    lda #<DIR_RAM
+    sta $df02
+    lda #>DIR_RAM
+    sta $df03
+    lda DIRA
+    sta $df04
+    lda DIRA+1
+    sta $df05
+    lda DIRA+2
+    sta $df06
+    ldy #G_NU
+    lda (GP),y
+    asl
+    asl
+    sta $df07
+    lda #0
+    sta $df08
+    lda #$91
+    sta $df01
+    ldx #5
+1:  lda ROWC,x
+    sta CCV,x
+    dex
+    bpl 1b
+    lda #0
+    sta COLK
+wcol:
+    ; an empty cell: nothing to do (`geom::cell` returns at once)
+    lda COLK
+    asl
+    asl
+    tay
+    lda DIR_RAM+2,y
+    bne 1f
+    jmp wnext
+1:  ; skipped when z - rn - rmax * 16 > pop_depth(rmax), rmax the cell's largest radius (tested before
+    ; the sphere: both must pass)
+    lda CCV+4
+    sta SZ
+    lda CCV+5
+    sta SZ+1
+    lda DIR_RAM+3,y
+    sta SR
+    lda #0
+    sta SR+1
+    ldx #4
+2:  asl SR
+    rol SR+1
+    dex
+    bne 2b
+    lda DIR_RAM+3,y
+    jsr popdepth
+    ldx #SZ
+    jsr acc_ld
+    ldx #SR
+    jsr acc_sub
+    ldx #POPD
+    jsr acc_sub
+    ldy #G_RN
+    lda (GP),y
+    sta SR
+    iny
+    lda (GP),y
+    sta SR+1
+    ldx #SR
+    jsr acc_sub
+    jsr accpos
+    bcc 3f
+    jmp wnext
+3:  ; sphere (cell centre, r, far)
+    ldx #5
+4:  lda CCV,x
+    sta SX,x
+    dex
+    bpl 4b
+    ldy #G_R
+    lda (GP),y
+    sta SR
+    iny
+    lda (GP),y
+    sta SR+1
+    iny
+    lda (GP),y
+    sta SF
+    iny
+    lda (GP),y
+    sta SF+1
+    jsr sphere
+    bcc wnext
+    lda COLK
+    asl
+    asl
+    tay
+    jsr wcell
+wnext:
+    ; next cell: += eu
+    ldy #G_EU
+    ldx #0
+1:  clc
+    lda CCV,x
+    adc (GP),y
+    sta CCV,x
+    iny
+    lda CCV+1,x
+    adc (GP),y
+    sta CCV+1,x
+    iny
+    inx
+    inx
+    cpx #6
+    bne 1b
+    inc COLK
+    lda COLK
+    ldy #G_NU
+    cmp (GP),y
+    bcs 2f
+    jmp wcol
+2:  ; next row: += ev, the entries += stride
+    ldy #G_EV
+    ldx #0
+3:  clc
+    lda ROWC,x
+    adc (GP),y
+    sta ROWC,x
+    iny
+    lda ROWC+1,x
+    adc (GP),y
+    sta ROWC+1,x
+    iny
+    inx
+    inx
+    cpx #6
+    bne 3b
+    ldy #G_STRIDE
+    clc
+    lda DIRA
+    adc (GP),y
+    sta DIRA
+    iny
+    lda DIRA+1
+    adc (GP),y
+    sta DIRA+1
+    lda DIRA+2
+    adc #0
+    sta DIRA+2
+    dec ROWN
+    beq 4f
+    jmp wrow
+4:  rts
+
+; One cell (`geom::cell`), its directory entry at DIR_RAM + Y.
+wcell:
+    lda DIR_RAM+2,y
+    bne 1f
+    rts
+1:  cmp #CELL_MAX + 1
+    bcc 2f
+    lda #CELL_MAX
+2:  sta RECN
+    ; records: OBJ_BANK:0000 + first * 8 -> CELL_RAM, count * 8 bytes
+    lda #<CELL_RAM
+    sta $df02
+    lda #>CELL_RAM
+    sta $df03
+    lda DIR_RAM,y
+    asl
+    asl
+    asl
+    sta $df04
+    lda DIR_RAM+1,y
+    sta ACC
+    lda DIR_RAM,y
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
+    sta ACC+1
+    lda ACC
+    asl
+    asl
+    asl
+    ora ACC+1
+    sta $df05
+    lda ACC
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
+    clc
+    adc #OBJ_BANK
+    sta $df06
+    lda RECN
+    asl
+    asl
+    asl
+    sta $df07
+    lda #0
+    rol
+    sta $df08
+    lda #$91
+    sta $df01
+    inc W_CELLS
+    lda #<CELL_RAM
+    sta RECP
+    lda #>CELL_RAM
+    sta RECP+1
+3:  jsr wobject
+    clc
+    lda RECP
+    adc #8
+    sta RECP
+    bcc 4f
+    inc RECP+1
+4:  dec RECN
+    bne 3b
+    rts
+
+; ACC = ((at << 3) - cam) >> 4, at = (RECP),Y (u16), cam the i32 at WA + X (W_U or W_V). Carry set
+; when |ACC| <= SPAN (`geom::object`'s span test passes).
+woffset:
+    lda (RECP),y
+    sta ACC
+    iny
+    lda (RECP),y
+    sta ACC+1
+    lda #0
+    sta ACC+2
+    sta ACC+3
+    ldy #3
+1:  asl ACC
+    rol ACC+1
+    rol ACC+2
+    dey
+    bne 1b
+    sec
+    lda ACC
+    sbc WA,x
+    sta ACC
+    lda ACC+1
+    sbc WA+1,x
+    sta ACC+1
+    lda ACC+2
+    sbc WA+2,x
+    sta ACC+2
+    lda ACC+3
+    sbc WA+3,x
+    sta ACC+3
+    ldy #4
+2:  lda ACC+3
+    cmp #$80
+    ror ACC+3
+    ror ACC+2
+    ror ACC+1
+    ror ACC
+    dey
+    bne 2b
+    ; |ACC| > SPAN?
+    lda ACC+3
+    bpl 3f
+    ; negative: within when ACC >= -SPAN ($FFFFDC00), unsigned
+    lda ACC
+    cmp #$00
+    lda ACC+1
+    sbc #$dc
+    lda ACC+2
+    sbc #$ff
+    lda ACC+3
+    sbc #$ff
+    rts
+3:  lda #<SPANQ
+    cmp ACC
+    lda #>SPANQ
+    sbc ACC+1
+    lda #0
+    sbc ACC+2
+    lda #0
+    sbc ACC+3
+    ; within when SPAN >= ACC
+    rts
+
+; One object (`geom::object`), its record at RECP.
+wobject:
+    ldy #0
+    ldx #W_U - WA
+    jsr woffset
+    bcs 1f
+    rts                 ; out of span
+1:
+    lda ACC
+    sta ODX
+    lda ACC+1
+    sta ODX+1
+    ldy #2
+    ldx #W_V - WA
+    jsr woffset
+    bcs 1f
+    rts
+1:
+    lda ACC
+    sta ODZ
+    lda ACC+1
+    sta ODZ+1
+    ldy #4
+    sec
+    lda (RECP),y
+    sbc W_Y
+    sta ODY
+    iny
+    lda (RECP),y
+    sbc W_Y+1
+    sta ODY+1
+    ; the mesh record: SCENE_RAM + 8 + mesh * 10
+    ldy #7
+    lda (RECP),y
+    jsr meshp
+    ; r = rad << 4, far = pop_depth(rad)
+    ldy #7
+    lda (MP),y
+    sta SR
+    lda #0
+    sta SR+1
+    ldx #4
+1:  asl SR
+    rol SR+1
+    dex
+    bne 1b
+    lda (MP),y
+    jsr popdepth
+    lda POPD
+    sta SF
+    lda POPD+1
+    sta SF+1
+    ; c = to_camera(d): z first, and out early on the depth tests (the same ones `sphere` makes)
+    lda #12
+    sta JR
+    lda #4
+    sta JO
+    jsr trow
+    ldx #SZ
+    jsr acc_ld
+    ldx #SR
+    jsr acc_add
+    sec
+    lda ACC
+    sbc #NEARZ
+    lda ACC+1
+    sbc #0
+    lda ACC+2
+    sbc #0
+    lda ACC+3
+    sbc #0
+    bmi 9f
+    ldx #SZ
+    jsr acc_ld
+    ldx #SR
+    jsr acc_sub
+    ldx #SF
+    jsr acc_sub
+    jsr accpos
+    bcs 9f
+    lda #0
+    sta JR
+    sta JO
+    jsr trow
+    lda #6
+    sta JR
+    lda #2
+    sta JO
+    jsr trow
+    jsr sphere
+    bcs 2f
+9:  rts
+2:  inc W_OBJ
+    ; level of detail: lod != $FF and z > lod_z
+    ldy #8
+    lda (MP),y
+    cmp #$ff
+    beq 3f
+    sta LODV
+    iny
+    lda (MP),y
+    sta ACC
+    lda #0
+    sta ACC+1
+    ldx #4
+4:  asl ACC
+    rol ACC+1
+    dex
+    bne 4b
+    ; z > lod_z (signed z, lod_z in 0..4080)
+    lda SZ+1
+    bmi 3f
+    lda ACC
+    cmp SZ
+    lda ACC+1
+    sbc SZ+1
+    bcs 3f              ; lod_z >= z
+    lda LODV
+    jsr meshp
+3:  ; cos, sin of yaw
+    ldy #6
+    lda (RECP),y
+    pha
+    clc
+    adc #64
+    jsr sin8
+    lda AL
+    sta YC
+    lda AH
+    sta YC+1
+    pla
+    jsr sin8
+    lda AL
+    sta YS
+    lda AH
+    sta YS+1
+    ; rotation rows: (rt0 cy - rt2 sy) >> 14, rt1, (rt0 sy + rt2 cy) >> 14
+    lda #0
+    sta JR
+5:  ldx JR
+    lda W_RT,x
+    sta AL
+    lda W_RT+1,x
+    sta AH
+    lda YC
+    sta BL
+    lda YC+1
+    sta BH
+    jsr smul
+    jsr acc_ldp
+    ldx JR
+    lda W_RT+4,x
+    sta AL
+    lda W_RT+5,x
+    sta AH
+    lda YS
+    sta BL
+    lda YS+1
+    sta BH
+    jsr smul
+    jsr acc_subp
+    jsr acc_q14
+    ldx JR
+    lda ACC+2
+    sta MROT,x
+    lda ACC+3
+    sta MROT+1,x
+    lda W_RT+2,x
+    sta MROT+2,x
+    lda W_RT+3,x
+    sta MROT+3,x
+    lda W_RT,x
+    sta AL
+    lda W_RT+1,x
+    sta AH
+    lda YS
+    sta BL
+    lda YS+1
+    sta BH
+    jsr smul
+    jsr acc_ldp
+    ldx JR
+    lda W_RT+4,x
+    sta AL
+    lda W_RT+5,x
+    sta AH
+    lda YC
+    sta BL
+    lda YC+1
+    sta BH
+    jsr smul
+    jsr acc_addp
+    jsr acc_q14
+    ldx JR
+    lda ACC+2
+    sta MROT+4,x
+    lda ACC+3
+    sta MROT+5,x
+    txa
+    clc
+    adc #6
+    sta JR
+    cmp #18
+    beq 10f
+    jmp 5b
+10: ; the rest of GEO_ARGS: vertices, faces, shift, origin
+    ldy #0
+    clc
+    lda (MP),y
+    adc #<SCENE_RAM
+    sta VPTR
+    iny
+    lda (MP),y
+    adc #>SCENE_RAM
+    sta VPTR+1
+    iny
+    lda (MP),y
+    cmp #64 + 1
+    bcc 6f
+    lda #64
+6:  sta NV
+    iny
+    clc
+    lda (MP),y
+    adc #<SCENE_RAM
+    sta FPTR
+    iny
+    lda (MP),y
+    adc #>SCENE_RAM
+    sta FPTR+1
+    iny
+    lda (MP),y
+    sta NF
+    iny
+    lda (MP),y
+    clc
+    adc #2
+    sta TT
+    eor #$ff
+    sec
+    adc #14
+    sta SHR
+    ldx #5
+7:  lda SX,x
+    sta ORGX,x
+    dex
+    bpl 7b
+    jsr geo_xform
+    jmp geo_faces
+
+; MP = SCENE_RAM + 8 + A * 10
+meshp:
+    sta MP
+    lda #0
+    sta MP+1
+    asl MP
+    rol MP+1            ; 2a
+    lda MP
+    sta ACC
+    lda MP+1
+    sta ACC+1
+    asl MP
+    rol MP+1
+    asl MP
+    rol MP+1            ; 8a
+    clc
+    lda MP
+    adc ACC
+    sta MP
+    lda MP+1
+    adc ACC+1
+    sta MP+1            ; 10a
+    clc
+    lda MP
+    adc #<(SCENE_RAM + 8)
+    sta MP
+    lda MP+1
+    adc #>(SCENE_RAM + 8)
+    sta MP+1
+    rts
+
+; One row of to_camera (`Look::to_camera`): (rt row at W_RT + JR) . (ODX, ODY, ODZ) >> 14 into SX + JO.
+trow:
+    ldx JR
+    lda W_RT,x
+    sta AL
+    lda W_RT+1,x
+    sta AH
+    lda ODX
+    sta BL
+    lda ODX+1
+    sta BH
+    jsr smul
+    jsr acc_ldp
+    ldx JR
+    lda W_RT+2,x
+    sta AL
+    lda W_RT+3,x
+    sta AH
+    lda ODY
+    sta BL
+    lda ODY+1
+    sta BH
+    jsr smul
+    jsr acc_addp
+    ldx JR
+    lda W_RT+4,x
+    sta AL
+    lda W_RT+5,x
+    sta AH
+    lda ODZ
+    sta BL
+    lda ODZ+1
+    sta BH
+    jsr smul
+    jsr acc_addp
+    jsr acc_q14
+    ldx JO
+    lda ACC+2
+    sta SX,x
+    lda ACC+3
+    sta SX+1,x
+    rts
+
+; POPD = min(A * scale, FAR) (`geom::pop_depth`); the last radius's is kept (they repeat).
+popdepth:
+    cmp PDR
+    bne 2f
+    rts
+2:  sta PDR
+    sta AL
+    lda #0
+    sta AH
+    lda W_SCALE
+    sta BL
+    lda W_SCALE+1
+    sta BH
+    jsr umul
+    lda P2
+    ora P3
+    bne 1f
+    lda #<FARQ
+    cmp P0
+    lda #>FARQ
+    sbc P1
+    bcc 1f
+    lda P0
+    sta POPD
+    lda P1
+    sta POPD+1
+    rts
+1:  lda #<FARQ
+    sta POPD
+    lda #>FARQ
+    sta POPD+1
+    rts
+
+; Carry set when the sphere (SX, SY, SZ), radius SR, may be in view within SF (`geom::sphere_visible`).
+sphere:
+    ; z + r - NEAR >= 0
+    ldx #SZ
+    jsr acc_ld
+    ldx #SR
+    jsr acc_add
+    sec
+    lda ACC
+    sbc #NEARZ
+    lda ACC+1
+    sbc #0
+    lda ACC+2
+    sbc #0
+    lda ACC+3
+    sbc #0
+    bpl 9f
+    clc
+    rts
+9:  ; z - r - far <= 0
+    ldx #SZ
+    jsr acc_ld
+    ldx #SR
+    jsr acc_sub
+    ldx #SF
+    jsr acc_sub
+    jsr accpos
+    bcc 10f
+    clc
+    rts
+10: ; |x| - z - r - (r >> 1) <= 0
+    lda SR+1
+    cmp #$80
+    ror
+    sta RHALF+1
+    lda SR
+    ror
+    sta RHALF
+    ldx #SX
+    jsr acc_ld
+    lda ACC+3
+    bpl 1f
+    jsr acc_neg
+1:  ldx #SZ
+    jsr acc_sub
+    ldx #SR
+    jsr acc_sub
+    ldx #RHALF
+    jsr acc_sub
+    jsr accpos
+    bcs 8f
+    ; |y| * 133 - z * 68 - r * 150 <= 0
+    lda SY
+    sta AL
+    lda SY+1
+    sta AH
+    bpl 2f
+    sec
+    lda #0
+    sbc AL
+    sta AL
+    lda #0
+    sbc AH
+    sta AH
+2:  lda #133
+    sta BL
+    lda #0
+    sta BH
+    jsr umul
+    jsr acc_ldp
+    lda SZ
+    sta AL
+    lda SZ+1
+    sta AH
+    lda #68
+    sta BL
+    lda #0
+    sta BH
+    jsr smul
+    jsr acc_subp
+    lda SR
+    sta AL
+    lda SR+1
+    sta AH
+    lda #150
+    sta BL
+    lda #0
+    sta BH
+    jsr smul
+    jsr acc_subp
+    jsr accpos
+    bcs 8f
+    sec
+    rts
+8:  clc
+    rts
+
+; ACC = the i16 at zero page X, sign-extended.
+acc_ld:
+    lda 0,x
+    sta ACC
+    lda 1,x
+    sta ACC+1
+    ora #$7f
+    bmi 1f
+    lda #0
+1:  sta ACC+2
+    sta ACC+3
+    rts
+
+; ACC += / -= the i16 at zero page X.
+acc_add:
+    lda 1,x
+    ora #$7f
+    bmi 1f
+    lda #0
+1:  pha
+    clc
+    lda ACC
+    adc 0,x
+    sta ACC
+    lda ACC+1
+    adc 1,x
+    sta ACC+1
+    pla
+    pha
+    adc ACC+2
+    sta ACC+2
+    pla
+    adc ACC+3
+    sta ACC+3
+    rts
+
+acc_sub:
+    lda 1,x
+    ora #$7f
+    bmi 1f
+    lda #0
+1:  sta SGNB
+    sec
+    lda ACC
+    sbc 0,x
+    sta ACC
+    lda ACC+1
+    sbc 1,x
+    sta ACC+1
+    lda ACC+2
+    sbc SGNB
+    sta ACC+2
+    lda ACC+3
+    sbc SGNB
+    sta ACC+3
+    rts
+
+; ACC = P; ACC += P; ACC -= P (the multiply's 32-bit result).
+acc_ldp:
+    lda P0
+    sta ACC
+    lda P1
+    sta ACC+1
+    lda P2
+    sta ACC+2
+    lda P3
+    sta ACC+3
+    rts
+
+acc_addp:
+    clc
+    lda ACC
+    adc P0
+    sta ACC
+    lda ACC+1
+    adc P1
+    sta ACC+1
+    lda ACC+2
+    adc P2
+    sta ACC+2
+    lda ACC+3
+    adc P3
+    sta ACC+3
+    rts
+
+acc_subp:
+    sec
+    lda ACC
+    sbc P0
+    sta ACC
+    lda ACC+1
+    sbc P1
+    sta ACC+1
+    lda ACC+2
+    sbc P2
+    sta ACC+2
+    lda ACC+3
+    sbc P3
+    sta ACC+3
+    rts
+
+; ACC <<= 2: ACC+2:ACC+3 is then (ACC >> 14) as i16.
+acc_q14:
+    asl ACC
+    rol ACC+1
+    rol ACC+2
+    rol ACC+3
+    asl ACC
+    rol ACC+1
+    rol ACC+2
+    rol ACC+3
+    rts
+
+acc_neg:
+    sec
+    lda #0
+    sbc ACC
+    sta ACC
+    lda #0
+    sbc ACC+1
+    sta ACC+1
+    lda #0
+    sbc ACC+2
+    sta ACC+2
+    lda #0
+    sbc ACC+3
+    sta ACC+3
+    rts
+
+; Carry set when ACC > 0 (signed).
+accpos:
+    lda ACC+3
+    bmi 1f
+    ora ACC+2
+    ora ACC+1
+    ora ACC
+    beq 1f
+    sec
+    rts
+1:  clc
+    rts
+
+; AL:AH = sin(A / 256 turn), Q14 (`geom::sin`: a quarter wave and its symmetries).
+sin8:
+    tax
+    and #63
+    sta ACC
+    txa
+    and #64
+    beq 1f
+    ; second / fourth quarter: 64 - q
+    sec
+    lda #64
+    sbc ACC
+    sta ACC
+1:  lda ACC
+    asl
+    tay
+    lda sinq,y
+    sta AL
+    lda sinq+1,y
+    sta AH
+    txa
+    bpl 2f
+    sec
+    lda #0
+    sbc AL
+    sta AL
+    lda #0
+    sbc AH
+    sta AH
+2:  rts
+.size geo_walk, .-geo_walk
+
+.section .rodata.sinq,"a",@progbits
+sinq:
+    .word 0, 402, 804, 1205, 1606, 2006, 2404, 2801, 3196, 3590, 3981, 4370, 4756, 5139, 5520, 5897
+    .word 6270, 6639, 7005, 7366, 7723, 8076, 8423, 8765, 9102, 9434, 9760, 10080, 10394, 10702, 11003, 11297
+    .word 11585, 11866, 12140, 12406, 12665, 12916, 13160, 13395, 13623, 13842, 14053, 14256, 14449, 14635, 14811, 14978
+    .word 15137, 15286, 15426, 15557, 15679, 15791, 15893, 15986, 16069, 16143, 16207, 16261, 16305, 16340, 16364, 16379
+    .word 16384

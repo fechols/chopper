@@ -45,12 +45,16 @@ fn frame(args: &[String]) -> Result<(), String> {
     let bitmap = &m.ram[buf.bitmap as usize..buf.bitmap as usize + 8000];
     std::fs::write(out.with_extension("bin"), bitmap).map_err(|e| e.to_string())?;
     println!(
-        "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground)",
+        "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
         if doubled { "doubled" } else { "full" },
         st.dmas,
         st.io_writes,
         st.spans,
-        st.ground_spans
+        st.ground_spans,
+        st.geom.objects,
+        st.geom.cells,
+        st.tris,
+        st.dropped + st.geom.dropped,
     );
     Ok(())
 }

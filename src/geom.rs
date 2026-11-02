@@ -1,42 +1,51 @@
 //! Flat-shaded 3D over the floor (`no_std`, shared by the host and the C64, so both compute the same
-//! bits): per-object yaw transform into the floor camera's space, near-plane clip, projection matching
-//! the floor exactly, backface cull, a one-pass bucket depth sort (painter's), and the triangle set-up
-//! that feeds [`Hw::tri_walk`] (`asm/tri.S` on the C64), which feeds [`Hw::poly_row`] (`asm/poly.S`).
+//! bits): per-object rotation into the floor camera's space (any yaw, pitch and roll), near-plane clip,
+//! projection matching the floor exactly, backface cull, a one-pass bucket depth sort (painter's), and
+//! the triangle set-up that feeds [`Hw::tri_walk`] (`asm/tri.S` on the C64), which feeds
+//! [`Hw::poly_row`] (`asm/poly.S`). Pre-rendered sprites ride the same depth buckets ([`push_sprite`]).
 //!
 //! Units: camera space in 1/16 texel ("Q4"), screen in 1/16 multicolour pixel; pixel `p` spans
 //! `[p, p+1)` and is covered when its centre is (the floor's sampling too). All products go through
 //! [`crate::fixed`] (a 16×16 multiply; division by reciprocal table).
 //!
-//! Camera (`camera::View::Floor`): looking along `(sin a, -cos a)` with right `(cos a, sin a)`, at height
-//! `CAMERA_HEIGHT`, focal `FOCAL` (hires), horizon line `HORIZON`:
-//! `sx = 80 + 80·X/Z`, `sy = 48 + 160·(12 - Y)/Z`.
+//! World axes: x = u (east), y = up, z = v (north), as the floor's. Camera space: X right, Y up, Z along
+//! the view (`floor::FloorCam::r`'s columns). Projection (`floor::FX`, `floor::FY`, the axis at line
+//! 67.5's centre, i.e. 68 in `[y, y+1)` line units): `sx = 80 + 80·X/Z`, `sy = 68 − 133·Y/Z`.
 
 use crate::fixed::{self, mul, mul_wide, mulsu, sar};
+use crate::floor::FloorCam;
 use crate::hw::Hw;
-use crate::layout::{CELL_MAX, CELL_RAM, ROW_STRIDE, VIS_RAM};
+use crate::layout::{CELL_MAX, CELL_RAM, DIR_RAM, ROW_STRIDE};
 use crate::poly::{PATTERNS, Row};
 
 /// Camera-space units per texel.
 pub const Q: i32 = 16;
-/// Near plane: 8 texels (the floor's nearest line is 12.7 texels away).
-pub const NEAR: i32 = 8 * Q;
-/// Objects whose centre is farther than this are skipped. The plane wraps at 256 texels, and the
-/// visibility lists reach 7 cells from the camera's cell, so every object this near is in a listed cell
-/// wherever the camera is inside its own.
-pub const FAR: i32 = 96 * Q;
-/// The object grid: 16 × 16 cells of 16 texels over the plane. An object is filed under the cell of its
-/// centre; objects reaching more than [`CELL_PAD`] texels from it (horizontally) go in the global list.
-pub const CELL: i32 = 16;
-pub const GRID: usize = 16;
-pub const CELL_PAD: i32 = 16;
-/// Cells the visibility lists reach, either way from the camera's cell.
-pub const REACH: i32 = 7;
-/// Objects farther than this from the camera along either plane axis are skipped, so every object the
-/// cull accepts is within [`REACH`] cells (`(15 + 96) / 16 < 7`).
-pub const SPAN: i32 = 96 * Q;
-const _: () = assert!(CELL - 1 + SPAN / Q < (REACH + 1) * CELL);
+/// Near plane: 2 texels. Faces crossing it are left out (no clipping), so it is close.
+pub const NEAR: i32 = 2 * Q;
+/// Objects whose centre is farther than this (plus their radius) along the view are skipped: the floor
+/// is haze beyond it (`floor::HAZE_TEXELS`).
+pub const FAR: i32 = crate::floor::HAZE_TEXELS * Q;
+/// The object grid: [`GRID`]² cells of [`CELL`] texels over the map. An object is filed under the cell
+/// of its centre; objects reaching more than [`CELL_PAD`] texels from it go in the big grid instead:
+/// [`BIG_GRID`]² cells of [`BIG_CELL`] texels.
+pub const CELL: i32 = 64;
+pub const GRID: usize = 32;
+pub const CELL_PAD: i32 = 32;
+pub const BIG_CELL: i32 = 256;
+pub const BIG_GRID: usize = 8;
+/// Cells either way from the camera's cell that can hold an object the cull accepts: within [`FAR`]
+/// plus its radius along the view and 45° to either side, so up to about √2 of that away.
+pub const REACH: i32 = 8;
+pub const BIG_REACH: i32 = 3;
+const _: () = assert!(CELL - 1 + (FAR / Q + CELL_PAD) * 17 / 12 < (REACH + 1) * CELL);
+const _: () = assert!(BIG_CELL - 1 + (FAR / Q + 160) * 17 / 12 < (BIG_REACH + 1) * BIG_CELL);
+/// Objects farther than this from the camera along either map axis are skipped (Q4; keeps offsets i16).
+pub const SPAN: i32 = FAR + 256 * Q;
 /// Screen coordinates are clamped to ±1000 pixels (Q4), which keeps every edge product in i32.
 pub const LIMIT: i32 = 1000 * 16;
+/// Screen lines the band pipeline draws (the view above the cockpit) and its bands.
+pub const LINES: i32 = crate::floor::VIEW_LINES as i32;
+pub const BANDS: usize = crate::floor::VIEW_BANDS as usize;
 
 /// `sin` of `a`/256 turn, Q14, a quarter wave.
 const SIN_Q: [i16; 65] = [
@@ -61,44 +70,46 @@ pub fn cos(a: u8) -> i16 {
     sin(a.wrapping_add(64))
 }
 
-/// Scene block (`format::SCENE`, fetched whole to `layout::SCENE_RAM`):
-/// `[0]` length u16, `[2]` meshes u8, `[4]` grid directory offset u16, mesh table at [`scene::MESHES`].
-/// The directory has `GRID²` cells plus the global list, each the first object (u16, an index into
-/// `format::OBJECTS`), the count (u8) and the largest bounding radius among them (u8, texels).
+/// Scene block (`format::SCENE`, fetched whole to `layout::SCENE_RAM`): `[0]` length u16, `[2]` meshes
+/// u8, mesh table at [`scene::MESHES`]. The object directory and records live in the REU
+/// (`format::OBJ_DIR`, `format::OBJ_RECORDS`).
 pub mod scene {
     pub const LEN: usize = 0;
     pub const N_MESHES: usize = 2;
-    pub const DIR: usize = 4;
-    pub const DIR_ENTRY: usize = 4;
-    pub const GLOBAL: usize = super::GRID * super::GRID;
     pub const MESHES: usize = 8;
     /// Mesh record: vertex offset u16, vertex count u8, face offset u16, face count u8, shift u8,
     /// bounding radius u8 (texels, about the mesh origin), level of detail: the mesh drawn instead
     /// (255: none) beyond a distance u8 (texels, along the view).
     pub const MESH: usize = 10;
-    const _: () = assert!(MESH == 10 && OBJECT == 6 && DIR_ENTRY == 4 && super::Q == 16, "draw scales by shifts");
-    /// Object record: x u16, y u16 (8.8 texels), yaw u8, mesh u8.
-    pub const OBJECT: usize = 6;
-    /// Vertex: x, y (plane axes, u and v), h (up), i8 in quarter texels << shift.
+    const _: () = assert!(MESH == 10 && OBJECT == 8 && DIR_ENTRY == 4 && super::Q == 16, "draw scales by shifts");
+    /// Directory entry (one per grid cell, then one per big-grid cell): the first object (u16, an index
+    /// into the records), the count (u8) and the largest bounding radius among them (u8, texels).
+    pub const DIR_ENTRY: usize = 4;
+    /// Object record: u, v u16 (texels · 32), base height i16 (Q4 texels), yaw u8 (256 a turn), mesh u8.
+    pub const OBJECT: usize = 8;
+    /// Vertex: u, v (east, north) and h (up), i8 in quarter texels << shift.
     pub const VERTEX: usize = 3;
     /// Face: three vertex indices, shade (`poly::PATTERNS` index), wound so that the front is clockwise
     /// on screen (y down).
     pub const FACE: usize = 4;
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Camera {
-    pub x: u16,
-    pub y: u16,
-    pub angle: u8,
+/// The camera the geometry sees: the floor's ([`FloorCam`]) and the pop-in size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct View {
+    pub cam: FloorCam,
     /// Pop-in size: an object is drawn once its bounding radius would cover at least this many pixels
     /// (0: [`POP`]). Its pop distance is `80·r / pop` texels along the view, capped at [`FAR`]: small
     /// objects appear close, big ones far away.
     pub pop: u8,
 }
 
-/// The default pop-in size (pixels of bounding radius): cones (radius 5) appear at ~66 texels.
-pub const POP: u8 = 6;
+/// Sprite items in [`Work`] have this shade bit set: x0 = left pixel, x1/x2 = REU block (lo 16, then
+/// bank | band shift << 8), y0 = top line, y1 = height, y2 = byte columns.
+pub const SPRITE: u8 = 0x80;
+
+/// The default pop-in size (pixels of bounding radius): trees (radius 4) appear at 80 texels.
+pub const POP: u8 = 4;
 
 /// Depth (Q4) per texel of bounding radius at which an object shrinks to `pop` pixels: `80·16 / pop`.
 pub fn pop_scale(pop: u8) -> i16 {
@@ -111,12 +122,48 @@ pub fn pop_depth(r: u8, scale: i16) -> i32 {
     mul(r as i16, scale).min(FAR)
 }
 
-/// Per-frame values the cull shares: the camera's cos / sin and [`pop_scale`].
-#[derive(Clone, Copy)]
-struct Look {
-    c: i16,
-    s: i16,
-    scale: i16,
+/// Per-frame values the cull shares: world → camera (`Rᵀ`, Q14), the camera in Q4 texels, and
+/// [`pop_scale`].
+#[derive(Clone, Copy, Debug)]
+pub struct Look {
+    pub rt: [[i16; 3]; 3],
+    /// Camera position: u, v in Q8 texels (as `FloorCam`), height in Q4.
+    pub u: i32,
+    pub v: i32,
+    pub y: i16,
+    pub scale: i16,
+}
+
+impl Look {
+    pub fn new(view: &View) -> Self {
+        let r = &view.cam.r;
+        Look {
+            rt: core::array::from_fn(|j| core::array::from_fn(|k| r[k][j] as i16)),
+            u: view.cam.u,
+            v: view.cam.v,
+            y: (view.cam.h >> 4) as i16,
+            scale: pop_scale(view.pop),
+        }
+    }
+
+    /// A world offset (Q4 texels, x/y/z = east/up/north) in camera space (Q4).
+    pub fn to_camera(&self, d: [i16; 3]) -> [i32; 3] {
+        core::array::from_fn(|j| (mul(self.rt[j][0], d[0]) + mul(self.rt[j][1], d[1]) + mul(self.rt[j][2], d[2])) >> 14)
+    }
+
+    /// The offset (Q4) from the camera of a map position (texels · 32) along one axis; `cam` in Q8.
+    fn offset(at: u16, cam: i32) -> i32 {
+        (((at as i32) << 3) - cam) >> 4
+    }
+}
+
+/// Whether a sphere of radius `r` (Q4) round camera-space point `c` may be in view: in front of the near
+/// plane, within `far`, inside the side planes (`|X| ≤ Z`, 45° each way: `r·√2 ≤ 3r/2`) and the top and
+/// bottom planes (`|Y|·133 ≤ Z·68`: `r·150` bounds `r·√(133² + 68²)`).
+#[inline(never)]
+pub fn sphere_visible(c: [i32; 3], r: i32, far: i32) -> bool {
+    let (x, y, z) = (c[0], c[1], c[2]);
+    z + r >= NEAR && z - r <= far && x.abs() - z <= r + (r >> 1) && y.abs() * 133 - z * 68 <= r * 150
 }
 
 /// A projected triangle, ready to draw.
@@ -128,7 +175,7 @@ pub struct Tri {
 }
 
 pub const MAX_TRIS: usize = 255;
-pub const MAX_VERTS: usize = 128;
+pub const MAX_VERTS: usize = 64;
 pub const NONE: u8 = 0xFF;
 
 /// One object's transformed vertices, as `asm/geom.S` keeps them (at `layout::VERTS` on the C64): ten
@@ -216,6 +263,12 @@ impl Work {
         }
         self.t[12][i] = t.shade;
     }
+    /// Empty the buckets for a new frame.
+    pub fn clear(&mut self) {
+        self.n = 0;
+        self.dropped = 0;
+        self.head.fill(NONE);
+    }
 }
 
 impl Default for Work {
@@ -231,9 +284,7 @@ pub struct Stats {
     pub tris: u8,
     /// Triangles that did not fit in [`MAX_TRIS`].
     pub dropped: u8,
-    /// Topmost cell row drawn (25: none), so the caller can repair the sky above the horizon.
-    pub top_row: u8,
-    /// Grid cells (and the global list) whose objects were streamed in.
+    /// Grid cells whose objects were streamed in.
     pub cells: u8,
 }
 
@@ -249,15 +300,14 @@ fn clamp(v: i32) -> i16 {
 /// Screen position (Q4 pixels) of a camera-space point with `z >= NEAR`.
 ///
 /// `1/z` comes from the reciprocal table: `z = m·2^e`, `1/z ~ recip(m) / 2^(26+e)`, so
-/// `x·1280/z = (x·recip(m) >> 8)·5 / 2^(10+e)` (and 10 for `sy`'s 2560).
+/// `x·1280/z = (x·recip(m) >> 8)·5 / 2^(10+e)` and `−y·2128/z = (−y·recip(m) >> 8)·133 / 2^(14+e)`.
 pub fn project(x: i16, y: i16, z: i16) -> (i16, i16) {
     let (m, e) = fixed::norm(z as u16);
     let r = fixed::recip(m);
-    let s = (10 + e) as u8;
     let qx = mulsu(x, r) >> 8;
-    let qy = mulsu((12 * Q) as i16 - y, r) >> 8;
-    let sx = 80 * 16 + sar(qx * 5, s);
-    let sy = 48 * 16 + sar(qy * 10, s);
+    let qy = mulsu(y.wrapping_neg(), r) >> 8;
+    let sx = 80 * 16 + sar(qx * 5, (10 + e) as u8);
+    let sy = 68 * 16 + sar((qy << 7) + (qy << 2) + qy, (14 + e) as u8);
     (clamp(sx), clamp(sy))
 }
 
@@ -265,6 +315,26 @@ pub fn project(x: i16, y: i16, z: i16) -> (i16, i16) {
 /// ±16000, so every difference fits in i16 and the two products' difference in i32.
 fn area(x: [i16; 3], y: [i16; 3]) -> i32 {
     mul(x[1] - x[0], y[2] - y[0]) - mul(y[1] - y[0], x[2] - x[0])
+}
+
+/// A depth bucket from a camera-space depth sum `s` (three corners, Q4): 2/3-texel buckets out to about
+/// 128 texels, then 16 times coarser to beyond the haze; nearer is a lower key.
+pub fn depth_key(s: i32) -> u8 {
+    if s < 6144 { (s >> 5).max(0) as u8 } else { (192 + ((s - 6144) >> 8)).min(255) as u8 }
+}
+
+/// Append a sprite to depth bucket `key` (an item the band pipeline draws in painter's order).
+pub fn push_sprite(w: &mut Work, left: i16, top: i16, h: u16, wb: u8, block: u32, shift: u8, key: u8) {
+    if w.n as usize >= MAX_TRIS {
+        w.dropped = w.dropped.saturating_add(1);
+        return;
+    }
+    let i = w.n;
+    let x = [left, block as u16 as i16, ((block >> 16) as u16 | (shift as u16) << 8) as i16];
+    w.set_tri(i, &Tri { x, y: [top, h as i16, wb as i16], shade: SPRITE });
+    w.next[i as usize] = w.head[key as usize];
+    w.head[key as usize] = i;
+    w.n += 1;
 }
 
 /// Append a front-facing triangle to depth bucket `key` (`asm/geom.S`'s `push`).
@@ -283,16 +353,9 @@ pub fn push(w: &mut Work, x: [i16; 3], y: [i16; 3], shade: u8, key: u8) {
     w.n += 1;
 }
 
-/// The point where edge `p`→`q` (`p` in front, `q` behind the near plane) crosses it.
-fn cut(p: (i32, i32, i32), q: (i32, i32, i32)) -> (i16, i16, i16) {
-    // Camera-space coordinates are i16, so the differences and t fit too: one 16x16 multiply each.
-    let (dz, t) = (q.2 - p.2, (NEAR - p.2) as i16);
-    ((p.0 + mul((q.0 - p.0) as i16, t) / dz) as i16, (p.1 + mul((q.1 - p.1) as i16, t) / dz) as i16, NEAR as i16)
-}
-
 /// One object in view, ready for `asm/geom.S` (`geo_args`): its mesh's vertices and faces (offsets in
-/// the scene block), the vertex shift `t` (vertices are i8 << t in Q4), its centre in camera space and
-/// the rotation from mesh to camera (Q14).
+/// the scene block), the vertex shift `t` (vertices are i8 << t in Q4), its origin in camera space and
+/// the rotation from mesh (u, up, v) to camera (Q14, rows X, Y, Z).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Obj {
     pub verts: u16,
@@ -300,10 +363,8 @@ pub struct Obj {
     pub faces: u16,
     pub nf: u8,
     pub t: u8,
-    pub x0: i16,
-    pub z0: i16,
-    pub cc: i16,
-    pub ss: i16,
+    pub org: [i16; 3],
+    pub m: [[i16; 3]; 3],
 }
 
 /// `asm/geom.S`'s argument block (`layout::GEO_ARGS`).
@@ -316,49 +377,50 @@ pub mod geo_args {
     pub const NF: u16 = 5;
     /// u8: right shift of the rotated products (14 - t).
     pub const SH: u16 = 6;
-    /// u8: t, the height's left shift.
+    /// u8: t.
     pub const T: u16 = 7;
-    pub const X0: u16 = 8;
-    pub const Z0: u16 = 10;
-    pub const CC: u16 = 12;
-    pub const SS: u16 = 14;
+    /// i16 × 3: the origin in camera space.
+    pub const ORG: u16 = 8;
+    /// i16 × 9: the rotation, row-major (X row: u, up, v; then Y, Z).
+    pub const M: u16 = 14;
     /// u16: bitmap of the raster pass.
-    pub const BITMAP: u16 = 16;
+    pub const BITMAP: u16 = 32;
     /// out u8: triangles drawn, topmost cell row.
-    pub const TRIS: u16 = 18;
-    pub const TOP: u16 = 19;
-    pub const SIZE: u16 = 20;
+    pub const TRIS: u16 = 34;
+    pub const TOP: u16 = 35;
+    pub const SIZE: u16 = 36;
 }
 
-/// Transform and project one object's vertices (`asm/geom.S` `geo_xform`). With `v` = i8 << t:
-/// `x = x0 + (vx·cc + vy·ss) >> (14 - t)`, `z = z0 + (vx·ss - vy·cc) >> (14 - t)`, `y = vh << t`.
+/// Transform and project one object's vertices (`asm/geom.S` `geo_xform`). With mesh vertex `(a, b, h)`
+/// (u, v, up; i8 << t in Q4): `P_j = org_j + (m[j][0]·a + m[j][1]·h + m[j][2]·b) >> (14 − t)`.
 pub fn xform(scene: &[u8], o: &Obj, v: &mut Verts) {
     let sh = 14 - o.t;
     for i in 0..o.nv as usize {
         let p = o.verts as usize + i * scene::VERTEX;
-        let (a, b, h) = (scene[p] as i8 as i32, scene[p + 1] as i8 as i32, scene[p + 2] as i8 as i16);
-        let x = (o.x0 as i32 + ((a * o.cc as i32 + b * o.ss as i32) >> sh)) as i16;
-        let z = (o.z0 as i32 + ((a * o.ss as i32 - b * o.cc as i32) >> sh)) as i16;
-        let y = h << o.t;
-        v.set(vert::X, i, x);
-        v.set(vert::Y, i, y);
-        v.set(vert::Z, i, z);
-        if z as i32 >= NEAR {
-            let (sx, sy) = project(x, y, z);
+        let (a, b, h) = (scene[p] as i8 as i16, scene[p + 1] as i8 as i16, scene[p + 2] as i8 as i16);
+        let c: [i16; 3] = core::array::from_fn(|j| {
+            let s = mul(o.m[j][0], a) + mul(o.m[j][1], h) + mul(o.m[j][2], b);
+            o.org[j].wrapping_add((s >> sh) as i16)
+        });
+        v.set(vert::X, i, c[0]);
+        v.set(vert::Y, i, c[1]);
+        v.set(vert::Z, i, c[2]);
+        if c[2] as i32 >= NEAR {
+            let (sx, sy) = project(c[0], c[1], c[2]);
             v.set(vert::SX, i, sx);
             v.set(vert::SY, i, sy);
         }
     }
 }
 
-/// A face's depth bucket: the sum of its corners' z, / 32, clamped to 0..255.
+/// A face's depth bucket: [`depth_key`] of its corners' z sum.
 fn key(v: &Verts, idx: [usize; 3]) -> u8 {
     let z = |k: usize| v.get(vert::Z, idx[k]) as i32;
-    ((z(0) + z(1) + z(2)) >> 5).clamp(0, 255) as u8
+    depth_key(z(0) + z(1) + z(2))
 }
 
 /// One object's faces (`asm/geom.S` `geo_faces`): faces wholly in front of the near plane are culled and
-/// pushed; faces straddling it are listed in `w.clip` for [`clip_faces`].
+/// pushed; faces straddling it are listed in `w.clip` (and left out).
 pub fn faces(scene: &[u8], o: &Obj, v: &Verts, w: &mut Work) {
     w.nclip = 0;
     for f in 0..o.nf {
@@ -376,206 +438,263 @@ pub fn faces(scene: &[u8], o: &Obj, v: &Verts, w: &mut Work) {
     }
 }
 
-/// The faces `faces` left in `w.clip`: Sutherland-Hodgman against the near plane (3 or 4 points, a fan).
-fn clip_faces(scene: &[u8], o: &Obj, v: &Verts, w: &mut Work) {
-    for c in 0..w.nclip as usize {
-        let at = o.faces as usize + w.clip[c] as usize * scene::FACE;
-        let idx = [scene[at] as usize, scene[at + 1] as usize, scene[at + 2] as usize];
-        let p = |k: usize| (v.get(vert::X, idx[k]) as i32, v.get(vert::Y, idx[k]) as i32, v.get(vert::Z, idx[k]) as i32);
-        let mut out = [(0i16, 0i16); 4];
-        let mut n = 0;
-        for k in 0..3 {
-            let (a, b) = (p(k), p((k + 1) % 3));
-            if a.2 >= NEAR {
-                out[n] = project(a.0 as i16, a.1 as i16, a.2 as i16);
-                n += 1;
-            }
-            if (a.2 >= NEAR) != (b.2 >= NEAR) {
-                let q = if a.2 >= NEAR { cut(a, b) } else { cut(b, a) };
-                out[n] = project(q.0, q.1, q.2);
-                n += 1;
-            }
-        }
-        let k = key(v, idx);
-        for t in 1..n - 1 {
-            push(w, [out[0].0, out[t].0, out[t + 1].0], [out[0].1, out[t].1, out[t + 1].1], scene[at + 3], k);
-        }
-    }
-}
-
-/// Draw the buckets back to front, whole triangles at a time: triangles drawn and the topmost cell row
-/// (the per-pixel equivalent of [`raster_bands`] while nothing is dropped).
-pub fn raster<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u8) {
-    let (mut tris, mut top) = (0u8, 25u8);
+/// Draw the buckets back to front, whole triangles at a time into `bitmap` (the per-pixel equivalent of
+/// [`raster_bands`] while nothing is dropped): triangles drawn.
+pub fn raster<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> u8 {
+    let mut tris = 0u8;
     for key in (0..256).rev() {
         let mut i = w.head[key];
         while i != NONE {
-            if let Some(t) = setup(bitmap, &w.tri(i)) {
-                walk(hw, &t);
-                tris += 1;
-                top = top.min(t.first >> 3);
+            match activate(bitmap, &w.tri(i)) {
+                Some(Item::Tri(t)) => {
+                    walk(hw, &t);
+                    tris += 1;
+                }
+                Some(Item::Sprite(sp)) => {
+                    for band in 0..BANDS as u8 {
+                        crate::sprite::sprite_band(hw, &sp, band, bitmap.wrapping_add(band as u16 * ROW_STRIDE));
+                    }
+                    tris += 1;
+                }
+                None => {}
             }
             i = w.next[i as usize];
         }
     }
-    (tris, top)
+    tris
 }
 
-/// The cell (column, row) of a position (8.8 texels).
-pub fn cell_of(x: u16, y: u16) -> (u8, u8) {
-    ((x >> 12) as u8, (y >> 12) as u8)
+/// The grid cell (column, row) of a map position (texels · 32).
+pub fn cell_of(u: u16, v: u16) -> (u8, u8) {
+    ((u >> 11) as u8, (v >> 11) as u8)
 }
 
-/// Cull one object (a `scene::OBJECT` record) and, if it may be in view, transform, sort and clip it.
-fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], cam: Camera, look: Look, w: &mut Work, v: &mut Verts, st: &mut Stats) {
-    let (c, s) = (look.c, look.s);
-    let (ox, oy, yaw, mesh) = (u16::from_le_bytes([rec[0], rec[1]]), u16::from_le_bytes([rec[2], rec[3]]), rec[4], rec[5] as usize);
-    // Offsets mod 256 texels, in Q4.
-    let dx = ox.wrapping_sub(cam.x) as i16 >> 4;
-    let dy = oy.wrapping_sub(cam.y) as i16 >> 4;
-    if (dx as i32).abs() > SPAN || (dy as i32).abs() > SPAN {
+/// The big-grid cell of a map position.
+pub fn big_cell_of(u: u16, v: u16) -> (u8, u8) {
+    ((u >> 13) as u8, (v >> 13) as u8)
+}
+
+/// Cull one object (a `scene::OBJECT` record) and, if it may be in view, transform and sort it (the
+/// reference for `asm/geom.S` `wobject`).
+#[inline(never)]
+fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], look: &Look, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+    let (ou, ov) = (u16::from_le_bytes([rec[0], rec[1]]), u16::from_le_bytes([rec[2], rec[3]]));
+    let (oy, yaw, mesh) = (i16::from_le_bytes([rec[4], rec[5]]), rec[6], rec[7] as usize);
+    let (dx, dz) = (Look::offset(ou, look.u), Look::offset(ov, look.v));
+    if dx.abs() > SPAN || dz.abs() > SPAN {
         return;
     }
-    let m = scene::MESHES + (mesh << 3) + (mesh << 1);
-    let r = (scene[m + 7] as i32) << 4;
-    let x0 = (mul(dx, c) + mul(dy, s)) >> 14;
-    let z0 = (mul(dx, s) - mul(dy, c)) >> 14;
-    if z0 + r < NEAR || z0 - r > pop_depth(scene[m + 7], look.scale) || x0.abs() - r > z0 + r {
+    let m = scene::MESHES + mesh * scene::MESH;
+    let rad = scene[m + 7];
+    let c = look.to_camera([dx as i16, oy.wrapping_sub(look.y), dz as i16]);
+    if !sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale)) {
         return;
     }
-    st.objects += 1;
+    st.objects = st.objects.wrapping_add(1);
     // Level of detail: a simpler mesh far away.
     let (lod, lod_z) = (scene[m + 8], (scene[m + 9] as i32) << 4);
-    let m = if lod != 0xFF && z0 > lod_z { scene::MESHES + ((lod as usize) << 3) + ((lod as usize) << 1) } else { m };
-    let d = cam.angle.wrapping_sub(yaw);
+    let m = if lod != 0xFF && c[2] > lod_z { scene::MESHES + lod as usize * scene::MESH } else { m };
+    // Mesh (a, up, b) → world: a rotation by `yaw` about up; then world → camera.
+    let (cy, sy) = (cos(yaw), sin(yaw));
+    let rt = &look.rt;
+    let rot: [[i16; 3]; 3] = core::array::from_fn(|j| {
+        [
+            ((mul(rt[j][0], cy) - mul(rt[j][2], sy)) >> 14) as i16,
+            rt[j][1],
+            ((mul(rt[j][0], sy) + mul(rt[j][2], cy)) >> 14) as i16,
+        ]
+    });
     let ob = Obj {
         verts: rd16(scene, m),
         nv: scene[m + 2].min(MAX_VERTS as u8),
         faces: rd16(scene, m + 3),
         nf: scene[m + 5],
         t: 2 + scene[m + 6],
-        x0: x0 as i16,
-        z0: z0 as i16,
-        cc: cos(d),
-        ss: sin(d),
+        org: c.map(|x| x as i16),
+        m: rot,
     };
     hw.xform(scene, &ob, v);
     hw.faces(scene, &ob, v, w);
-    clip_faces(scene, &ob, v, w);
 }
 
-/// Stream one directory entry's objects from the REU into `CELL_RAM` and cull / draw each. `near`: the
-/// nearest depth (texels) a listed cell's objects can have; the cell is skipped unfetched when even its
-/// largest object would pop in nearer than that.
-fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], entry: usize, near: Option<u8>, cam: Camera, look: Look, w: &mut Work, v: &mut Verts, st: &mut Stats) {
-    // (Records are 6 bytes: x6 as shifts, which the 6502 build would otherwise call a multiply for.)
-    let at = rd16(scene, scene::DIR) as usize + (entry << 2);
-    let n = scene[at + 2].min(CELL_MAX as u8) as u16;
+/// Stream one cell's objects (directory entry at `DIR_RAM + at`) from the REU into `CELL_RAM` and cull /
+/// draw each.
+#[inline(never)]
+fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+    let n = hw.peek(DIR_RAM + at + 2).min(CELL_MAX as u8) as u16;
     if n == 0 {
         return;
     }
-    if let Some(near) = near {
-        let rmax = scene[at + 3];
-        if (near as i32) << 4 > pop_depth(rmax, look.scale) + ((rmax as i32) << 4) {
-            return;
-        }
-    }
-    let first = rd16(scene, at);
-    let six = |v: u16| (v << 2) + (v << 1);
-    let offset = ((first as u32) << 2) + ((first as u32) << 1);
-    crate::hw::fetch(hw, crate::format::OBJECTS + offset, CELL_RAM, six(n));
-    st.cells += 1;
+    let first = hw.peek(DIR_RAM + at) as u32 | (hw.peek(DIR_RAM + at + 1) as u32) << 8;
+    crate::hw::fetch(hw, crate::format::OBJ_RECORDS + (first << 3), CELL_RAM, n << 3);
+    st.cells = st.cells.wrapping_add(1);
     let mut p = CELL_RAM;
     for _ in 0..n {
         let mut rec = [0u8; scene::OBJECT];
         for (k, b) in rec.iter_mut().enumerate() {
             *b = hw.peek(p + k as u16);
         }
-        object(hw, scene, &rec, cam, look, w, v, st);
+        object(hw, scene, &rec, look, w, v, st);
         p += scene::OBJECT as u16;
     }
 }
 
-/// Cull, transform, clip and sort the objects that may be in view into `w`'s depth buckets (drawn by
-/// [`raster_bands`] on the host, `asm/geom.S` band by band on the C64). `bitmap` is unused.
-/// The candidates: the global list, then the cells of this angle's visibility list (`format::vis_list`),
-/// each streamed from the REU.
-#[inline(never)]
-pub fn draw<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], cam: Camera, bitmap: u16, w: &mut Work, v: &mut Verts) -> Stats {
-    let mut st = Stats::default();
-    w.n = 0;
-    w.dropped = 0;
-    w.head.fill(NONE);
-    let look = Look { c: cos(cam.angle), s: sin(cam.angle), scale: pop_scale(cam.pop) };
-    cell(hw, scene, scene::GLOBAL, None, cam, look, w, v, &mut st);
-    crate::hw::fetch(hw, crate::format::vis_list(cam.angle), VIS_RAM, crate::format::VIS_STRIDE as u16);
-    let (cx, cy) = cell_of(cam.x, cam.y);
-    let n = hw.peek(VIS_RAM);
-    // Entries run far to near, each with the nearest depth its cell's objects can have.
-    for k in 0..n as u16 {
-        let near = hw.peek(VIS_RAM + VIS_DEPTH + k);
-        let off = hw.peek(VIS_RAM + 1 + k);
-        let (dx, dy) = (((off << 4) as i8) >> 4, (off as i8) >> 4);
-        let col = (cx as i8).wrapping_add(dx) as u8 & (GRID as u8 - 1);
-        let row = (cy as i8).wrapping_add(dy) as u8 & (GRID as u8 - 1);
-        cell(hw, scene, row as usize * GRID + col as usize, Some(near), cam, look, w, v, &mut st);
+/// One grid's walk this frame: the rows `nv` of `nu` cells round the camera (clipped to the map), their
+/// directory entries (row by row from `dir`, `stride` bytes apart), the first cell's centre in camera
+/// space (`base`, Q4) and the steps one cell east and north (`eu`, `ev`), and the cells' bounding
+/// sphere (`r`, Q4: half-diagonal plus padding) and reach (`far`). An object's centre is within `rn`
+/// (Q4) of its cell's centre. All camera-space sums stay in i16.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GridWalk {
+    pub dir: u32,
+    pub stride: u16,
+    pub nu: u8,
+    pub nv: u8,
+    pub base: [i16; 3],
+    pub eu: [i16; 3],
+    pub ev: [i16; 3],
+    pub r: i16,
+    pub far: i16,
+    pub rn: i16,
+}
+
+impl GridWalk {
+    /// The grid of `grid`² cells of `cell_q` (Q4, a power of two) whose directory is at `dir`, within
+    /// `reach` cells of the camera's; `pad`: how far (Q4) beyond its cell an object can reach.
+    pub fn new(look: &Look, dir: u32, grid: usize, cell_q: i32, reach: i32, pad: i32) -> Self {
+        // Q8 texels → cells.
+        let shift = cell_q.trailing_zeros() + 4;
+        let (cu, cv) = (look.u >> shift, look.v >> shift);
+        let (u0, u1) = ((cu - reach).max(0), (cu + reach).min(grid as i32 - 1));
+        let (v0, v1) = ((cv - reach).max(0), (cv + reach).min(grid as i32 - 1));
+        if u0 > u1 || v0 > v1 {
+            return GridWalk::default();
+        }
+        let half = cell_q >> 1;
+        let first = |c: i32, cam: i32| (c * cell_q + half - (cam >> 4)) as i16;
+        let base = look.to_camera([first(u0, look.u), (8 * Q as i16).wrapping_sub(look.y), first(v0, look.v)]);
+        let (eu, ev) = (look.to_camera([cell_q as i16, 0, 0]), look.to_camera([0, 0, cell_q as i16]));
+        GridWalk {
+            dir: dir + ((v0 as u32 * grid as u32 + u0 as u32) << 2),
+            stride: (grid as u16) << 2,
+            nu: (u1 - u0 + 1) as u8,
+            nv: (v1 - v0 + 1) as u8,
+            base: base.map(|x| x as i16),
+            eu: eu.map(|x| x as i16),
+            ev: ev.map(|x| x as i16),
+            // Half-diagonal (< 0.75 cell) plus the objects' reach and height.
+            r: (half + (half >> 1) + pad) as i16,
+            far: (FAR + pad) as i16,
+            // 3/4 of a cell covers the half-diagonal (0.71) with the centres' height (9 texels) too.
+            rn: (half + (half >> 1)) as i16,
+        }
     }
-    let _ = bitmap;
+}
+
+/// The frame's grids: the big one (mountains), then the fine one.
+pub fn grids(look: &Look) -> [GridWalk; 2] {
+    use crate::format::{BIG_DIR, OBJ_DIR};
+    [
+        GridWalk::new(look, BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_REACH, 255 * Q),
+        GridWalk::new(look, OBJ_DIR, GRID, CELL * Q, REACH, (CELL_PAD + 16) * Q),
+    ]
+}
+
+/// Walk one grid ([`GridWalk`]): fetch each row's directory entries to `DIR_RAM`; stream every cell
+/// whose sphere may be in view and that holds an object big enough to have popped in (the reference
+/// for `asm/geom.S` `geo_walk`).
+#[inline(never)]
+fn grid<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], look: &Look, g: &GridWalk, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+    let add = |a: [i16; 3], b: [i16; 3]| [a[0].wrapping_add(b[0]), a[1].wrapping_add(b[1]), a[2].wrapping_add(b[2])];
+    let n = g.nu as u16;
+    let (mut row, mut dir) = (g.base, g.dir);
+    for _ in 0..g.nv {
+        crate::hw::fetch(hw, dir, DIR_RAM, n << 2);
+        let mut c = row;
+        for k in 0..n {
+            let cc = c.map(|x| x as i32);
+            let r = g.r as i32;
+            // Skipped unfetched when even its largest object (radius `rmax`) would pop in nearer than
+            // any object of the cell can be.
+            let rmax = hw.peek(DIR_RAM + (k << 2) + 3);
+            if sphere_visible(cc, r, g.far as i32) && cc[2] - g.rn as i32 - ((rmax as i32) << 4) <= pop_depth(rmax, look.scale) {
+                cell(hw, scene, k << 2, look, w, v, st);
+            }
+            c = add(c, g.eu);
+        }
+        row = add(row, g.ev);
+        dir += g.stride as u32;
+    }
+}
+
+/// Cull, transform and sort the objects that may be in view into `w`'s depth buckets (drawn band by
+/// band by [`Bands`] on the host, `asm/geom.S` on the C64): the big grid's cells, then the grid's, each
+/// streamed from the REU. Faces crossing the near plane are left out.
+#[inline(never)]
+pub fn draw<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], view: &View, w: &mut Work, v: &mut Verts) -> Stats {
+    let mut st = Stats::default();
+    w.clear();
+    let look = Look::new(view);
+    for g in grids(&look) {
+        grid(hw, scene, &look, &g, w, v, &mut st);
+    }
     st.dropped = w.dropped;
     st
 }
 
-/// Offset of the per-entry depths in a visibility list (`format::vis_list`): for entry k, the nearest
-/// camera-space depth (texels, floored, 0 if behind) of any object centre its cell can hold.
-pub const VIS_DEPTH: u16 = 128;
+/// `asm/geom.S` `geo_walk`'s argument block (`layout::WALK_ARGS`): what [`draw`] uses, written once a
+/// frame by [`walk_args`].
+pub mod walk {
+    /// i16 × 9: `Look::rt`, row-major.
+    pub const RT: u16 = 0;
+    /// i32: the camera's u and v (Q8 texels); i16: its height (Q4); i16: the pop scale.
+    pub const U: u16 = 18;
+    pub const V: u16 = 22;
+    pub const Y: u16 = 26;
+    pub const SCALE: u16 = 28;
+    /// Two [`super::GridWalk`]s of `GRID_LEN` bytes: dir u24, stride u16, nu, nv, base/eu/ev 3 × i16 each,
+    /// r, far, rn i16.
+    pub const GRIDS: u16 = 30;
+    pub const GRID_LEN: u16 = 31;
+    /// out u8: objects drawn, cells streamed.
+    pub const OBJECTS: u16 = GRIDS + 2 * GRID_LEN;
+    pub const CELLS: u16 = OBJECTS + 1;
+    pub const SIZE: u16 = CELLS + 1;
+}
 
-/// The cells (offsets from the camera's cell, within [`REACH`]) that can hold an object the per-object
-/// cull in [`draw`] accepts when the camera looks along `angle`, far to near, each with its nearest depth
-/// (host bake). An object of
-/// horizontal radius r <= [`CELL_PAD`] is accepted only if its centre is in `NEAR - r <= z <= FAR + r`,
-/// `|x| <= z + 2r`; its centre is anywhere in its cell and the camera anywhere in its own, so a cell
-/// offset (i, j) covers centres at offsets in `(16i - 16, 16i + 16) × (16j - 16, 16j + 16)` texels. Those
-/// squares are tested against the acceptance region with r = `CELL_PAD` by separating axes.
-#[cfg(feature = "host")]
-pub fn visible_cells(angle: u8) -> Vec<(i8, i8, u8)> {
-    let a = angle as f64 / 256.0 * core::f64::consts::TAU;
-    let (s, c) = a.sin_cos();
-    let to_cam = |p: (f64, f64)| (p.0 * c + p.1 * s, p.0 * s - p.1 * c);
-    let (pad, q) = (CELL_PAD as f64, Q as f64);
-    let (zmin, zmax) = (NEAR as f64 / q - pad, FAR as f64 / q + pad);
-    // The acceptance region (camera space x, z), widened by half a texel for fixed-point rounding.
-    let e = 0.5;
-    let region = [(zmin + 2.0 * pad + e, zmin - e), (zmax + 2.0 * pad + e, zmax + e), (-(zmax + 2.0 * pad + e), zmax + e), (-(zmin + 2.0 * pad + e), zmin - e)];
-    let separated = |pa: &[(f64, f64)], pb: &[(f64, f64)]| {
-        for poly in [pa, pb] {
-            for k in 0..poly.len() {
-                let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
-                let axis = (q.1 - p.1, p.0 - q.0);
-                let proj = |pts: &[(f64, f64)]| {
-                    pts.iter().map(|t| t.0 * axis.0 + t.1 * axis.1).fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)))
-                };
-                let ((a0, a1), (b0, b1)) = (proj(pa), proj(pb));
-                if a1 < b0 || b1 < a0 {
-                    return true;
-                }
-            }
+/// Write `geo_walk`'s arguments for `view` at `at`.
+pub fn walk_args<H: Hw + ?Sized>(hw: &mut H, at: u16, view: &View) {
+    let look = Look::new(view);
+    let mut p = at;
+    let mut put = |hw: &mut H, bytes: &[u8]| {
+        for &b in bytes {
+            hw.poke(p, b);
+            p += 1;
         }
-        false
     };
-    let mut out = Vec::new();
-    for j in -REACH..=REACH {
-        for i in -REACH..=REACH {
-            let (x0, x1, y0, y1) = ((i * CELL - CELL) as f64, (i * CELL + CELL) as f64, (j * CELL - CELL) as f64, (j * CELL + CELL) as f64);
-            let square = [to_cam((x0, y0)), to_cam((x1, y0)), to_cam((x1, y1)), to_cam((x0, y1))];
-            if !separated(&square, &region) {
-                let centre = to_cam(((i * CELL) as f64, (j * CELL) as f64));
-                let near = square.iter().map(|p| p.1).fold(f64::MAX, f64::min) - e;
-                out.push((i as i8, j as i8, centre.1, near.floor().clamp(0.0, 255.0) as u8));
-            }
+    for row in &look.rt {
+        for &x in row {
+            put(hw, &x.to_le_bytes());
         }
     }
-    out.sort_by(|a, b| b.2.total_cmp(&a.2));
-    out.into_iter().map(|(i, j, _, near)| (i, j, near)).collect()
+    put(hw, &look.u.to_le_bytes());
+    put(hw, &look.v.to_le_bytes());
+    put(hw, &look.y.to_le_bytes());
+    put(hw, &look.scale.to_le_bytes());
+    for g in grids(&look) {
+        put(hw, &g.dir.to_le_bytes()[..3]);
+        put(hw, &g.stride.to_le_bytes());
+        put(hw, &[g.nu, g.nv]);
+        for vec in [g.base, g.eu, g.ev] {
+            for x in vec {
+                put(hw, &x.to_le_bytes());
+            }
+        }
+        put(hw, &g.r.to_le_bytes());
+        put(hw, &g.far.to_le_bytes());
+        put(hw, &g.rn.to_le_bytes());
+    }
+    put(hw, &[0, 0]);
 }
 
 /// An edge's x (Q16 pixels) on successive line centres.
@@ -646,7 +765,7 @@ pub fn setup(bitmap: u16, t: &Tri) -> Option<Walk> {
         v.swap(0, 1);
     }
     let first = line_at(v[0].1).max(0);
-    let end = line_at(v[2].1).min(200);
+    let end = line_at(v[2].1).min(LINES);
     if first >= end {
         return None;
     }
@@ -708,9 +827,12 @@ pub fn bin(w: &Work) -> ([u8; 256], u16, [[u8; 256]; BANDS], [u8; BANDS]) {
         let mut i = w.head[key];
         while i != NONE {
             let t = w.tri(i);
-            let top = t.y[0].min(t.y[1]).min(t.y[2]) as i32;
-            let first = line_at(top).max(0);
-            if first < 200 {
+            let first = if t.shade & SPRITE != 0 {
+                (t.y[0] as i32).max(0)
+            } else {
+                line_at(t.y[0].min(t.y[1]).min(t.y[2]) as i32).max(0)
+            };
+            if first < LINES {
                 let b = (first >> 3) as usize;
                 bins[b][lens[b] as usize] = n as u8;
                 lens[b] += 1;
@@ -723,34 +845,48 @@ pub fn bin(w: &Work) -> ([u8; 256], u16, [[u8; 256]; BANDS], [u8; BANDS]) {
     (order, n, bins, lens)
 }
 
-/// Cell rows (bands) of the screen.
-pub const BANDS: usize = 25;
-
-/// Draw the sorted triangles band by band, as the C64 publishes them (the reference for `asm/geom.S`
+/// The sorted triangles drawn band by band, as the C64 publishes them (the reference for `asm/geom.S`
 /// `geo_bin` / `geo_activate` / `geo_draw`): a triangle is set up when its first band comes, joins the
 /// active list in painter's order (at most [`POOL`]; the rest are dropped), is walked one row per band
-/// and leaves after its last. Per pixel this is the whole-frame painter's order. Returns (triangles,
-/// topmost band drawn, dropped).
-pub fn raster_bands<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u8, u8) {
-    let (order, _, bins, lens) = bin(w);
-    let mut active: [(u8, Walk); POOL] = [(0, Walk::default()); POOL];
-    let mut n = 0usize;
-    let (mut tris, mut top, mut dropped) = (0u8, 25u8, 0u8);
-    for band in 0..BANDS {
+/// and leaves after its last. Per pixel this is the whole-frame painter's order.
+pub struct Bands {
+    order: [u8; 256],
+    bins: [[u8; 256]; BANDS],
+    lens: [u8; BANDS],
+    active: [(u8, Item); POOL],
+    n: usize,
+    /// Triangles and sprites set up, and dropped (pool full).
+    pub tris: u8,
+    pub dropped: u8,
+}
+
+impl Bands {
+    /// `asm/geom.S` `geo_bin`.
+    pub fn new(w: &Work) -> Self {
+        let (order, _, bins, lens) = bin(w);
+        Bands { order, bins, lens, active: [(0, Item::default()); POOL], n: 0, tris: 0, dropped: 0 }
+    }
+
+    /// Band `band`'s rows of the active items into the 320-byte row at `row` (`geo_activate`, then
+    /// `geo_draw`: the C64 draws into `STAGE`).
+    pub fn band<H: Hw + ?Sized>(&mut self, hw: &mut H, w: &Work, band: usize, row: u16) {
+        // Set-up bitmap such that this band's row lands at `row`.
+        let bitmap = row.wrapping_sub(band as u16 * ROW_STRIDE);
         // Activate this band's newcomers (in painter's order), then merge them into the active list.
-        let mut new: [(u8, Walk); POOL] = [(0, Walk::default()); POOL];
+        let mut new: [(u8, Item); POOL] = [(0, Item::default()); POOL];
         let mut m = 0usize;
-        for &seq in &bins[band][..lens[band] as usize] {
-            let Some(walk) = setup(bitmap, &w.tri(order[seq as usize])) else { continue };
-            if n + m >= POOL {
-                dropped = dropped.saturating_add(1);
+        for &seq in &self.bins[band][..self.lens[band] as usize] {
+            let Some(item) = activate(bitmap, &w.tri(self.order[seq as usize])) else { continue };
+            if self.n + m >= POOL {
+                self.dropped = self.dropped.saturating_add(1);
                 continue;
             }
-            new[m] = (seq, walk);
+            new[m] = (seq, item);
             m += 1;
-            tris += 1;
+            self.tris += 1;
         }
-        let mut merged: [(u8, Walk); POOL] = [(0, Walk::default()); POOL];
+        let (n, active) = (self.n, &self.active);
+        let mut merged: [(u8, Item); POOL] = [(0, Item::default()); POOL];
         let (mut i, mut j) = (0, 0);
         for slot in merged.iter_mut().take(n + m) {
             *slot = if j >= m || (i < n && active[i].0 < new[j].0) {
@@ -761,23 +897,62 @@ pub fn raster_bands<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u
                 new[j - 1]
             };
         }
-        active = merged;
-        n += m;
-        if n > 0 {
-            top = top.min(band as u8);
-        }
+        self.active = merged;
+        self.n += m;
         let mut kept = 0;
-        for k in 0..n {
-            let (seq, mut walk) = active[k];
-            walk_row(hw, &mut walk, band as u8);
-            if walk.end as usize > band * 8 + 8 {
-                active[kept] = (seq, walk);
+        for k in 0..self.n {
+            let (seq, mut item) = self.active[k];
+            let end = match &mut item {
+                Item::Tri(walk) => {
+                    walk.bitmap = bitmap;
+                    walk_row(hw, walk, band as u8);
+                    walk.end
+                }
+                Item::Sprite(s) => {
+                    crate::sprite::sprite_band(hw, s, band as u8, row);
+                    s.end
+                }
+            };
+            if end as usize > band * 8 + 8 {
+                self.active[kept] = (seq, item);
                 kept += 1;
             }
         }
-        n = kept;
+        self.n = kept;
     }
-    (tris, top, dropped)
+}
+
+/// All bands of [`Bands`] straight into `bitmap`'s rows: (triangles, dropped).
+pub fn raster_bands<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u8) {
+    let mut b = Bands::new(w);
+    for band in 0..BANDS {
+        b.band(hw, w, band, bitmap.wrapping_add(band as u16 * ROW_STRIDE));
+    }
+    (b.tris, b.dropped)
+}
+
+/// An active item of the band pipeline: a set-up triangle or a placed sprite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item {
+    Tri(Walk),
+    Sprite(crate::sprite::Placed),
+}
+
+impl Default for Item {
+    fn default() -> Self {
+        Item::Tri(Walk::default())
+    }
+}
+
+/// Set up an item when its first band comes: a triangle's edges, or a sprite's screen clip.
+pub fn activate(bitmap: u16, t: &Tri) -> Option<Item> {
+    if t.shade & SPRITE != 0 {
+        let block = t.x[1] as u16 as u32 | ((t.x[2] as u16 & 0xFF) as u32) << 16;
+        let shift = (t.x[2] as u16 >> 8) as u8;
+        crate::sprite::place(block, shift, t.y[2] as u8, t.y[1] as u16, t.x[0], t.y[0]).map(Item::Sprite)
+    } else {
+        setup(bitmap, t).map(Item::Tri)
+    }
 }
 
 /// Draw one triangle; returns its top cell row, or `None` when it covers no line centre.

@@ -1,5 +1,6 @@
-//! The test scene (host): stunt pieces and trackside furniture placed along the circuit, baked into the
-//! scene block `geom::draw` reads (`geom::scene` layout).
+//! The 3D scene (host): low-poly meshes (trees, buildings, pad markers, mountains) placed on the
+//! generated island (`world`), baked into the scene block, the object directory and records that
+//! `geom::draw` streams (`geom::scene` layout, `format::OBJ_DIR`).
 
 use crate::format::SCENE_MAX;
 use crate::geom::scene as fmt;
@@ -8,20 +9,29 @@ use std::f32::consts::TAU;
 /// The sun (plane axes u, v, then up), for the faces' baked Lambert shade.
 const SUN: [f32; 3] = [0.45, 0.35, 0.82];
 
-/// Shade ramps (`poly::PATTERNS` indices), lit to dark.
+/// Shade ramps (`poly::PATTERNS` indices: codes 0 green, 1 light blue, 2 brown, 3 blue), lit to dark.
 #[derive(Clone, Copy)]
 pub enum Material {
-    Grey,
-    Red,
-    White,
+    /// Trees: green and blue (plain green would vanish on the grass).
+    Foliage,
+    /// Mountains: brown, lit with light blue, shaded with blue.
+    Rock,
+    /// Walls: light blue to brown.
+    Wall,
+    /// Roofs: brown to blue.
+    Roof,
+    /// Pad markers: light blue.
+    Marker,
 }
 
 impl Material {
     fn ramp(self) -> [u8; 4] {
         match self {
-            Material::Grey => [5, 1, 11, 10],
-            Material::Red => [8, 3, 9, 15],
-            Material::White => [2, 5, 1, 11],
+            Material::Foliage => [9, 15, 3, 3],
+            Material::Rock => [5, 2, 8, 13],
+            Material::Wall => [1, 5, 11, 2],
+            Material::Roof => [2, 8, 13, 3],
+            Material::Marker => [1, 1, 7, 7],
         }
     }
 }
@@ -127,138 +137,169 @@ impl Mesh {
         }
     }
 
-    /// Wedge ramp: `w` wide (x), rising along -y over `len` to `h`.
-    pub fn ramp(&mut self, w: f32, len: f32, h: f32) {
-        let (x0, x1, y0, y1) = (-w / 2.0, w / 2.0, len / 2.0, -len / 2.0);
-        let surface = [[x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, h], [x0, y1, h]];
-        self.quad(surface, [0.0, len, h * 4.0], Material::Grey);
-        self.quad([[x0, y1, 0.0], [x1, y1, 0.0], [x1, y1, h], [x0, y1, h]], [0.0, -1.0, 0.0], Material::Red);
-        for (x, out) in [(x0, -1.0), (x1, 1.0)] {
-            let i = [self.vert([x, y0, 0.0]), self.vert([x, y1, 0.0]), self.vert([x, y1, h])];
-            let (a, b, c) = (self.verts[i[0]], self.verts[i[1]], self.verts[i[2]]);
-            let n = normal(a, b, c);
-            let f = if n[0] * out > 0.0 { [i[0], i[1], i[2]] } else { [i[0], i[2], i[1]] };
-            let lit = dot([out, 0.0, 0.0], SUN);
-            self.faces.push((f, if lit > 0.2 { 8 } else { 3 }));
-        }
+    /// A gabled roof over `lo..hi` (u, v) from eaves height `h0` to a ridge at `h1` along u.
+    pub fn gable(&mut self, lo: [f32; 2], hi: [f32; 2], h0: f32, h1: f32, wall: Material, roof: Material) {
+        let mv = (lo[1] + hi[1]) / 2.0;
+        let (a, b, c, d) = ([lo[0], lo[1], h0], [hi[0], lo[1], h0], [hi[0], hi[1], h0], [lo[0], hi[1], h0]);
+        let (r0, r1) = ([lo[0], mv, h1], [hi[0], mv, h1]);
+        self.quad([a, b, r1, r0], [0.0, -1.0, 1.0], roof);
+        self.quad([d, c, r1, r0], [0.0, 1.0, 1.0], roof);
+        self.tri([a, d, r0], [-1.0, 0.0, 0.0], wall);
+        self.tri([b, c, r1], [1.0, 0.0, 0.0], wall);
     }
 
-    /// A vertical loop: `n` segments of a band `w` wide (x), radius `r` (inner surface) and `t` thick,
-    /// standing on the ground, its axis along x.
-    pub fn looping(&mut self, n: usize, w: f32, r: f32, t: f32) {
-        let at = |k: usize, rad: f32, x: f32| {
-            let a = k as f32 / n as f32 * TAU;
-            [x, rad * a.sin(), r + t - rad * a.cos()]
+    /// A mountain: a ring of `n` jittered points (radius `r`, from `seed`) round a peak `h` high.
+    pub fn mountain(&mut self, n: usize, r: f32, h: f32, seed: u32) {
+        let jit = |k: usize, s: u32| {
+            let x = (k as u32).wrapping_mul(0x9E37_79B1) ^ seed.wrapping_mul(0x85EB_CA77) ^ s;
+            let x = (x ^ x >> 15).wrapping_mul(0x2C1B_3C6D);
+            (x >> 8) as f32 / (1u32 << 24) as f32
         };
+        let ring: Vec<[f32; 3]> = (0..n)
+            .map(|k| {
+                let a = (k as f32 + 0.4 * jit(k, 1)) / n as f32 * TAU;
+                let rr = r * (0.7 + 0.3 * jit(k, 2));
+                [rr * a.cos(), rr * a.sin(), 0.0]
+            })
+            .collect();
+        let peak = [r * 0.15 * (jit(0, 3) - 0.5), r * 0.15 * (jit(0, 4) - 0.5), h];
         for k in 0..n {
-            let k1 = (k + 1) % n;
-            let (x0, x1) = (-w / 2.0, w / 2.0);
-            let mid = (k as f32 + 0.5) / n as f32 * TAU;
-            let radial = [0.0, mid.sin(), -mid.cos()];
-            let inward = [0.0, -radial[1], -radial[2]];
-            // Inner (driving) surface faces the loop's axis; outer faces away.
-            let stripe = if k % 2 == 0 { Material::Grey } else { Material::White };
-            self.quad([at(k, r, x0), at(k, r, x1), at(k1, r, x1), at(k1, r, x0)], inward, stripe);
-            self.quad([at(k, r + t, x0), at(k, r + t, x1), at(k1, r + t, x1), at(k1, r + t, x0)], radial, Material::Grey);
-            for (x, out) in [(x0, -1.0), (x1, 1.0)] {
-                self.quad([at(k, r, x), at(k, r + t, x), at(k1, r + t, x), at(k1, r, x)], [out, 0.0, 0.0], Material::Red);
-            }
+            let (p, q) = (ring[k], ring[(k + 1) % n]);
+            let out = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0, h * 0.3];
+            self.tri([p, q, peak], out, Material::Rock);
         }
     }
 }
 
+/// An object on the map: position (texels), base height (texels above the ground), yaw (256 a turn),
+/// mesh.
+#[derive(Clone, Copy, Debug)]
 pub struct Object {
-    pub x: f32,
+    pub u: f32,
+    pub v: f32,
     pub y: f32,
-    /// 256 steps a turn; the mesh's -v axis points along it (as the camera's view does).
     pub yaw: u8,
     pub mesh: u8,
 }
 
-/// The track direction at `t` as a yaw, and the unit tangent and left normal.
-/// mode7's circuit centreline (`../mode7/src/map.rs`), which these placeholder props still follow until
-/// chopper's own objects replace them.
-pub fn centre(t: f32) -> [f32; 2] {
-    let a = t * TAU;
-    [128.0 + 92.0 * a.cos() + 18.0 * (3.0 * a).cos(), 128.0 + 80.0 * a.sin() + 22.0 * (2.0 * a).sin()]
+/// Mesh indices.
+pub mod mesh {
+    pub const TREE: u8 = 0;
+    pub const HOUSE: u8 = 1;
+    pub const HANGAR: u8 = 2;
+    pub const TOWER: u8 = 3;
+    pub const MARKER: u8 = 4;
+    /// Three mountain shapes.
+    pub const MOUNTAIN: u8 = 5;
+    pub const MOUNTAINS: u8 = 3;
 }
 
-fn frame_at(t: f32) -> ([f32; 2], u8, [f32; 2]) {
-    let p = centre(t);
-    let q = centre(t + 1e-4);
-    let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
-    let l = (dx * dx + dy * dy).sqrt();
-    let a = dx.atan2(-dy);
-    let yaw = ((a / TAU * 256.0).round() as i32).rem_euclid(256) as u8;
-    (p, yaw, [dy / l, -dx / l])
-}
-
+/// The meshes, in texels (u, v, up; one texel is about 8 m).
 pub fn meshes() -> Vec<Mesh> {
     let mut out = Vec::new();
-    // 0: traffic cone with a triangular base, the cheapest that reads as a cone (red, a white stripe, red
-    // tip; there is no orange in the four colours). Beyond 32 texels (under ~15 pixels tall) mesh 4, a
-    // plain red one, is drawn instead.
+    // Tree: a three-sided spike, about 24 m tall.
     let mut m = Mesh::default();
-    m.cone(3, 1.6, &[(1.2, 1.15, Material::Red), (1.9, 0.85, Material::White)], (3.2, Material::Red));
-    m.lod = Some((4, 32));
+    m.cone(3, 0.9, &[], (3.0, Material::Foliage));
     out.push(m);
-    // 1: start gantry over the track (the camera, 12 texels up, passes under the beam).
+    // House: walls and a gabled roof.
     let mut m = Mesh::default();
-    for x in [-14.0f32, 13.0] {
-        m.cuboid([x, -0.5, 0.0], [x + 1.0, 0.5, 18.0], Material::Grey, Material::Grey);
+    m.cuboid([-1.5, -1.0, 0.0], [1.5, 1.0, 1.0], Material::Wall, Material::Roof);
+    m.gable([-1.5, -1.0], [1.5, 1.0], 1.0, 1.8, Material::Wall, Material::Roof);
+    out.push(m);
+    // Hangar: a long box with a low roof.
+    let mut m = Mesh::default();
+    m.cuboid([-5.0, -3.0, 0.0], [5.0, 3.0, 2.5], Material::Wall, Material::Roof);
+    out.push(m);
+    // Control tower: a shaft and a cab.
+    let mut m = Mesh::default();
+    m.cuboid([-0.5, -0.5, 0.0], [0.5, 0.5, 5.0], Material::Wall, Material::Wall);
+    m.cuboid([-1.2, -1.2, 5.0], [1.2, 1.2, 6.2], Material::Roof, Material::Roof);
+    out.push(m);
+    // Pad marker: a small pyramid.
+    let mut m = Mesh::default();
+    m.cone(3, 0.5, &[], (0.8, Material::Marker));
+    out.push(m);
+    // Mountains.
+    for (k, (r, h)) in [(40.0, 34.0), (30.0, 22.0), (50.0, 28.0)].into_iter().enumerate() {
+        let mut m = Mesh::default();
+        m.mountain(6, r, h, 17 + k as u32);
+        out.push(m);
     }
-    m.cuboid([-14.0, -1.0, 16.0], [14.0, 1.0, 19.0], Material::White, Material::Grey);
-    out.push(m);
-    // 2: jump ramp.
-    let mut m = Mesh::default();
-    m.ramp(10.0, 16.0, 5.0);
-    out.push(m);
-    // 3: the loop.
-    let mut m = Mesh::default();
-    m.looping(16, 8.0, 10.0, 1.0);
-    out.push(m);
-    // 4: the far cone.
-    let mut m = Mesh::default();
-    m.cone(3, 1.6, &[], (3.2, Material::Red));
-    out.push(m);
     out
 }
 
-pub fn objects() -> Vec<Object> {
+fn hash(u: i32, v: i32, salt: u32) -> f32 {
+    let x = (u as u32).wrapping_mul(0x9E37_79B1) ^ (v as u32).wrapping_mul(0x85EB_CA77) ^ salt.wrapping_mul(0xC2B2_AE3D);
+    let x = (x ^ x >> 15).wrapping_mul(0x2C1B_3C6D);
+    ((x ^ x >> 13) >> 8) as f32 / (1u32 << 24) as f32
+}
+
+/// The objects on `world`: mountains along the range, trees in the forests, the base at the first pad
+/// (hangar, tower, houses), markers at every pad's corners and a few houses by the others.
+pub fn objects(world: &crate::world::World) -> Vec<Object> {
+    use crate::world::texel;
+    const N: usize = crate::floor::MAP_TEXELS as usize;
+    let at = |u: usize, v: usize| world.texels[v * N + u];
     let mut out = Vec::new();
-    // Cones along both sides, every 1/64 of the lap (~8 texels apart).
-    for i in 0..64 {
-        let t = (i as f32 + 0.5) / 64.0;
-        let (p, yaw, n) = frame_at(t);
-        for side in [1.0, -1.0] {
-            out.push(Object { x: p[0] + n[0] * 14.0 * side, y: p[1] + n[1] * 14.0 * side, yaw, mesh: 0 });
+    let yaw = |u: i32, v: i32| (hash(u, v, 3) * 256.0) as u8;
+    // Mountains: on a 56-texel lattice (jittered) where the range is high, sunk a texel into the ground.
+    for v in (28..N - 28).step_by(56) {
+        for u in (28..N - 28).step_by(56) {
+            let ju = u as f32 + (hash(u as i32, v as i32, 1) - 0.5) * 30.0;
+            let jv = v as f32 + (hash(u as i32, v as i32, 2) - 0.5) * 30.0;
+            let e = world.elevation[jv as usize * N + ju as usize];
+            if e > 0.5 {
+                let k = (hash(u as i32, v as i32, 4) * mesh::MOUNTAINS as f32) as u8;
+                out.push(Object { u: ju, v: jv, y: -1.0, yaw: yaw(u as i32, v as i32), mesh: mesh::MOUNTAIN + k });
+            }
         }
     }
-    let (p, yaw, _) = frame_at(0.0);
-    out.push(Object { x: p[0], y: p[1], yaw, mesh: 1 });
-    for t in [0.2, 0.55, 0.8] {
-        let (p, yaw, n) = frame_at(t);
-        out.push(Object { x: p[0] + n[0] * 26.0, y: p[1] + n[1] * 26.0, yaw, mesh: 2 });
+    // Trees: one per 10-texel square of forest, about a third of them.
+    for v in (5..N - 5).step_by(10) {
+        for u in (5..N - 5).step_by(10) {
+            let ju = u + (hash(u as i32, v as i32, 5) * 8.0) as usize - 4;
+            let jv = v + (hash(u as i32, v as i32, 6) * 8.0) as usize - 4;
+            if at(ju, jv) == texel::FOREST && hash(u as i32, v as i32, 7) < 0.33 {
+                out.push(Object { u: ju as f32 + 0.5, v: jv as f32 + 0.5, y: 0.0, yaw: yaw(u as i32, v as i32), mesh: mesh::TREE });
+            }
+        }
     }
-    for t in [0.38, 0.68] {
-        let (p, yaw, n) = frame_at(t);
-        // Beside the track, its axis across it so the camera sees the ring.
-        out.push(Object { x: p[0] - n[0] * 30.0, y: p[1] - n[1] * 30.0, yaw: yaw.wrapping_add(64), mesh: 3 });
+    for (k, pad) in world.pads.iter().enumerate() {
+        let (pu, pv, h) = (pad.u as f32, pad.v as f32, pad.half as f32);
+        for (du, dv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            out.push(Object { u: pu + du * (h + 1.5), v: pv + dv * (h + 1.5), y: 0.0, yaw: 0, mesh: mesh::MARKER });
+        }
+        if k == 0 {
+            out.push(Object { u: pu + h + 10.0, v: pv, y: 0.0, yaw: 64, mesh: mesh::HANGAR });
+            out.push(Object { u: pu - h - 6.0, v: pv - h - 2.0, y: 0.0, yaw: 0, mesh: mesh::TOWER });
+            for i in 0..4 {
+                out.push(Object { u: pu - h - 8.0 + 5.0 * i as f32, v: pv + h + 9.0, y: 0.0, yaw: 0, mesh: mesh::HOUSE });
+            }
+        } else {
+            for i in 0..3 {
+                let a = (k * 3 + i) as f32 * 2.1;
+                let o = Object { u: pu + (h + 9.0) * a.cos(), v: pv + (h + 9.0) * a.sin(), y: 0.0, yaw: (a / TAU * 256.0) as u8, mesh: mesh::HOUSE };
+                out.push(o);
+            }
+        }
     }
     out
 }
 
-fn fixed(t: f32) -> u16 {
-    ((t * 256.0).round() as i64).rem_euclid(65536) as u16
+/// The baked scene: the block (meshes, fetched whole at boot), the directory and the records.
+pub struct Baked {
+    pub block: Vec<u8>,
+    pub dir: Vec<u8>,
+    pub records: Vec<u8>,
 }
 
-/// The scene block and the object records (sorted by grid cell, for `format::OBJECTS`).
-pub fn bake() -> (Vec<u8>, Vec<u8>) {
-    bake_with(&meshes(), &objects())
+/// Bake `world`'s scene.
+pub fn bake(world: &crate::world::World) -> Baked {
+    bake_with(&meshes(), &objects(world))
 }
 
-pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> (Vec<u8>, Vec<u8>) {
-    use crate::geom::{CELL_PAD, GRID, cell_of};
+pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
+    use crate::geom::{BIG_GRID, CELL_PAD, GRID, Q, big_cell_of, cell_of};
     let mut out = vec![0u8; fmt::MESHES + meshes.len() * fmt::MESH];
     out[fmt::N_MESHES] = meshes.len() as u8;
     let mut radius = Vec::new();
@@ -274,8 +315,10 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> (Vec<u8>, Vec<u8>) {
             out.extend(v.map(|c| (c * 4.0 / (1 << shift) as f32).round() as i8 as u8));
         }
         let fo = out.len();
+        // The mesh helpers wind for (u, v, up); the camera's axes are (u, up, v), a mirror of those, so
+        // the winding is reversed.
         for (f, shade) in &m.faces {
-            out.extend([f[0] as u8, f[1] as u8, f[2] as u8, *shade]);
+            out.extend([f[0] as u8, f[2] as u8, f[1] as u8, *shade]);
         }
         out[rec..rec + 2].copy_from_slice(&(vo as u16).to_le_bytes());
         out[rec + 2] = m.verts.len() as u8;
@@ -287,27 +330,30 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> (Vec<u8>, Vec<u8>) {
         out[rec + 8] = lod;
         out[rec + 9] = dist;
     }
-    // File each object under its centre's cell; one that reaches past the padding (its mesh's bounding
-    // radius, height included, as the cull uses it) goes in the global list, checked every frame.
-    let global = GRID * GRID;
-    let mut lists: Vec<Vec<[u8; fmt::OBJECT]>> = vec![Vec::new(); global + 1];
+    // File each object under its centre's cell; one that reaches past the padding goes in the big grid.
+    let mut lists: Vec<Vec<[u8; fmt::OBJECT]>> = vec![Vec::new(); GRID * GRID + BIG_GRID * BIG_GRID];
     for o in objects {
-        let (x, y) = (fixed(o.x), fixed(o.y));
-        let (cx, cy) = cell_of(x, y);
-        let at = if radius[o.mesh as usize] as i32 > CELL_PAD { global } else { cy as usize * GRID + cx as usize };
-        let [x0, x1] = x.to_le_bytes();
-        let [y0, y1] = y.to_le_bytes();
-        lists[at].push([x0, x1, y0, y1, o.yaw, o.mesh]);
+        let (u, v) = ((o.u * 32.0).round() as u16, (o.v * 32.0).round() as u16);
+        let r = radius[o.mesh as usize] as i32;
+        let at = if r > CELL_PAD {
+            assert!(r <= 160, "mesh {} too big for the big grid", o.mesh);
+            let (cu, cv) = big_cell_of(u, v);
+            GRID * GRID + cv as usize * BIG_GRID + cu as usize
+        } else {
+            let (cu, cv) = cell_of(u, v);
+            cv as usize * GRID + cu as usize
+        };
+        let y = ((o.y * Q as f32).round() as i16).to_le_bytes();
+        let ([u0, u1], [v0, v1]) = (u.to_le_bytes(), v.to_le_bytes());
+        lists[at].push([u0, u1, v0, v1, y[0], y[1], o.yaw, o.mesh]);
     }
-    let dir = out.len();
-    out[fmt::DIR..fmt::DIR + 2].copy_from_slice(&(dir as u16).to_le_bytes());
-    let mut records = Vec::new();
+    let (mut dir, mut records) = (Vec::new(), Vec::new());
     for l in &lists {
         assert!(l.len() <= crate::layout::CELL_MAX as usize, "{} objects in one cell", l.len());
         let first = (records.len() / fmt::OBJECT) as u16;
-        out.extend(first.to_le_bytes());
-        out.push(l.len() as u8);
-        out.push(l.iter().map(|r| radius[r[5] as usize]).max().unwrap_or(0));
+        dir.extend(first.to_le_bytes());
+        dir.push(l.len() as u8);
+        dir.push(l.iter().map(|r| radius[r[7] as usize]).max().unwrap_or(0));
         for r in l {
             records.extend(r);
         }
@@ -316,23 +362,13 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> (Vec<u8>, Vec<u8>) {
     out[fmt::LEN..fmt::LEN + 2].copy_from_slice(&len.to_le_bytes());
     assert!(out.len() <= SCENE_MAX as usize, "scene block {} bytes", out.len());
     assert!(records.len() <= 0x10000, "{} object records", records.len() / fmt::OBJECT);
-    (out, records)
+    Baked { block: out, dir, records }
 }
 
-/// Write the geometry into an REU image: the scene block, the object records and the 256 visibility
-/// lists.
-pub fn install(reu: &mut [u8], block: &[u8], records: &[u8]) {
-    use crate::format::{OBJECTS, SCENE, VIS_STRIDE, vis_list};
-    reu[SCENE as usize..SCENE as usize + block.len()].copy_from_slice(block);
-    reu[OBJECTS as usize..OBJECTS as usize + records.len()].copy_from_slice(records);
-    for a in 0..=255u8 {
-        let cells = crate::geom::visible_cells(a);
-        assert!(cells.len() < crate::geom::VIS_DEPTH as usize && crate::geom::VIS_DEPTH as u32 * 2 == VIS_STRIDE);
-        let at = vis_list(a) as usize;
-        reu[at] = cells.len() as u8;
-        for (k, (i, j, near)) in cells.iter().enumerate() {
-            reu[at + 1 + k] = (*i as u8 & 15) | (*j as u8) << 4;
-            reu[at + crate::geom::VIS_DEPTH as usize + k] = *near;
-        }
-    }
+/// Write the geometry into an REU image.
+pub fn install(reu: &mut [u8], b: &Baked) {
+    use crate::format::{OBJ_DIR, OBJ_RECORDS, SCENE};
+    reu[SCENE as usize..SCENE as usize + b.block.len()].copy_from_slice(&b.block);
+    reu[OBJ_DIR as usize..OBJ_DIR as usize + b.dir.len()].copy_from_slice(&b.dir);
+    reu[OBJ_RECORDS as usize..OBJ_RECORDS as usize + b.records.len()].copy_from_slice(&b.records);
 }

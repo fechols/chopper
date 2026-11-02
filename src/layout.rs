@@ -40,9 +40,17 @@ pub const BUFFERS: [Buffer; 1] = [Buffer { screen: 0x5C00, bitmap: 0x6000, dd00:
 pub const STAGE: u16 = 0x8C00;
 /// `asm/geom.S`'s band state: the slot pool of active triangles and the band lists (to `$AEFF`).
 pub const BAND_RAM: u16 = 0xA000;
-/// Reserved for the racers' AI: nothing here uses `$AF00-$BFFF`.
-pub const AI_RAM: u16 = 0xAF00;
-pub const AI_RAM_END: u16 = 0xC000;
+/// Sprite drawing (`sprite::sprite_band`, `asm/geom.S`): a frame record, `draw_cols`' job, a sprite band's
+/// start and its on-screen column offsets, and its records (the chunk, in RAM under the KERNAL ROM).
+pub const SPRITE_REC: u16 = 0x8D40;
+pub const JOB: u16 = 0x8D70;
+pub const SPRITE_BSTART: u16 = 0x8D80;
+pub const SPRITE_OFFS: u16 = 0x8D90;
+pub const SPRITE_CHUNK: u16 = 0xF500;
+pub const SPRITE_CHUNK_LEN: u16 = 0x0280;
+const _: () = assert!(STAGE as u32 + ROW_STRIDE as u32 <= SPRITE_REC as u32);
+const _: () = assert!(SPRITE_OFFS as u32 + 2 * (COLS as u32 + 1) <= 0x9000);
+const _: () = assert!(SPRITE_CHUNK as u32 + SPRITE_CHUNK_LEN as u32 <= 0xFFFA);
 
 pub const COLOR_RAM: u16 = 0xD800;
 
@@ -77,7 +85,8 @@ pub const TRI_ARGS: u16 = 0xC7A0;
 
 /// The scene block (`format::SCENE`), fetched at boot: VIC bank 2 below its screen.
 pub const SCENE_RAM: u16 = 0x8000;
-const _: () = assert!(SCENE_RAM as u32 + crate::format::SCENE_MAX as u32 <= STAGE as u32);
+/// (Relocated code runs from `$8300`: target-c64/link.ld `spanram`.)
+const _: () = assert!(SCENE_RAM as u32 + crate::format::SCENE_MAX as u32 <= 0x8300);
 const _: () = assert!(STAGE as u32 + ROW_STRIDE as u32 <= 0x9000);
 /// `fixed::RECIP`, the reciprocal table (2 KiB), and `geom::Verts` (one object's transformed vertices,
 /// `asm/geom.S`) in `$9000-$9FFF`: RAM to the CPU, character ROM to the VIC, so no screen can go there.
@@ -88,24 +97,33 @@ const _: () = assert!(VERTS as u32 + core::mem::size_of::<crate::geom::Verts>() 
 pub const WORK: u16 = 0xE000;
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= 0xFFFA);
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= crate::fixed::SQ_NEG_LO as u32);
-/// `asm/geom.S`'s arguments (`geom::geo_args`).
-pub const GEO_ARGS: u16 = 0xC7C0;
-/// The camera (x, y: 8.8 texels) for `asm/floor.S`, and its mode: in RAM, because the geometry kernels run
-/// between floor rows and use the zero page the floor kernel works in.
-pub const CAM_RAM: u16 = 0xC7D4;
-pub const FLOOR_MODE: u16 = 0xC7D8;
-const _: () = assert!(GEO_ARGS + crate::geom::geo_args::SIZE <= CAM_RAM);
+/// `asm/geom.S`'s arguments (`geom::geo_args`), and a row of the object directory being streamed
+/// (`geom::draw`), after the sprite scratch.
+pub const GEO_ARGS: u16 = 0x8E00;
+/// `asm/geom.S` `geo_walk`'s arguments (`geom::walk`), after the ray arguments.
+pub const WALK_ARGS: u16 = 0xC6A0;
+const _: () = assert!(RAYS as u32 + core::mem::size_of::<crate::floor::SpanArgs>() as u32 <= WALK_ARGS as u32);
+const _: () = assert!(WALK_ARGS as u32 + crate::geom::walk::SIZE as u32 <= POLY_ARGS as u32);
+/// (Relocated code runs from `$9B00`: target-c64/link.ld `vicrom`.)
+const _: () = assert!(VERTS as u32 + core::mem::size_of::<crate::geom::Verts>() as u32 <= 0x9B00);
+pub const DIR_RAM: u16 = 0x8E40;
+/// `asm/geom.S` `geo_xform`'s per-object table (|m| and signs, 27 bytes).
+pub const XFORM_RAM: u16 = 0x8F00;
+const _: () = assert!(DIR_RAM as u32 + 4 * (2 * crate::geom::REACH as u32 + 1) <= XFORM_RAM as u32);
+const _: () = assert!(SPRITE_OFFS as u32 + 2 * (COLS as u32 + 1) <= GEO_ARGS as u32);
+const _: () = assert!(GEO_ARGS + crate::geom::geo_args::SIZE <= DIR_RAM);
+const _: () = assert!(DIR_RAM as u32 + 4 * (2 * crate::geom::REACH as u32 + 1) <= 0x9000);
+/// `asm/floor.S`'s REU address shadows (`SAVE_MID`, `SAVE_BANK`).
+pub const FLOOR_SHADOW: u16 = 0xC7D4;
 
 /// `poly::PATTERNS` for `asm/geom.S`: 16 even-line bytes, then 16 odd-line bytes.
 pub const PATS: u16 = 0xC7E0;
 
 /// Bounce buffer for small REU reads (header, camera entry).
 pub const BOUNCE: u16 = 0xC800;
-/// The frame's visibility list (`format::vis_list`), and one cell's objects as they are streamed in.
-pub const VIS_RAM: u16 = 0xC810;
+/// One cell's objects as they are streamed in.
 pub const CELL_RAM: u16 = 0xC910;
-pub const CELL_MAX: u16 = 60;
-const _: () = assert!(VIS_RAM + crate::format::VIS_STRIDE as u16 <= CELL_RAM);
+pub const CELL_MAX: u16 = 44;
 const _: () = assert!(CELL_RAM + CELL_MAX * crate::geom::scene::OBJECT as u16 <= STATUS);
 /// Status block the host reads (and pokes HOLD / MODE in) over the C64U's REST API.
 pub const STATUS: u16 = 0xCA80;

@@ -15,7 +15,10 @@ pub mod layout;
 pub mod floor;
 pub mod pilot;
 pub mod poly;
+pub mod sprite;
 
+#[cfg(feature = "host")]
+pub mod encode;
 #[cfg(feature = "host")]
 pub mod model;
 #[cfg(feature = "host")]
@@ -24,6 +27,8 @@ pub mod package;
 pub mod palette;
 #[cfg(feature = "host")]
 pub mod png;
+#[cfg(feature = "host")]
+pub mod raster3d;
 #[cfg(feature = "host")]
 pub mod scene;
 #[cfg(feature = "host")]

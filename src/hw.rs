@@ -35,6 +35,10 @@ pub trait Hw {
         }
     }
     /// Draw one cell row of a polygon (`poly::fill_row`; the C64 runs `asm/poly.S`).
+    /// Draw sprite column records (`sprite::draw_cols`; the C64 runs `asm/blit.S` inside `asm/geom.S`).
+    fn draw_cols(&mut self) {
+        crate::sprite::draw_cols(self);
+    }
     fn poly_row(&mut self, row: &crate::poly::Row) {
         crate::poly::fill_row(self, row);
     }

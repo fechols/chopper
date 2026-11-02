@@ -1,8 +1,10 @@
-//! Chopper for the C64 Ultimate, milestone F1: the floor. The autopilot (`chopper::pilot`, shared with
-//! the host) flies a banked circle over the 2048×2048-texel island; every view line is cut into runs by
-//! `chopper::floor::make_line` (the same Rust on both sides, so the frames match the host byte for byte)
-//! and drawn by `asm/floor.S`, one REU DMA per ground byte, into a single buffer one band at a time
-//! (`band_publish`). Pattern: `../mode7/target-c64/src/main.rs`.
+//! Chopper for the C64 Ultimate: the floor and the 3D objects. The autopilot (`chopper::pilot`, shared
+//! with the host) flies a banked circle over the 2048×2048-texel island. Each frame the objects in view
+//! are streamed from the REU, transformed and sorted (`chopper::geom::draw`, `asm/geom.S`); then band by
+//! band every view line is cut into runs (`asm/spans.S`) and drawn by `asm/floor.S`, one REU DMA per
+//! ground byte, the band's triangles go over it (`geo_activate`, `geo_draw`), and the band is published
+//! (`band_publish`). The host renders the same frames byte for byte. Pattern:
+//! `../mode7/target-c64/src/main.rs`.
 //!
 //! Needs the matching `chopper.reu` at REU address 0; until it appears the border flashes, so it may be
 //! uploaded after starting. Fire on joystick 2 (or `STATUS+MODE`) toggles full / line-doubled.
@@ -14,10 +16,10 @@
 use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
-use chopper::format::{COLORS, HEADER, MAGIC, PACKAGE_VERSION};
-use chopper::geom::{Obj, Verts, Work, geo_args};
+use chopper::format::{COLORS, HEADER, MAGIC, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
-use chopper::layout::{self, BOUNCE, BUFFERS, GEO_ARGS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, status};
+use chopper::layout::{self, BOUNCE, BUFFERS, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
 use chopper::pilot::{LAP, autopilot};
 use chopper::poly::{Row, args};
 
@@ -41,6 +43,12 @@ unsafe extern "C" {
     /// active), draw the active ones' rows into `STAGE`.
     fn geo_xform();
     fn geo_faces();
+    /// `asm/geom.S`: the frame's objects from the REU grids into the buckets (`geom::draw`), from
+    /// `WALK_ARGS`.
+    fn geo_walk();
+    fn geo_bin();
+    fn geo_activate(band: u8) -> u8;
+    fn geo_draw(band: u8);
     /// `asm/floor.S`: CIA 2 ticks for 20,480 cycles.
     fn turbo_probe() -> u16;
 }
@@ -87,10 +95,12 @@ impl Hw for C64 {
         poke(g + geo_args::NV, o.nv);
         poke(g + geo_args::SH, 14 - o.t);
         poke(g + geo_args::T, o.t);
-        poke16(g + geo_args::X0, o.x0 as u16);
-        poke16(g + geo_args::Z0, o.z0 as u16);
-        poke16(g + geo_args::CC, o.cc as u16);
-        poke16(g + geo_args::SS, o.ss as u16);
+        for j in 0..3u16 {
+            poke16(g + geo_args::ORG + 2 * j, o.org[j as usize] as u16);
+            for k in 0..3u16 {
+                poke16(g + geo_args::M + 6 * j + 2 * k, o.m[j as usize][k as usize] as u16);
+            }
+        }
         unsafe { geo_xform() }
     }
     fn faces(&mut self, _scene: &[u8], o: &Obj, _v: &Verts, _w: &mut Work) {
@@ -159,6 +169,7 @@ fn wait_vblank() {
 }
 
 /// Turbo engages ~2 s after `$D031` is written: probe until a timed loop runs over 10x fast.
+#[inline(always)]
 fn wait_turbo() -> u16 {
     poke(0xD031, 0x8F);
     let mut probes = 0u16;
@@ -171,6 +182,7 @@ fn wait_turbo() -> u16 {
 }
 
 /// Wait for the package (it may be uploaded after the program starts), flashing the border.
+#[inline(always)]
 fn wait_image(c: &mut C64) {
     let mut header = [0u8; 10];
     loop {
@@ -211,20 +223,48 @@ fn video_init(c: &mut C64) {
     poke(0xD011, layout::D011);
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn main() -> i16 {
-    let c = &mut C64;
-    poke(0xD011, 0x0B); // display off while booting
-    poke(STATUS + status::MAGIC, 0);
+/// Everything before the frame buffer is first drawn: this code runs from the frame buffer itself
+/// (`.text.boot`, target-c64/link.ld), so it must not touch it. Returns the turbo probes.
+#[inline(never)]
+#[unsafe(link_section = ".text.boot")]
+fn boot(c: &mut C64) -> u16 {
     let probes = wait_turbo();
     hw::init(c);
     wait_image(c);
     chopper::fixed::init_tables();
+    scene_load(c);
+    // Shade patterns for asm/geom.S: even bytes, then odd.
+    for (i, p) in chopper::poly::PATTERNS.iter().enumerate() {
+        poke(PATS + i as u16, p[0]);
+        poke(PATS + 16 + i as u16, p[1]);
+    }
     for level in 0..floor::LEVELS {
         for (i, &b) in floor::tile_table(level).iter().enumerate() {
             poke(TILES + level as u16 * 256 + i as u16, b);
         }
     }
+    probes
+}
+
+/// Fetch the scene block to `SCENE_RAM`; its length.
+#[inline(always)]
+fn scene_load(c: &mut C64) -> u16 {
+    let mut len = [0u8; 2];
+    hw::read_into(c, SCENE, BOUNCE, &mut len);
+    let len = u16::from_le_bytes(len).min(SCENE_MAX);
+    hw::fetch(c, SCENE, SCENE_RAM, len);
+    len
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn main() -> i16 {
+    let c = &mut C64;
+    poke(0xD011, 0x0B); // display off while booting
+    poke(STATUS + status::MAGIC, 0);
+    let probes = boot(c);
+    // The frame's triangles live at WORK (outside the program image); asm/geom.S reads the scene at
+    // SCENE_RAM and keeps the vertices at VERTS.
+    let work = unsafe { &mut *(WORK as *mut Work) };
     video_init(c);
 
     // The frame clock: CIA 2 timer A underflows once an NTSC frame, timer B counts the underflows.
@@ -247,15 +287,21 @@ pub extern "C" fn main() -> i16 {
         if peek(STATUS + status::HOLD) == 0 {
             tick = now % LAP;
         }
-        // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry (none
-        // yet), the bands.
+        // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry, the bands.
         stopwatch_start();
         let (cam, _yaw) = autopilot(tick);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };
         poke16(STATUS + status::SETUP_US, stopwatch_stop());
+        // Geometry: cull, transform and sort into the depth buckets, then file by first band.
         stopwatch_start();
+        work.clear();
+        geom::walk_args(c, WALK_ARGS, &View { cam, pop: peek(STATUS + status::POP) });
+        unsafe {
+            geo_walk();
+            geo_bin();
+        }
         poke16(STATUS + status::GEOM_US, stopwatch_stop());
 
         let doubled = peek(STATUS + status::MODE) & 1;
@@ -267,6 +313,11 @@ pub extern "C" fn main() -> i16 {
         let mut a = rays.a0;
         let step: [i32; 3] = if doubled != 0 { rays.ay.map(|c| c * 2) } else { rays.ay };
         for band in 0..VIEW_BANDS as u8 {
+            // (Sprites fetch from the REU between bands: the floor starts each band afresh.)
+            let active = unsafe {
+                floor_begin();
+                geo_activate(band)
+            };
             let mut line = 0u8;
             while line < 8 {
                 args.a = a;
@@ -279,6 +330,9 @@ pub extern "C" fn main() -> i16 {
                 a = [a[0] + step[0], a[1] + step[1], a[2] + step[2]];
                 line += 1 + doubled;
             }
+            if active > 0 {
+                unsafe { geo_draw(band) };
+            }
             unsafe { band_publish(band) };
             let now = stopwatch_read();
             render += now.wrapping_sub(last) as u32;
@@ -287,8 +341,8 @@ pub extern "C" fn main() -> i16 {
         unsafe { floor_end() };
         render += stopwatch_stop().wrapping_sub(last) as u32;
         poke16(STATUS + status::RENDER_US, (render >> 2) as u16);
-        poke(STATUS + status::TRIS, 0);
-        poke(STATUS + status::OBJECTS, 0);
+        poke(STATUS + status::TRIS, peek(GEO_ARGS + geo_args::TRIS));
+        poke(STATUS + status::OBJECTS, peek(WALK_ARGS + geom::walk::OBJECTS));
         poke16(STATUS + status::TICK, tick);
 
         frames = frames.wrapping_add(1);
