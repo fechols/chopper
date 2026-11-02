@@ -1,0 +1,25 @@
+[package]
+name = "chopper-c64"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "chopper-c64"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+chopper = { path = "..", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+debug = true
+strip = false

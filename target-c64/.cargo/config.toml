@@ -1,0 +1,12 @@
+[build]
+target = "mos-c64-none"
+# REU code paging (src/paging.rs): code must stay where link.ld puts it. Function merging folds identical
+# functions across modules (TALON HD hit this: one copy in a phase called while another was paged in),
+# and jump tables can land in resident rodata pointing into the window. tools/check_phases.py audits.
+rustflags = ["-Zmerge-functions=disabled", "-Zno-jump-tables"]
+
+[unstable]
+build-std = ["core"]
+
+[target.mos-c64-none]
+linker = "mos-c64-clang"
