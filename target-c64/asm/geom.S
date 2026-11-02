@@ -534,7 +534,22 @@ geo_xform:
 3:  inx
     cpx #9
     bne 1b
-    lda VPTR
+    ; |m| >>= sh - 8 (`geom::xform`'s m'), so a sum's bytes 1-2 are the offset
+    lda SHR
+    sec
+    sbc #8
+    beq 6f
+    sta XT0
+    ldx #16
+4:  ldy XT0
+5:  lsr MAB+1,x
+    ror MAB,x
+    dey
+    bne 5b
+    dex
+    dex
+    bpl 4b
+6:  lda VPTR
     sta VP
     lda VPTR+1
     sta VP+1
@@ -546,10 +561,15 @@ xloop:
     bcc 1f
     rts
 1:  lda #0
-    ldx #8
-2:  sta SA,x
-    dex
-    bpl 2b
+    sta SA
+    sta SA+1
+    sta SA+2
+    sta SA+3
+    sta SA+4
+    sta SA+5
+    sta SA+6
+    sta SA+7
+    sta SA+8
     ldy #0
     lda (VP),y
     ldx #0
@@ -562,55 +582,36 @@ xloop:
     lda (VP),y
     ldx #2
     jsr xcomp
-    ; P_j = org_j + (S_j >> sh): bytes 1-2 of the 24-bit sum, then sh - 8 more bits
-    ldx #0              ; S_j offset (0, 3, 6)
-    ldy #0              ; P_j offset (0, 2, 4)
-3:  lda SA+1,x
-    sta V
-    lda SA+2,x
-    sta V+1
-    stx JIDX
-    lda SHR
-    sec
-    sbc #8
-    beq 5f
-    tax
-4:  lda V+1
-    cmp #$80
-    ror V+1
-    ror V
-    dex
-    bne 4b
-5:  clc
-    lda V
-    adc ORGX,y
-    sta PX,y
-    lda V+1
-    adc ORGX+1,y
-    sta PX+1,y
-    lda JIDX
-    clc
-    adc #3
-    tax
-    iny
-    iny
-    cpy #6
-    bne 3b
+    ; P_j = org_j + bytes 1-2 of S_j
     ldx I
-    lda PX
+    clc
+    lda SA+1
+    adc ORGX
+    sta PX
     sta VXL,x
-    lda PX+1
+    lda SA+2
+    adc ORGX+1
+    sta PX+1
     sta VXH,x
-    lda PY
+    clc
+    lda SA+4
+    adc ORGX+2
+    sta PY
     sta VYL,x
-    lda PY+1
+    lda SA+5
+    adc ORGX+3
+    sta PY+1
     sta VYH,x
-    lda PZ
+    clc
+    lda SA+7
+    adc ORGX+4
+    sta PZ
     sta VZL,x
-    lda PZ+1
+    lda SA+8
+    adc ORGX+5
+    sta PZ+1
     sta VZH,x
     ; project when z >= NEARZ
-    lda PZ+1
     bmi 6f
     bne 5f
     lda PZ
@@ -635,7 +636,52 @@ xloop:
 7:  inc I
     jmp xloop
 
-; Component A (i8) of column X into the three sums: S_j += c * m[j][X].
+; S_j += c * m'[j][k] for row \j: |m'| from MAB (Y = 2k at JIDX), its sign from MSG (KCOL = k).
+.macro XROW j
+    ldy JIDX
+    lda MAB+6*\j+1,y
+    sta XT1
+    lda MAB+6*\j,y
+    tay
+    XPROD XP0, XP1
+    ldy XT1
+    XPROD XP2, XP3
+    clc
+    lda XP1
+    adc XP2
+    sta XP1
+    lda XP3
+    adc #0
+    sta XP2
+    ldx KCOL
+    lda MSG+3*\j,x
+    eor CSGN
+    bmi 1f
+    clc
+    lda SA+3*\j
+    adc XP0
+    sta SA+3*\j
+    lda SA+3*\j+1
+    adc XP1
+    sta SA+3*\j+1
+    lda SA+3*\j+2
+    adc XP2
+    sta SA+3*\j+2
+    jmp 2f
+1:  sec
+    lda SA+3*\j
+    sbc XP0
+    sta SA+3*\j
+    lda SA+3*\j+1
+    sbc XP1
+    sta SA+3*\j+1
+    lda SA+3*\j+2
+    sbc XP2
+    sta SA+3*\j+2
+2:
+.endm
+
+; Component A (i8) of column X into the three sums: S_j += c * m'[j][X].
 xcomp:
     cmp #0
     bne 1f
@@ -651,70 +697,13 @@ xcomp:
     eor #$ff
     sta NLA
     sta NHA
-    lda #0
+    txa
+    asl
     sta JIDX
-3:  ; entry e = 3j + k: x = e, y = 2e
-    lda JIDX
-    asl
-    adc JIDX
-    adc KCOL
-    tax
-    asl
-    tay
-    lda MAB,y
-    sta XT0
-    lda MAB+1,y
-    sta XT1
-    ldy XT0
-    XPROD XP0, XP1
-    ldy XT1
-    XPROD XP2, XP3
-    clc
-    lda XP1
-    adc XP2
-    sta XP1
-    lda XP3
-    adc #0
-    sta XP2
-    ; S_j at SA + 3j
-    lda JIDX
-    asl
-    adc JIDX
-    tay
-    lda MSG,x
-    eor CSGN
-    bmi 4f
-    clc
-    lda SA,y
-    adc XP0
-    sta SA,y
-    lda SA+1,y
-    adc XP1
-    sta SA+1,y
-    lda SA+2,y
-    adc XP2
-    sta SA+2,y
-    jmp 5f
-4:  sec
-    lda SA,y
-    sbc XP0
-    sta SA,y
-    lda SA+1,y
-    sbc XP1
-    sta SA+1,y
-    lda SA+2,y
-    sbc XP2
-    sta SA+2,y
-5:  inc JIDX
-    lda JIDX
-    cmp #3
-    beq 6f
-    jmp 3b
-6:  rts
-.size geo_xform, .-geo_xform
-
-; ---------------------------------------------------------------------------------------------------
-; geo_faces: per face: all corners in front -> area cull, key, push; some in front -> CLIP list.
+    XROW 0
+    XROW 1
+    XROW 2
+    rts
 
 .section .text.geo_faces,"ax",@progbits
 .globl geo_faces
@@ -2393,7 +2382,7 @@ wnext:
 
 ; The grid's derived fields (`geom::GridWalk::new`) into its block at GP: per row j of rt, s0 = rt . d0,
 ; base = (s0 + rt[j][1] << 7) >> 14, su = rt[j][0] << k, sv = rt[j][2] << k, eu / ev = those >> 14.
-; (Its own section: it lives in low RAM, link.ld.)
+; (Its own section: resident, not relocated.)
 .section .text.geo_wsetup,"ax",@progbits
 wsetup:
     lda #0
@@ -2924,6 +2913,7 @@ meshp:
     sta MP+1
     rts
 
+.section .text.geo_orow,"ax",@progbits
 ; Row X of the object's centre (`geom::object_centre`) into SX + 2X: (WCEL[X] + (rt row X . (du, dy, dv))
 ; << WSHF) >> 14. Each product is |d| (a byte) times |rt| by two quarter-square lookups (XPROD).
 orow:
@@ -3048,6 +3038,7 @@ oprod:
     sta OT+2
     rts
 
+.section .text.geo_walk,"ax",@progbits
 ; POPD = min(A * scale, FAR) (`geom::pop_depth`); the last radius's is kept (they repeat).
 popdepth:
     cmp PDR

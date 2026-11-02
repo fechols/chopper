@@ -38,13 +38,13 @@ SECTIONS {
         *(.text.boot .text.boot.*)
     } >boot
     .lowtext : {
-        *(.text.umul .text.geo_wsetup)
+        *(.text.umul .text.geo_orow)
     } >lowram AT>boot
     .spantext : {
         *(.text.span_line .rodata.span_tables .text.geo_bin .text.band_publish .text.bt_build .text._ZN7chopper2hw5fetch*)
     } >spanram AT>boot
     .victext : {
-        *(.text.floor_draw .text.geo_helpers .text.turbo_probe .text.geo_wcsum)
+        *(.text.floor_draw .text.geo_helpers .text.turbo_probe)
     } >vicrom AT>boot
     .bandtext : {
         *(.text.geo_walk .text.geo_xform)

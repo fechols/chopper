@@ -391,15 +391,17 @@ pub mod geo_args {
 }
 
 /// Transform and project one object's vertices (`asm/geom.S` `geo_xform`). With mesh vertex `(a, b, h)`
-/// (u, v, up; i8 << t in Q4): `P_j = org_j + (m[j][0]·a + m[j][1]·h + m[j][2]·b) >> (14 − t)`.
+/// (u, v, up; i8 << t in Q4) and the rotation pre-shifted to `m' = sign(m)·(|m| >> (6 − t))` once per
+/// object: `P_j = org_j + (m'[j][0]·a + m'[j][1]·h + m'[j][2]·b) >> 8`.
 pub fn xform(scene: &[u8], o: &Obj, v: &mut Verts) {
-    let sh = 14 - o.t;
+    let s = 6 - o.t;
+    let m: [[i16; 3]; 3] = o.m.map(|row| row.map(|x| if x < 0 { -((x.unsigned_abs() >> s) as i16) } else { x >> s }));
     for i in 0..o.nv as usize {
         let p = o.verts as usize + i * scene::VERTEX;
         let (a, b, h) = (scene[p] as i8 as i16, scene[p + 1] as i8 as i16, scene[p + 2] as i8 as i16);
         let c: [i16; 3] = core::array::from_fn(|j| {
-            let s = mul(o.m[j][0], a) + mul(o.m[j][1], h) + mul(o.m[j][2], b);
-            o.org[j].wrapping_add((s >> sh) as i16)
+            let s = mul(m[j][0], a) + mul(m[j][1], h) + mul(m[j][2], b);
+            o.org[j].wrapping_add((s >> 8) as i16)
         });
         v.set(vert::X, i, c[0]);
         v.set(vert::Y, i, c[1]);
