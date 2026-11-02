@@ -27,6 +27,13 @@ pub fn bake(world: &World) -> Vec<u8> {
     let h = HEADER as usize;
     reu[h..h + 8].copy_from_slice(MAGIC);
     reu[h + H_VERSION as usize..][..2].copy_from_slice(&PACKAGE_VERSION.to_le_bytes());
+    let dlt = crate::digital::ROTOR;
+    let d = crate::digital::Dlt5::parse(dlt).expect("rotor.dlt");
+    assert!(dlt.len() <= AUDIO_MAX as usize && d.frames == crate::digital::ROTOR_LOOP_END);
+    reu[AUDIO_DLT as usize..][..dlt.len()].copy_from_slice(dlt);
+    for (at, v) in [(H_AUDIO_BYTES, dlt.len() as u32), (H_LOOP_START, crate::digital::ROTOR_LOOP_START), (H_LOOP_END, crate::digital::ROTOR_LOOP_END)] {
+        reu[h + at as usize..][..4].copy_from_slice(&v.to_le_bytes());
+    }
     reu
 }
 

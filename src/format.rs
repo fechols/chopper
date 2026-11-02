@@ -9,8 +9,9 @@
 //! | 85 | the sea (one tile, shown off the map) |
 //! | 86 | header |
 //! | 87 / 88 / 89 | objects by grid cell / per-angle visibility lists / the scene block (`geom`, `scene`) |
-//!
-//! Everything from bank 90 up is free (room for object and enemy models, DLT5 music, ...).
+//! | 90-95 | sprites |
+//! | 96-106 | the rotor sound, DLT5 (`digital`) |
+//! | `$BFFF60`-`$D9C0FF` | not in the image: the rotor sound decoded to 8-bit PCM at boot |
 
 /// 16 MiB REU (C64 Ultimate).
 pub const REU_SIZE: u32 = 16 << 20;
@@ -25,13 +26,18 @@ pub const SEA_BANK: u8 = 85;
 
 /// Package version: the PRG refuses an image whose header carries another one (a PRG and REU from
 /// different builds). Bump it whenever this layout changes.
-pub const PACKAGE_VERSION: u16 = 1;
+pub const PACKAGE_VERSION: u16 = 2;
 
 /// Header: magic[8], version u16.
 pub const HEADER_BANK: u8 = 86;
 pub const HEADER: u32 = (HEADER_BANK as u32) << 16;
 pub const MAGIC: &[u8; 8] = b"CHOPPER1";
 pub const H_VERSION: u32 = 8;
+/// u32 × 3: the rotor sound's DLT5 length in bytes, and its loop (frames): the sampler plays from
+/// frame 0 to the loop end, then repeats from the loop start (`digital::ROTOR_LOOP_*`).
+pub const H_AUDIO_BYTES: u32 = 16;
+pub const H_LOOP_START: u32 = 20;
+pub const H_LOOP_END: u32 = 24;
 
 /// The object directory (`geom::scene::DIR_ENTRY` per cell: the grid's `GRID²`, then the big grid's
 /// `BIG_GRID²`), and the object records (`geom::scene::OBJECT`, sorted by cell), streamed per visible
@@ -89,8 +95,19 @@ pub const ITEM_MIX: u8 = 0x80;
 pub const RUN_HEADER: u16 = 3;
 pub const MIX_LEN: u16 = 4;
 
+/// The rotor sound (DLT5, `digital::ROTOR`), from bank 96.
+pub const AUDIO_DLT: u32 = 96 << 16;
+pub const AUDIO_MAX: u32 = 0xB_0000;
+/// Where the boot decodes it (`asm/audio.S`): signed 8-bit PCM from `AUDIO_PCM`, after `HAAS` zero
+/// bytes the right voice starts in (10 ms at 16 kHz: the Haas delay). Outside the image.
+pub const AUDIO_PCM: u32 = 0xC0_0000;
+pub const HAAS: u32 = 160;
+/// The sampler's clock divider: about 6.25 MHz / 16 kHz.
+pub const AUDIO_DIVIDER: u16 = 390;
+const _: () = assert!(SPRITE_BLOCKS_END <= AUDIO_DLT && AUDIO_DLT + AUDIO_MAX <= AUDIO_PCM - HAAS);
+
 /// The image ends here: upload only this much.
-pub const IMAGE_END: u32 = SPRITE_BLOCKS_END;
+pub const IMAGE_END: u32 = AUDIO_DLT + AUDIO_MAX;
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);
 

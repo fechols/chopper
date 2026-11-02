@@ -1,0 +1,12 @@
+{
+  "source": "Military_Helicopter_Start_Idle_Away.wav",
+  "rate": 16000,
+  "frames": 1687808,
+  "loop_start": 1275670,
+  "loop_end": 1687808,
+  "fade_samples": 6400,
+  "fade_law": "linear",
+  "match": 0.7853,
+  "haas_samples": 160,
+  "codebooks": 5000
+}

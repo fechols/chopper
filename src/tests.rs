@@ -548,3 +548,28 @@ fn a_far_object_through_its_affine_map_lands_where_its_projection_does() {
     println!("{checked} vertices, worst {worst:.2} px, largest sum {big}");
     assert!(checked > 5000 && big < 24000, "{checked} vertices checked, largest sum {big}");
 }
+
+#[test]
+fn the_rotor_sound_decodes_and_its_loop_seam_is_smooth() {
+    use crate::digital::{Dlt5, ROTOR, ROTOR_LOOP_END, ROTOR_LOOP_START, decode};
+    let d = Dlt5::parse(ROTOR).unwrap();
+    assert_eq!((d.rate, d.frames), (16000, ROTOR_LOOP_END));
+    let pcm = decode(ROTOR);
+    let (a, b) = (ROTOR_LOOP_START as usize, ROTOR_LOOP_END as usize);
+    // The sampler jumps from frame b - 1 to frame a: no bigger a step than the loop's own 99th percentile.
+    let mut steps: Vec<i32> = pcm[a..b].windows(2).map(|w| (w[1] as i32 - w[0] as i32).abs()).collect();
+    steps.sort_unstable();
+    let seam = (pcm[a] as i32 - pcm[b - 1] as i32).abs();
+    assert!(seam <= steps[steps.len() * 99 / 100], "seam step {seam}");
+    // Full power is loud and doesn't clip.
+    let rms = (pcm[a..b].iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / (b - a) as f64).sqrt();
+    assert!((10.0..60.0).contains(&rms), "loop level {rms}");
+    // The encoder's own decode (tools/make-rotor.py's target/rotor/rotor-dlt5.wav), when there.
+    if let Ok(wav) = std::fs::read("target/rotor/rotor-dlt5.wav") {
+        let data = &wav[44..];
+        assert_eq!(data.len() / 2, pcm.len());
+        for (i, (c, &s)) in data.chunks(2).zip(&pcm).enumerate() {
+            assert_eq!(i16::from_le_bytes([c[0], c[1]]), (s as i16) << 8, "frame {i}");
+        }
+    }
+}

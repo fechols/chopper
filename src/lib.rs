@@ -18,6 +18,8 @@ pub mod poly;
 pub mod sprite;
 
 #[cfg(feature = "host")]
+pub mod digital;
+#[cfg(feature = "host")]
 pub mod encode;
 #[cfg(feature = "host")]
 pub mod model;

@@ -28,3 +28,5 @@ Chopper's renderer comes from `../mode7` (same author), which in turn vendors co
 | File | From | Changes |
 |---|---|---|
 | `tools/branch-audit.py` | `../sueme64/tools/branch-audit.py` @ `d962bde` | resolves numeric local labels |
+| `tools/encode-digital-music/` | `../sueme64/tools/encode-digital-music` @ `8685892` (itself extending Second Reality's DLT2 quantizer; Unlicense) | none |
+| `src/digital.rs` | the DLT5 header and decode rule of `../sueme64/src/digital.rs` @ `8685892` | mono only, whole-file host decode |
