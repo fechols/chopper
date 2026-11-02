@@ -124,13 +124,15 @@ impl Mesh {
         }
     }
 
-    /// An axis-aligned box (sides of `side`, top `top`; no bottom).
-    pub fn cuboid(&mut self, lo: [f32; 3], hi: [f32; 3], side: Material, top: Material) {
+    /// An axis-aligned box (sides of `side`, top `top`, none when it is hidden under something; no
+    /// bottom).
+    pub fn cuboid(&mut self, lo: [f32; 3], hi: [f32; 3], side: Material, top: Option<Material>) {
         let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
         let corner = |i: usize| [if i & 1 != 0 { hi[0] } else { lo[0] }, if i & 2 != 0 { hi[1] } else { lo[1] }, if i & 4 != 0 { hi[2] } else { lo[2] }];
-        let faces: [([usize; 4], Material); 5] =
-            [([4, 5, 7, 6], top), ([0, 1, 5, 4], side), ([2, 3, 7, 6], side), ([0, 2, 6, 4], side), ([1, 3, 7, 5], side)];
+        let faces: [([usize; 4], Option<Material>); 5] =
+            [([4, 5, 7, 6], top), ([0, 1, 5, 4], Some(side)), ([2, 3, 7, 6], Some(side)), ([0, 2, 6, 4], Some(side)), ([1, 3, 7, 5], Some(side))];
         for (f, m) in faces {
+            let Some(m) = m else { continue };
             let p = f.map(corner);
             let fc = [0, 1, 2].map(|a| p.iter().map(|q| q[a]).sum::<f32>() / 4.0);
             self.quad(p, sub(fc, c), m);
@@ -201,19 +203,21 @@ pub fn meshes() -> Vec<Mesh> {
     let mut m = Mesh::default();
     m.cone(3, 0.9, &[], (3.0, Material::Foliage));
     out.push(m);
-    // House: walls and a gabled roof.
+    // Far objects get one depth key (`geom::affine`), so each mesh must draw right with its front faces
+    // in reverse list order: convex, hidden faces left out, and parts that can be in front listed first.
+    // House: walls and a gabled roof (the box's top is hidden under it).
     let mut m = Mesh::default();
-    m.cuboid([-1.5, -1.0, 0.0], [1.5, 1.0, 1.0], Material::Wall, Material::Roof);
+    m.cuboid([-1.5, -1.0, 0.0], [1.5, 1.0, 1.0], Material::Wall, None);
     m.gable([-1.5, -1.0], [1.5, 1.0], 1.0, 1.8, Material::Wall, Material::Roof);
     out.push(m);
     // Hangar: a long box with a low roof.
     let mut m = Mesh::default();
-    m.cuboid([-5.0, -3.0, 0.0], [5.0, 3.0, 2.5], Material::Wall, Material::Roof);
+    m.cuboid([-5.0, -3.0, 0.0], [5.0, 3.0, 2.5], Material::Wall, Some(Material::Roof));
     out.push(m);
-    // Control tower: a shaft and a cab.
+    // Control tower: a cab on a shaft (the cab first, drawn over the shaft; the shaft's top is inside it).
     let mut m = Mesh::default();
-    m.cuboid([-0.5, -0.5, 0.0], [0.5, 0.5, 5.0], Material::Wall, Material::Wall);
-    m.cuboid([-1.2, -1.2, 5.0], [1.2, 1.2, 6.2], Material::Roof, Material::Roof);
+    m.cuboid([-1.2, -1.2, 5.0], [1.2, 1.2, 6.2], Material::Roof, Some(Material::Roof));
+    m.cuboid([-0.5, -0.5, 0.0], [0.5, 0.5, 5.0], Material::Wall, None);
     out.push(m);
     // Pad marker: a small pyramid.
     let mut m = Mesh::default();

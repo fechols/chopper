@@ -491,3 +491,60 @@ fn a_full_pool_drops_the_later_triangles() {
     let (tris, dropped) = raster_bands(&mut m, &w, BUFFERS[0].bitmap);
     assert_eq!((tris as usize, dropped as usize), (POOL, 120 - POOL));
 }
+
+#[test]
+fn a_far_object_through_its_affine_map_lands_where_its_projection_does() {
+    // Every mesh, random camera orientations, random centres in view beyond the switch distance: each
+    // vertex through `affine` lands within 2 pixels of `project(xform(..))` (about 1.4 but in the corners
+    // of the view), and every row sum fits in i16 with room.
+    use crate::geom::{AFFINE_SHIFT, FAR, Obj, Verts, affine, project, scene as sc, vert, xform, xform_affine};
+    let s = scene(package());
+    let mut rng = Rng(0xaff1_2e00);
+    let (mut checked, mut worst, mut big) = (0, 0f64, 0);
+    for _ in 0..4000 {
+        let k = rng.below(s[sc::N_MESHES] as u32) as usize;
+        let mr = sc::MESHES + k * sc::MESH;
+        let rad = s[mr + 7] as i32;
+        let lo = rad << AFFINE_SHIFT;
+        if lo >= FAR {
+            continue;
+        }
+        let z = lo + 1 + rng.below((FAR - lo) as u32) as i32;
+        let x = (rng.below(2 * z as u32 + 1) as i32 - z) * 23 / 20; // the cull lets |x| reach about 1.19z
+        let y = (rng.below(z as u32 + 1) as i32 - z / 2) * 6 / 5; // and |y| 0.65z
+        let r = crate::camera::Matrix14::orientation(rng.next() as u16, rng.next() as u16, rng.next() as u16).m;
+        let o = Obj {
+            verts: u16::from_le_bytes([s[mr], s[mr + 1]]),
+            nv: s[mr + 2],
+            faces: u16::from_le_bytes([s[mr + 3], s[mr + 4]]),
+            nf: s[mr + 5],
+            t: 2 + s[mr + 6],
+            org: [x as i16, y as i16, z as i16],
+            m: r.map(|row| row.map(|v| v as i16)),
+        };
+        let a = affine(&o);
+        // the sums stay within i16 (`affine`'s bound), with room
+        for i in 0..o.nv as usize {
+            let p = o.verts as usize + i * sc::VERTEX;
+            let c = [s[p] as i8 as i32, s[p + 2] as i8 as i32, s[p + 1] as i8 as i32];
+            for row in &a.g {
+                let sum = row[0] as i32 * c[0] + row[1] as i32 * c[1] + row[2] as i32 * c[2];
+                big = big.max(sum.abs());
+            }
+        }
+        let (mut full, mut far) = (Verts::new(), Verts::new());
+        xform(s, &o, &mut full);
+        xform_affine(s, &o, &a, &mut far);
+        for i in 0..o.nv as usize {
+            let (px, py) = project(full.get(vert::X, i), full.get(vert::Y, i), full.get(vert::Z, i));
+            let dx = (far.get(vert::SX, i) - px) as f64 / 16.0;
+            let dy = (far.get(vert::SY, i) - py) as f64 / 16.0;
+            let err = dx.abs().max(dy.abs());
+            worst = worst.max(err);
+            assert!(err < 2.0, "mesh {k} at {:?}: vertex {i} off by ({dx:.2}, {dy:.2})", o.org);
+            checked += 1;
+        }
+    }
+    println!("{checked} vertices, worst {worst:.2} px, largest sum {big}");
+    assert!(checked > 5000 && big < 24000, "{checked} vertices checked, largest sum {big}");
+}

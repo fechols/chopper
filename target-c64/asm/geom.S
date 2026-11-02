@@ -705,6 +705,421 @@ xcomp:
     XROW 2
     rts
 
+; ---------------------------------------------------------------------------------------------------
+; geo_affine: a far object's vertices by its weak-perspective map (`geom::affine`, `geom::xform_affine`).
+; Once: the centre projected (csx, csy; rx, ry, e as `project` makes them), ex, ey (Q7) from it, and
+; g = (1280/z)(m0 - ex m2) 2^(t-8), (2128/z)(ey m2 - m1) 2^(t-8) by the reciprocal's top byte, all
+; 8x16 products of magnitudes with shifts toward zero. Per vertex c = (a, h, b):
+; sx = csx + (g0 . c) >> 6, sy = csy + (g1 . c) >> 6 with 16-bit sums (they fit: `geom::affine`), each
+; |c| * |g| two quarter-square lookups (only the low byte of the high one), and z = the centre's.
+
+AGL    = $8F60          ; |g| lo, 6 (x row k = 0..2, then the y row)
+AGH    = $8F66          ; |g| hi
+AGS    = $8F6C          ; g's sign bytes
+ACX    = $8F72          ; (2) the centre's sx
+ACY    = $8F74          ; (2) sy
+ARX    = $8F76          ; rx >> 8
+ARY    = $8F77          ; ry >> 8
+AEXM   = $8F78          ; |ex| (Q7, at most 255)
+AEXS   = $8F79          ; its sign
+AEYM   = $8F7A          ; |ey|
+AEYS   = $8F7B
+ASHX   = $8F7C          ; 15 + e - t
+ASHY   = $8F7D          ; 14 + e - t
+AK     = $8F7E          ; k
+AKX    = $8F7F          ; 2k
+AM2L   = $8F81          ; |m2k|
+AM2H   = $8F82
+AM2S   = $8F83          ; its sign
+MT0    = $F6            ; (2) a 16-bit magnitude
+MT1    = $F7
+MS     = $F8            ; its sign
+AP0    = $F9            ; (3) a product
+AP1    = $FA
+AP2    = $FB
+AS0    = $C3            ; (2) the x sum
+AS1    = $C5            ; (2) the y sum
+AHI    = $C7            ; the sum's sign byte, shifting
+
+; g[r][k] (`geom::affine`): T = |e| * |m2k| >> 7 with the sign of e * m2k; D = m[r][k] - T (16-bit);
+; a = D for the x row, -D for the y row; |g| = (|a| * \rm) >> \sh, sign a's. AK = k, AKX = 2k.
+.macro AENT r, em, es, rm, sh
+    lda AM2L
+    sta MT0
+    lda AM2H
+    sta MT1
+    lda \em
+    jsr m816
+    asl AP0
+    rol AP1
+    rol AP2
+    lda \es
+    eor AM2S
+    bpl 1f
+    sec
+    lda #0
+    sbc AP1
+    sta AP1
+    lda #0
+    sbc AP2
+    sta AP2
+1:  ldx AKX
+    sec
+    lda MROT+6*\r,x
+    sbc AP1
+    sta MT0
+    lda MROT+6*\r+1,x
+    sbc AP2
+    sta MT1
+    sta MS
+    bpl 2f
+    sec
+    lda #0
+    sbc MT0
+    sta MT0
+    lda #0
+    sbc MT1
+    sta MT1
+2:  .if \r
+    lda MS
+    eor #$80
+    sta MS
+    .endif
+    lda \rm
+    jsr m816
+    ldx \sh
+    jsr shr24
+    ldx AK
+    lda AP0
+    sta AGL+3*\r,x
+    lda AP1
+    sta AGH+3*\r,x
+    lda MS
+    sta AGS+3*\r,x
+.endm
+
+.section .text.geo_affine,"ax",@progbits
+.globl geo_affine
+.type geo_affine,@function
+geo_affine:
+    ldx #5
+1:  lda ORGX,x
+    sta PX,x
+    dex
+    bpl 1b
+    jsr project
+    lda S1
+    sta ACX
+    lda S1+1
+    sta ACX+1
+    lda S1+2
+    sta ACY
+    lda S1+3
+    sta ACY+1
+    lda BH              ; ry >> 8 (project leaves ry in BL:BH)
+    sta ARY
+    ; rx >> 8 = (r << 2 + r) >> 11
+    lda RL
+    sta Q
+    lda RH
+    sta Q+1
+    lda #0
+    sta Q+2
+    asl Q
+    rol Q+1
+    rol Q+2
+    asl Q
+    rol Q+1
+    rol Q+2
+    clc
+    lda Q
+    adc RL
+    lda Q+1
+    adc RH
+    sta Q+1
+    lda Q+2
+    adc #0
+    .rept 3
+    lsr
+    ror Q+1
+    .endr
+    lda Q+1
+    sta ARX
+    ; the shifts: 15 + e - t, 14 + e - t
+    clc
+    lda E
+    adc #14
+    sec
+    sbc TT
+    sta ASHY
+    clc
+    adc #1
+    sta ASHX
+    ; ex = (sx - 1280) * 205 >> 11, ey = (1088 - sy) * 123 >> 11: magnitudes clamped to 255, signs
+    sec
+    lda ACX
+    sbc #<1280
+    sta MT0
+    lda ACX+1
+    sbc #>1280
+    sta MT1
+    lda #205
+    jsr emag
+    sta AEXM
+    lda MS
+    sta AEXS
+    sec
+    lda #<1088
+    sbc ACY
+    sta MT0
+    lda #>1088
+    sbc ACY+1
+    sta MT1
+    lda #123
+    jsr emag
+    sta AEYM
+    lda MS
+    sta AEYS
+    ; per column k: |m2k|, then g0k and g1k
+    lda #0
+    sta AK
+acol:
+    asl
+    sta AKX
+    clc
+    adc #12
+    tax
+    lda MROT+1,x
+    sta AM2S
+    bpl 4f
+    sec
+    lda #0
+    sbc MROT,x
+    sta AM2L
+    lda #0
+    sbc MROT+1,x
+    sta AM2H
+    jmp 5f
+4:  lda MROT,x
+    sta AM2L
+    lda MROT+1,x
+    sta AM2H
+5:  AENT 0, AEXM, AEXS, ARX, ASHX
+    AENT 1, AEYM, AEYS, ARY, ASHY
+    inc AK
+    lda AK
+    cmp #3
+    beq 3f
+    jmp acol
+3:  ; the vertices
+    lda VPTR
+    sta VP
+    lda VPTR+1
+    sta VP+1
+    lda #0
+    sta I
+aloop:
+    lda I
+    cmp NV
+    bcc 1f
+    rts
+1:  lda #0
+    sta AS0
+    sta AS0+1
+    sta AS1
+    sta AS1+1
+    ldy #0
+    lda (VP),y
+    ldx #0
+    jsr acomp
+    ldy #2
+    lda (VP),y
+    ldx #1
+    jsr acomp
+    ldy #1
+    lda (VP),y
+    ldx #2
+    jsr acomp
+    ldx I
+    lda ORGX+4
+    sta VZL,x
+    lda ORGX+5
+    sta VZH,x
+    ; sx = csx + AS0 >> 6
+    lda AS0+1
+    ora #$7f
+    bmi 2f
+    lda #0
+2:  sta AHI
+    asl AS0
+    rol AS0+1
+    rol AHI
+    asl AS0
+    rol AS0+1
+    rol AHI
+    clc
+    lda AS0+1
+    adc ACX
+    sta SXL,x
+    lda AHI
+    adc ACX+1
+    sta SXH,x
+    ; sy = csy + AS1 >> 6
+    lda AS1+1
+    ora #$7f
+    bmi 3f
+    lda #0
+3:  sta AHI
+    asl AS1
+    rol AS1+1
+    rol AHI
+    asl AS1
+    rol AS1+1
+    rol AHI
+    clc
+    lda AS1+1
+    adc ACY
+    sta SYL,x
+    lda AHI
+    adc ACY+1
+    sta SYH,x
+    clc
+    lda VP
+    adc #3
+    sta VP
+    bcc 4f
+    inc VP+1
+4:  inc I
+    jmp aloop
+
+; AS_r += c * g[r][k] for row \r: |g| from AGL/AGH (X = k), its sign from AGS; c's sign in CSGN.
+.macro AROW r, sum
+    ldy AGH+3*\r,x
+    lda (PLA),y
+    sec
+    sbc (NLA),y
+    sta XT1             ; low byte of |c| * hi
+    ldy AGL+3*\r,x
+    XPROD XP0, XP1
+    clc
+    lda XP1
+    adc XT1
+    sta XP1
+    lda AGS+3*\r,x
+    eor CSGN
+    bmi 1f
+    clc
+    lda \sum
+    adc XP0
+    sta \sum
+    lda \sum+1
+    adc XP1
+    sta \sum+1
+    jmp 2f
+1:  sec
+    lda \sum
+    sbc XP0
+    sta \sum
+    lda \sum+1
+    sbc XP1
+    sta \sum+1
+2:
+.endm
+
+; Component A (i8) of column X into the two sums.
+acomp:
+    cmp #0
+    bne 1f
+    rts
+1:  sta CSGN
+    bpl 2f
+    eor #$ff
+    clc
+    adc #1
+2:  sta PLA
+    sta PHA
+    eor #$ff
+    sta NLA
+    sta NHA
+    AROW 0, AS0
+    AROW 1, AS1
+    rts
+
+; A = min(|MT0:MT1 * A| >> 11, 255) (MT signed, A an unsigned constant), MS = MT's sign
+emag:
+    pha
+    lda MT1
+    sta MS
+    bpl 1f
+    sec
+    lda #0
+    sbc MT0
+    sta MT0
+    lda #0
+    sbc MT1
+    sta MT1
+1:  pla
+    jsr m816
+    .rept 3
+    lsr AP2
+    ror AP1
+    .endr
+    lda AP2
+    beq 2f
+    lda #255
+    rts
+2:  lda AP1
+    rts
+
+; AP0:AP2 = A (u8) * MT0:MT1 (u16), by the tables
+m816:
+    cmp #0
+    bne 1f
+    sta AP0
+    sta AP1
+    sta AP2
+    rts
+1:  sta PLA
+    sta PHA
+    eor #$ff
+    sta NLA
+    sta NHA
+    ldy MT0
+    XPROD AP0, AP1
+    ldy MT1
+    XPROD XP0, XP1
+    clc
+    lda AP1
+    adc XP0
+    sta AP1
+    lda XP1
+    adc #0
+    sta AP2
+    rts
+
+; AP0:AP2 >>= X (0..15)
+shr24:
+    cpx #8
+    bcc 1f
+    lda AP1
+    sta AP0
+    lda AP2
+    sta AP1
+    lda #0
+    sta AP2
+    txa
+    sbc #8
+    tax
+1:  cpx #0
+    beq 3f
+2:  lsr AP2
+    ror AP1
+    ror AP0
+    dex
+    bne 2b
+3:  rts
+.size geo_affine, .-geo_affine
+
 .section .text.geo_faces,"ax",@progbits
 .globl geo_faces
 .type geo_faces,@function
@@ -2944,7 +3359,27 @@ wobject:
     sta ORGX,x
     dex
     bpl 7b
-    jsr geo_xform
+    ; far (`geom::AFFINE_SHIFT`: z > rad << 7, SR = rad << 4): weak perspective
+    lda SZ+1
+    bmi 8f
+    lda SR
+    sta ACC
+    lda SR+1
+    asl ACC
+    rol
+    asl ACC
+    rol
+    asl ACC
+    rol
+    sta ACC+1
+    lda ACC
+    cmp SZ
+    lda ACC+1
+    sbc SZ+1
+    bcs 8f              ; rad << 7 >= z
+    jsr geo_affine
+    jmp geo_faces
+8:  jsr geo_xform
     jmp geo_faces
 
 ; MP = SCENE_RAM + 8 + A * 10

@@ -414,6 +414,68 @@ pub fn xform(scene: &[u8], o: &Obj, v: &mut Verts) {
     }
 }
 
+/// A far object's screen map (weak perspective): the projection linearised at its centre. The centre
+/// projects to `(sx, sy)`, and mesh vertex `c = (a, h, b)` to `sx + (g[0]·c) >> 6`, `sy + (g[1]·c) >> 6`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Affine {
+    pub sx: i16,
+    pub sy: i16,
+    pub g: [[i16; 3]; 2],
+}
+
+/// Objects nearer than `rad << AFFINE_SHIFT` (Q4; `rad` the mesh's bounding radius in texels, so 8
+/// radii) take the full 3D path. Farther, the linearisation is off by about `rad / z` of the object's
+/// size: about a pixel at the switch.
+pub const AFFINE_SHIFT: u8 = 7;
+
+/// `p >> s` rounded toward zero (`asm/geom.S` shifts magnitudes).
+fn shr_mag(p: i32, s: u8) -> i32 {
+    if p < 0 { -((-p) >> s) } else { p >> s }
+}
+
+/// [`Affine`] for object `o` (`asm/geom.S` `geo_affine`), an object at least [`AFFINE_SHIFT`]'s 8 radii
+/// away and in view. Then `|g| < 1024`, and each row's sum stays within i16: the offsets are at most
+/// `2128·1.2/z` times the radius (Q4), about 20 pixels, so the sums (64 times that) are below 21000.
+///
+/// With the centre `(x, y, z)` projected by [`project`] and `ex = x/z`, `ey = y/z` taken from it (Q7),
+/// the screen offset of a camera-space offset `d` is `1280/z·(dX − ex·dZ)` and `−2128/z·(dY − ey·dZ)`.
+/// With the rotation `m` (Q14) and vertices `c << t` (Q4), that is `g = (1280/z)·a0·2^(t − 8)` and
+/// `(2128/z)·a1·2^(t − 8)` (in 1/64) for `a0 = m0 − ex·m2`, `a1 = ey·m2 − m1`; `1/z` is the top byte
+/// of [`project`]'s scaled reciprocals: `1280/z ≈ (rx >> 8) / 2^(7 + e)`, `2128/z ≈ (ry >> 8) / 2^(6 + e)`.
+/// Every product is 8×16 bits and every shift rounds toward zero, as the 6502 does it.
+pub fn affine(o: &Obj) -> Affine {
+    let [x, y, z] = o.org;
+    let (sx, sy) = project(x, y, z);
+    let (m, e) = fixed::norm(z as u16);
+    let r = fixed::recip(m) as u32;
+    let (rx, ry) = ((r * 5 >> 11) as i32, (r * 133 >> 16) as i32);
+    let ex = shr_mag(mul(sx - 1280, 205), 11).clamp(-255, 255);
+    let ey = shr_mag(mul(1088 - sy, 123), 11).clamp(-255, 255);
+    let (shx, shy) = ((15 + e - o.t as i8) as u8, (14 + e - o.t as i8) as u8);
+    let mut g = [[0i16; 3]; 2];
+    for k in 0..3 {
+        let m2 = o.m[2][k] as i32;
+        let a0 = (o.m[0][k] as i32 - shr_mag(ex * m2, 7)) as i16 as i32;
+        let a1 = (shr_mag(ey * m2, 7) - o.m[1][k] as i32) as i16 as i32;
+        g[0][k] = shr_mag(a0 * rx, shx) as i16;
+        g[1][k] = shr_mag(a1 * ry, shy) as i16;
+    }
+    Affine { sx, sy, g }
+}
+
+/// A far object's vertices through its [`Affine`] (`asm/geom.S` `afloop`): screen x, y, and z = the
+/// centre's for all (so [`faces`] gives the object one depth key and draws its faces in reverse order).
+pub fn xform_affine(scene: &[u8], o: &Obj, a: &Affine, v: &mut Verts) {
+    for i in 0..o.nv as usize {
+        let p = o.verts as usize + i * scene::VERTEX;
+        let c = [scene[p] as i8 as i32, scene[p + 2] as i8 as i32, scene[p + 1] as i8 as i32];
+        let row = |g: &[i16; 3]| ((g[0] as i32 * c[0] + g[1] as i32 * c[1] + g[2] as i32 * c[2]) as i16) >> 6;
+        v.set(vert::Z, i, o.org[2]);
+        v.set(vert::SX, i, a.sx + row(&a.g[0]));
+        v.set(vert::SY, i, a.sy + row(&a.g[1]));
+    }
+}
+
 /// A face's depth bucket: [`depth_key`] of its corners' z sum.
 fn key(v: &Verts, idx: [usize; 3]) -> u8 {
     let z = |k: usize| v.get(vert::Z, idx[k]) as i32;
@@ -502,7 +564,12 @@ fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], l
         org: c.map(|x| x as i16),
         m: rot,
     };
-    hw.xform(scene, &ob, v);
+    // Far: weak perspective, no divide per vertex.
+    if c[2] > (rad as i32) << AFFINE_SHIFT {
+        xform_affine(scene, &ob, &affine(&ob), v);
+    } else {
+        hw.xform(scene, &ob, v);
+    }
     hw.faces(scene, &ob, v, w);
 }
 
