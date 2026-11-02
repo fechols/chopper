@@ -8,7 +8,8 @@ Chopper's renderer comes from `../mode7` (same author), which in turn vendors co
 | File | From | Changes |
 |---|---|---|
 | `src/geom.rs`, `target-c64/asm/geom.S` | mode7 @ `5014bc1` | racers (`car`, `cars`) removed; chopper's 3D camera, grid and bands follow |
-| `src/poly.rs`, `src/fixed.rs`, `target-c64/asm/{poly,tri,fixed,reu,startup}.S` | mode7 | unchanged |
+| `src/poly.rs`, `src/fixed.rs`, `target-c64/asm/{poly,tri,fixed,reu}.S` | mode7 | unchanged |
+| `target-c64/asm/startup.S`, `target-c64/link.ld` | mode7 @ `5014bc1` | chopper's relocated regions and boot section |
 | `src/scene.rs`, `src/hw.rs`, `src/model.rs`, `src/layout.rs`, `src/format.rs` | mode7 | adapted to chopper's floor and REU layout |
 | `tools/{emu.py,c64u.py,profile.py,test_*.py}` | mode7 | adapted |
 
