@@ -16,7 +16,7 @@ bench = false
 chopper = { path = "..", default-features = false }
 
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = "fat"
 codegen-units = 1
 panic = "abort"

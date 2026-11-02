@@ -2,9 +2,6 @@
 //! (uncompressed) deflate blocks. For previews and contact sheets.
 
 use std::path::Path;
-use std::string::String;
-use std::vec::Vec;
-use std::{format, vec};
 
 fn crc32(data: &[u8]) -> u32 {
     let mut c = !0u32;

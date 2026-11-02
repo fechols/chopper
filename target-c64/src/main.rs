@@ -1,73 +1,116 @@
-//! Chopper for the C64 Ultimate, milestone N1: the terrain flythrough.
+//! MODE 7 for the C64 Ultimate, milestone 3: a perspective floor flying round the test circuit, drawn by
+//! `asm/floor.S` (one REU DMA per bitmap byte, the REU address stepped per byte) into a double-buffered
+//! 160×200 multicolour bitmap. Pattern: `../talonhd/target-c64/src/main.rs`.
 //!
-//! The camera flies a fixed circuit over the island. Every frame runs the
-//! shared library exactly as the host does — horizon, Röttger terrain walk,
-//! depth sort, band raster, cell packing — and publishes each finished band
-//! straight into the single displayed bitmap (H.A.V.O.C.'s scheme: no back
-//! buffer, colour RAM included). Terrain samples come from the REU through a
-//! small direct-mapped cache, one 4-byte DMA per miss.
+//! Needs the matching `mode7.reu` at REU address 0 (16 MB REU); until it appears the border flashes, so it
+//! may be uploaded after starting. Fire on joystick 2 (or `STATUS+MODE`) toggles full / line-doubled.
+//! Performance is in the status block at `$CA80` (`layout::status`).
 //!
-//! Code paging (`chopper::paging`): GEOMETRY and PIXELS run in turn from the
-//! `$4000-$BFFF` window; everything else is resident.
-//!
-//! Needs `chopper.reu` (from the same build) at REU address 0; until it
-//! appears the border flashes, so it may be uploaded after starting. A
-//! mismatched image stops with an orange border. Performance is in the
-//! status block at `$0200` (`tools/c64u.py status`).
+//! Milestone 4: flat-shaded 3D over the floor. `chopper::geom` (shared with the host, so both compute the
+//! same bits) transforms, clips, culls and depth-sorts the scene; `asm/poly.S` writes each triangle's cell
+//! rows, whole bytes wherever a cell is fully covered.
 
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};
 
-use chopper::camera::{Camera, QUARTER_TURN, WorldPos, cos, sin};
-use chopper::render::{BAND_PIXELS, BANDS, RasterScratch, Renderer, VIEW_BANDS, draw_text, pack_band};
-use chopper::terrain::{self, Governor, Lod, SIZE, Stats, TerrainData};
-use chopper::{horizon, package, paging};
+use chopper::format::{
+    COLORS, FLOOR_ROW, H_PATH, HEADER, LINE_BLOCK, MAGIC, PACKAGE_VERSION, PATH_ENTRY, PATH_LEN, SCENE, SCENE_MAX,
+    SKY_COLOR, line_table,
+};
+use chopper::geom::{self, BANDS, Camera, Obj, Verts, Work, geo_args};
+use chopper::hw::{self, Hw};
+use chopper::layout::{self, BOUNCE, BUFFERS, LINE_RAM, GEO_ARGS, PATS, POLY_ARGS, SCENE_RAM, STAGE, STATUS, STATUS_MAGIC, VERTS, WORK, status};
+use chopper::poly::{Row, args};
 
 unsafe extern "C" {
     fn reu_execute(command: u8);
+    /// `asm/floor.S`: the floor a cell row at a time (`floor_row` into 320 bytes at `dest`, lines
+    /// `line..line + 8` of the line table at `LINE_RAM`), between `floor_begin` and `floor_end`.
+    fn floor_begin(doubled: u8);
+    fn floor_row(dest: u16, line: u8);
+    fn floor_end();
+    /// `asm/floor.S`: copy `STAGE` to the bitmap's cell row `band` once the raster is not in it.
+    fn band_publish(band: u8);
+    /// `asm/poly.S`: one cell row of a polygon from `POLY_ARGS`.
+    fn poly_row();
+    /// `asm/geom.S`: one object's vertices, one object's faces (`GEO_ARGS`); then band by band: file the
+    /// sorted triangles under their first bands, activate a band's newcomers (returns how many are
+    /// active), draw the active ones' rows into `STAGE`.
+    fn geo_xform();
+    fn geo_faces();
+    fn geo_bin();
+    fn geo_activate(band: u8) -> u8;
+    fn geo_draw(band: u8);
+    /// `asm/floor.S`: CIA 2 ticks for 20,480 cycles.
     fn turbo_probe() -> u16;
 }
 
-const SKY: u8 = 14;
-const SEA: u8 = 6;
-const PANEL: u8 = 11;
+/// NTSC: 263 lines of 65 cycles.
+const FRAME_CYCLES: u16 = 263 * 65;
 
-const SCREEN: u16 = 0xC000;
-const BITMAP: u16 = 0xE000;
-const COLOR_RAM: u16 = 0xD800;
+struct C64;
 
-/// Status block, read by `tools/c64u.py status`.
-mod status {
-    pub const BASE: u16 = 0x0200;
-    pub const MAGIC: u16 = 0; // 'C' once running
-    pub const STATE: u16 = 1; // 1 turbo, 2 waiting for REU, 3 running, 8 image mismatch
-    pub const FRAMES: u16 = 2; // u16
-    pub const FRAME_TICKS: u16 = 4; // u32, CIA ticks (~1 µs) for the last frame
-    pub const GEOMETRY_TICKS: u16 = 8; // u32: paging + horizon + terrain walk
-    pub const PAGING_TICKS: u16 = 12; // u32: both phase fetches
-    pub const PIXELS_TICKS: u16 = 16; // u32: paging + sort + raster + pack + publish
-    pub const COMMANDS: u16 = 20; // u16
-    pub const TERRAIN_TRIS: u16 = 22; // u16
-    pub const RESOLUTION: u16 = 24; // u32 (Q8)
-    pub const NODES: u16 = 28; // u16
-    pub const MISSES: u16 = 30; // u16 cache misses (DMAs) this frame
-    pub const DROPPED: u16 = 32; // u16
-    pub const PROBES: u16 = 34; // u16 turbo probes at boot
-    pub const STACK_LOW: u16 = 36; // u16 lowest soft-stack address written (from $0800 down)
-    pub const SIZE: u16 = 38;
+impl Hw for C64 {
+    #[inline(always)]
+    fn peek(&mut self, addr: u16) -> u8 {
+        unsafe { read_volatile(addr as *const u8) }
+    }
+    #[inline(always)]
+    fn poke(&mut self, addr: u16, value: u8) {
+        unsafe { write_volatile(addr as *mut u8, value) }
+    }
+    #[inline(always)]
+    fn reu_exec(&mut self, command: u8) {
+        unsafe { reu_execute(command) }
+    }
+    fn fill(&mut self, addr: u16, len: u16, value: u8) {
+        unsafe { core::ptr::write_bytes(addr as *mut u8, value, len as usize) }
+    }
+    #[inline(never)]
+    fn poly_row(&mut self, row: &Row) {
+        unsafe {
+            let a = POLY_ARGS as *mut u8;
+            for k in 0..8 {
+                write_volatile(a.add(args::XL as usize + k), row.xl[k]);
+                write_volatile(a.add(args::XR as usize + k), row.xr[k]);
+            }
+            write_volatile(a.add(args::PAT as usize), row.pat[0]);
+            write_volatile(a.add(args::PAT as usize + 1), row.pat[1]);
+            write_volatile(a.add(args::BASE as usize), row.base as u8);
+            write_volatile(a.add(args::BASE as usize + 1), (row.base >> 8) as u8);
+            poly_row();
+        }
+    }
+    fn xform(&mut self, _scene: &[u8], o: &Obj, _v: &mut Verts) {
+        let g = GEO_ARGS;
+        poke16(g + geo_args::VPTR, SCENE_RAM + o.verts);
+        poke(g + geo_args::NV, o.nv);
+        poke(g + geo_args::SH, 14 - o.t);
+        poke(g + geo_args::T, o.t);
+        poke16(g + geo_args::X0, o.x0 as u16);
+        poke16(g + geo_args::Z0, o.z0 as u16);
+        poke16(g + geo_args::CC, o.cc as u16);
+        poke16(g + geo_args::SS, o.ss as u16);
+        unsafe { geo_xform() }
+    }
+    fn faces(&mut self, _scene: &[u8], o: &Obj, _v: &Verts, _w: &mut Work) {
+        poke16(GEO_ARGS + geo_args::FPTR, SCENE_RAM + o.faces);
+        poke(GEO_ARGS + geo_args::NF, o.nf);
+        unsafe { geo_faces() }
+    }
 }
+
 
 #[inline(always)]
 fn peek(addr: u16) -> u8 {
-    unsafe { read_volatile(addr as *const u8) }
+    C64.peek(addr)
 }
 
 #[inline(always)]
 fn poke(addr: u16, value: u8) {
-    unsafe { write_volatile(addr as *mut u8, value) }
+    C64.poke(addr, value)
 }
 
 fn poke16(addr: u16, value: u16) {
@@ -75,53 +118,38 @@ fn poke16(addr: u16, value: u16) {
     poke(addr + 1, (value >> 8) as u8);
 }
 
-fn status_set16(field: u16, value: u16) {
-    poke16(status::BASE + field, value);
-}
-
-fn status_set32(field: u16, value: u32) {
-    poke16(status::BASE + field, value as u16);
-    poke16(status::BASE + field + 2, (value >> 16) as u16);
-}
-
-/// REU → C64 in one command. The C64U reloads the whole REU address on any
-/// address-register write (../mode7/docs/validation.md): write all three.
-#[inline(never)]
-fn reu_fetch(reu: u32, c64: u16, len: u16) {
-    poke(0xDF06, (reu >> 16) as u8);
-    poke(0xDF05, (reu >> 8) as u8);
-    poke(0xDF04, reu as u8);
-    poke16(0xDF02, c64);
-    poke16(0xDF07, len);
-    unsafe { reu_execute(0x91) };
-}
-
-/// A free-running 32-bit CIA 2 clock: timer A counts ~1 MHz cycles, timer B
-/// counts its underflows.
-fn clock_start() {
-    poke16(0xDD04, 0xFFFF);
-    poke16(0xDD06, 0xFFFF);
-    poke(0xDD0F, 0x51); // B: start, force load, count A underflows
-    poke(0xDD0E, 0x11); // A: start, force load, continuous
-}
-
-#[inline(never)]
-fn clock() -> u32 {
+/// NTSC frames since the clock started (CIA 2 timer B counting timer A's frame-long underflows).
+fn frames_elapsed() -> u16 {
     loop {
-        let b_hi = peek(0xDD07);
-        let b_lo = peek(0xDD06);
-        let a_hi = peek(0xDD05);
-        let a_lo = peek(0xDD04);
-        if peek(0xDD07) == b_hi && peek(0xDD06) == b_lo {
-            let b = !(b_lo as u16 | (b_hi as u16) << 8);
-            let a = !(a_lo as u16 | (a_hi as u16) << 8);
-            return (b as u32) << 16 | a as u32;
+        let hi = peek(0xDD07);
+        let lo = peek(0xDD06);
+        if peek(0xDD07) == hi {
+            return !(lo as u16 | (hi as u16) << 8);
         }
     }
 }
 
-/// Turbo engages ~2 s after `$D031` is written: probe until a timed loop runs
-/// over 10x fast.
+/// CIA 1 timer A as a stopwatch (1 MHz ticks, counting down from `$FFFF`).
+fn stopwatch_start() {
+    poke(0xDC04, 0xFF);
+    poke(0xDC05, 0xFF);
+    poke(0xDC0E, 0x11);
+}
+
+fn stopwatch_stop() -> u16 {
+    poke(0xDC0E, 0x00);
+    !(peek(0xDC04) as u16 | (peek(0xDC05) as u16) << 8)
+}
+
+fn in_vblank() -> bool {
+    peek(0xD011) & 0x80 != 0 || peek(0xD012) >= 251
+}
+
+fn wait_vblank() {
+    while !in_vblank() {}
+}
+
+/// Turbo engages ~2 s after `$D031` is written: probe until a timed loop runs over 10x fast.
 fn wait_turbo() -> u16 {
     poke(0xD031, 0x8F);
     let mut probes = 0u16;
@@ -133,290 +161,165 @@ fn wait_turbo() -> u16 {
     }
 }
 
-#[inline(never)]
-fn raster_line() -> u16 {
+/// Wait for the package (it may be uploaded after the program starts), flashing the border.
+fn wait_image(c: &mut C64) {
+    let mut header = [0u8; 10];
     loop {
-        let lo = peek(0xD012);
-        let hi = peek(0xD011) & 0x80;
-        if peek(0xD012) == lo {
-            return lo as u16 | (hi as u16) << 1;
-        }
-    }
-}
-
-/// Patched by tools/phases.py: the stamp of this build's phase images.
-#[unsafe(no_mangle)]
-static PHASE_STAMP: u16 = 0xFFFF;
-/// Each phase's length, from the REU header.
-static mut PHASE_LEN: [u16; paging::PHASES as usize] = [0; paging::PHASES as usize];
-static mut CURRENT_PHASE: u8 = 0xFF;
-
-/// Make phase `p` current: one REU fetch unless it is in the window already.
-#[inline(never)]
-fn page(p: u8) {
-    unsafe {
-        if CURRENT_PHASE == p {
-            return;
-        }
-        CURRENT_PHASE = p;
-        // At most 32 KiB in one command: slots are inside one 512 KiB REU bank.
-        reu_fetch(paging::slot(p), paging::WINDOW, PHASE_LEN[p as usize]);
-    }
-}
-
-/// Wait for the REU image (it may be uploaded after the program starts),
-/// flashing the border. An image from another build (wrong stamp) keeps it
-/// waiting with an orange border: the REU usually still holds the previous
-/// build while the new one uploads (its header arrives last).
-fn wait_image() {
-    let mut header = [0u8; package::HEADER_LEN as usize];
-    loop {
-        reu_fetch(package::HEADER, header.as_mut_ptr() as u16, package::HEADER_LEN);
-        let header = unsafe { read_volatile(&header) };
-        let stamp = unsafe { read_volatile(&raw const PHASE_STAMP) };
-        let ours = &header[..8] == package::MAGIC && u16::from_le_bytes([header[8], header[9]]) == package::VERSION;
-        if ours && u16::from_le_bytes([header[10], header[11]]) != stamp {
-            poke(status::BASE + status::STATE, 8);
-            poke(0xD020, 8);
-            continue;
-        }
-        if ours {
-            for p in 0..paging::PHASES as usize {
-                unsafe { PHASE_LEN[p] = u16::from_le_bytes([header[12 + 2 * p], header[13 + 2 * p]]) };
-            }
+        hw::read_into(c, HEADER, BOUNCE, &mut header);
+        if &header[..8] == MAGIC && u16::from_le_bytes([header[8], header[9]]) == PACKAGE_VERSION {
             return;
         }
         poke(0xD020, peek(0xD020).wrapping_add(1));
-        for _ in 0..20000u16 {
-            core::hint::spin_loop();
+        for _ in 0..8 {
+            while in_vblank() {}
+            wait_vblank();
         }
     }
 }
 
-/// Terrain samples from the REU through a 256-entry direct-mapped cache
-/// (resident, so it survives paging).
-struct ReuTerrain {
-    tags: UnsafeCell<[u32; 256]>,
-    records: UnsafeCell<[[u8; 4]; 256]>,
-    misses: UnsafeCell<u16>,
-}
-
-impl ReuTerrain {
-    const fn new() -> Self {
-        Self { tags: UnsafeCell::new([u32::MAX; 256]), records: UnsafeCell::new([[0; 4]; 256]), misses: UnsafeCell::new(0) }
+fn video_init(c: &mut C64) {
+    let sky_bytes = FLOOR_ROW * layout::ROW_STRIDE;
+    for buf in BUFFERS {
+        c.fill(buf.screen, layout::CELLS, COLORS[1] << 4 | COLORS[2]);
+        c.fill(buf.bitmap, sky_bytes, chopper::mode7::SKY_BYTE);
+        c.fill(buf.bitmap + sky_bytes, layout::BITMAP_BYTES - sky_bytes, 0);
     }
-
-    #[inline(never)]
-    fn record(&self, i: usize, j: usize) -> [u8; 4] {
-        let key = j as u32 * SIZE as u32 + i as u32;
-        let slot = ((i as u8) ^ ((j as u8) << 3) ^ ((j >> 5) as u8)) as usize;
-        unsafe {
-            let tags = &mut *self.tags.get();
-            let records = self.records.get() as *mut [u8; 4];
-            if tags[slot] != key {
-                tags[slot] = key;
-                *self.misses.get() += 1;
-                reu_fetch(package::record(i, j), records.add(slot) as u16, 4);
-            }
-            read_volatile(records.add(slot))
-        }
-    }
-
-    fn take_misses(&self) -> u16 {
-        unsafe { core::mem::replace(&mut *self.misses.get(), 0) }
-    }
-}
-
-impl TerrainData for ReuTerrain {
-    fn height(&self, i: usize, j: usize) -> u8 {
-        self.record(i, j)[0]
-    }
-    fn kind(&self, i: usize, j: usize) -> u8 {
-        self.record(i, j)[1]
-    }
-    fn d2(&self, i: usize, j: usize) -> u8 {
-        self.record(i, j)[2]
-    }
-    fn hmax(&self, i: usize, j: usize) -> u8 {
-        self.record(i, j)[3]
-    }
-}
-
-/// The target is single-threaded and the cache is only touched from main.
-struct ReuTerrainCell(ReuTerrain);
-unsafe impl Sync for ReuTerrainCell {}
-
-static TERRAIN: ReuTerrainCell = ReuTerrainCell(ReuTerrain::new());
-static mut RENDERER: Renderer = Renderer::new();
-/// PIXELS' scratch: window RAM after its code (link.ld `.pixels_bss`), only
-/// valid while PIXELS is paged in and fully rewritten before each use.
-#[unsafe(link_section = ".pixels_bss")]
-static mut SCRATCH: RasterScratch = RasterScratch::new();
-#[unsafe(link_section = ".pixels_bss")]
-static mut PIXELS: [u8; BAND_PIXELS] = [0; BAND_PIXELS];
-
-/// Pack one band and publish it into the displayed bitmap, screen matrix and
-/// colour RAM, waiting while the beam is fetching that band.
-#[inline(never)]
-fn publish(band: usize, pixels: &[u8; BAND_PIXELS], background: u8) {
-    let mut previous_screen = [0u8; 40];
-    let mut previous_color = [0u8; 40];
-    for cell in 0..40 {
-        previous_screen[cell] = peek(SCREEN + (band * 40 + cell) as u16);
-        previous_color[cell] = peek(COLOR_RAM + (band * 40 + cell) as u16) & 15;
-    }
-    let mut bitmap = [0u8; 320];
-    let mut screen = [0u8; 40];
-    let mut colors = [0u8; 40];
-    pack_band(pixels, &previous_screen, &previous_color, background, &mut bitmap, &mut screen, &mut colors);
-    // Visible text row `band` spans raster lines 51 + 8·band .. +8.
-    let top = 51 + 8 * band as u16;
-    loop {
-        let line = raster_line();
-        if line + 2 < top || line >= top + 8 {
-            break;
-        }
-    }
-    unsafe {
-        core::ptr::copy_nonoverlapping(bitmap.as_ptr(), (BITMAP + band as u16 * 320) as *mut u8, 320);
-        core::ptr::copy_nonoverlapping(screen.as_ptr(), (SCREEN + band as u16 * 40) as *mut u8, 40);
-        core::ptr::copy_nonoverlapping(colors.as_ptr(), (COLOR_RAM + band as u16 * 40) as *mut u8, 40);
-    }
-}
-
-fn video_init() {
-    unsafe {
-        core::ptr::write_bytes(BITMAP as *mut u8, 0, 8000);
-        core::ptr::write_bytes(SCREEN as *mut u8, 0, 1000);
-        core::ptr::write_bytes(COLOR_RAM as *mut u8, 0, 1000);
-    }
+    c.fill(layout::COLOR_RAM, FLOOR_ROW * layout::COLS, SKY_COLOR);
+    c.fill(layout::COLOR_RAM + FLOOR_ROW * layout::COLS, layout::CELLS - FLOOR_ROW * layout::COLS, COLORS[3]);
     poke(0xD015, 0);
     poke(0xD020, 0);
-    poke(0xD021, SKY);
+    poke(0xD021, COLORS[0]);
     poke(0xDD02, peek(0xDD02) | 3);
-    poke(0xDD00, peek(0xDD00) & !3); // VIC bank 3: $C000-$FFFF
-    poke(0xD018, 0x08); // screen $C000, bitmap $E000
-    poke(0xD016, 0x18); // multicolor, 40 columns
-    poke(0xD011, 0x3B); // bitmap mode, display on, 25 rows
+    poke(0xDD00, (peek(0xDD00) & !3) | BUFFERS[0].dd00);
+    poke(0xD018, BUFFERS[0].d018);
+    poke(0xD016, layout::D016);
+    wait_vblank();
+    poke(0xD011, layout::D011);
 }
 
-/// The autopilot circuit: a 6 km circle 150 m above the ground, banked 15°.
-#[inline(never)]
-fn autopilot(terrain: &ReuTerrain, frame: u16) -> Camera {
-    let a = frame.wrapping_mul(0x0050);
-    let x = sin(a) * 6000 >> 14;
-    let z = (-cos(a) * 6000 >> 14) - 2000;
-    let ground = terrain::height_at(terrain, x, z);
-    let degree = (65536 / 360) as u16;
-    Camera::new(WorldPos { x, y: ground + 600, z }, a.wrapping_add(QUARTER_TURN), 0u16.wrapping_sub(6 * degree), 15 * degree)
-}
+/// `asm/floor.S`'s camera (x, y in 8.8 texels; `layout::CAM_RAM`), copied to its zero page each row.
+const CAMERA: u16 = layout::CAM_RAM;
 
-/// GEOMETRY entry: build this frame's command list.
-#[inline(never)]
-#[unsafe(link_section = ".phase.geometry.entry")]
-#[unsafe(no_mangle)]
-extern "C" fn geometry_frame(frame: u16, lod: &Lod, stats: &mut Stats) {
-    let terrain = &TERRAIN.0;
-    let renderer = unsafe { &mut *(&raw mut RENDERER) };
-    let camera = autopilot(terrain, frame);
-    renderer.begin(SKY);
-    horizon::draw_ground(renderer, &camera, SEA);
-    *stats = terrain::render(terrain, &camera, *lod, renderer);
-}
-
-/// PIXELS entry: sort, rasterize, pack and publish the view bands.
-#[inline(never)]
-#[unsafe(link_section = ".phase.pixels.entry")]
-#[unsafe(no_mangle)]
-extern "C" fn pixels_frame() {
-    let renderer = unsafe { &mut *(&raw mut RENDERER) };
-    let scratch = unsafe { &mut *(&raw mut SCRATCH) };
-    let pixels = unsafe { &mut *(&raw mut PIXELS) };
-    renderer.finish();
-    let mut pass = renderer.raster_pass(scratch);
-    while let Some(band) = pass.next_band(pixels) {
-        publish(band as usize, pixels, SKY);
+/// Path frame `tick`: fetch the camera and its angle's line table.
+fn frame_setup(c: &mut C64, tick: u16) -> Camera {
+    let mut cam = [0u8; PATH_ENTRY as usize];
+    hw::read_into(c, HEADER + H_PATH + tick as u32 * PATH_ENTRY, BOUNCE, &mut cam);
+    hw::fetch(c, line_table(cam[4]), LINE_RAM, LINE_BLOCK as u16);
+    for (i, &b) in cam[..4].iter().enumerate() {
+        poke(CAMERA + i as u16, b);
     }
+    let pop = peek(STATUS + status::POP);
+    Camera { x: u16::from_le_bytes([cam[0], cam[1]]), y: u16::from_le_bytes([cam[2], cam[3]]), angle: cam[4], pop }
 }
 
-/// PIXELS entry: the cockpit panel, drawn once (N1: a plain placeholder).
-#[inline(never)]
-#[unsafe(link_section = ".phase.pixels.entry")]
-#[unsafe(no_mangle)]
-extern "C" fn pixels_panel() {
-    let pixels = unsafe { &mut *(&raw mut PIXELS) };
-    for band in VIEW_BANDS..BANDS {
-        pixels.fill(PANEL);
-        draw_text(band as u8, pixels, 4, 142, b"CHOPPER N1 - TERRAIN FLYTHROUGH", 1, 1);
-        draw_text(band as u8, pixels, 4, 152, b"C64 ULTIMATE 64 MHZ + 16 MB REU", 15, 1);
-        publish(band, pixels, SKY);
-    }
+/// Fetch the scene block to `SCENE_RAM`; its length.
+fn scene_load(c: &mut C64) -> u16 {
+    let mut len = [0u8; 2];
+    hw::read_into(c, SCENE, BOUNCE, &mut len);
+    let len = u16::from_le_bytes(len).min(SCENE_MAX);
+    hw::fetch(c, SCENE, SCENE_RAM, len);
+    len
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> i16 {
+    let c = &mut C64;
     poke(0xD011, 0x0B); // display off while booting
-    unsafe { core::ptr::write_bytes(status::BASE as *mut u8, 0, status::SIZE as usize) };
-    poke(status::BASE + status::STATE, 1);
-    // Paint the free soft stack so its high-water mark can be measured.
-    unsafe { core::ptr::write_bytes(STACK_FLOOR as *mut u8, 0xA5, (0x0700 - STACK_FLOOR) as usize) };
+    poke(STATUS + status::MAGIC, 0);
     let probes = wait_turbo();
-    status_set16(status::PROBES, probes);
-    poke(0xDF09, 0);
-    poke(0xDF0A, 0);
-    poke(status::BASE + status::STATE, 2);
-    wait_image();
-    video_init();
-    page(paging::PIXELS);
-    pixels_panel();
-    clock_start();
-    poke(status::BASE + status::STATE, 3);
-    poke(status::BASE + status::MAGIC, b'C');
+    hw::init(c);
+    wait_image(c);
+    chopper::fixed::init_tables();
+    let scene_len = scene_load(c);
+    let scene = unsafe { core::slice::from_raw_parts(SCENE_RAM as *const u8, scene_len as usize) };
+    // The scratch lives at WORK and VERTS (outside the program image); geom::draw resets what it reads.
+    let work = unsafe { &mut *(WORK as *mut Work) };
+    let verts = unsafe { &mut *(VERTS as *mut Verts) };
+    // Shade patterns for asm/geom.S: even bytes, then odd.
+    for (i, p) in chopper::poly::PATTERNS.iter().enumerate() {
+        poke(PATS + i as u16, p[0]);
+        poke(PATS + 16 + i as u16, p[1]);
+    }
+    video_init(c);
 
-    let mut governor = Governor::new();
-    let mut stats = Stats::default();
-    let mut frame = 0u16;
-    let mut previous = clock();
+    // The frame clock: CIA 2 timer A underflows once an NTSC frame, timer B counts the underflows.
+    poke16(0xDD04, FRAME_CYCLES - 1);
+    poke16(0xDD06, 0xFFFF);
+    poke(0xDD0F, 0x51); // B: start, force load, count A underflows
+    poke(0xDD0E, 0x11); // A: start, force load, continuous
+
+    c.fill(STATUS, status::SIZE, 0);
+    poke16(STATUS + status::PROBES, probes);
+    poke(STATUS + status::MAGIC, STATUS_MAGIC);
+
+    let mut tick = 0u16;
+    let mut frames = 0u16;
+    let (mut window, mut in_window) = (frames_elapsed(), 0u8);
+    let mut fire_was = false;
+    // Sky bands geometry drew into last frame: republished (clean) even when nothing touches them now.
+    let mut sky_dirty = [false; FLOOR_ROW as usize];
     loop {
-        let start = clock();
-        page(paging::GEOMETRY);
-        let paged_geometry = clock();
-        geometry_frame(frame, &governor.lod, &mut stats);
-        let geometry = clock();
-        page(paging::PIXELS);
-        let paged_pixels = clock();
-        pixels_frame();
-        let end = clock();
-        let renderer = unsafe { &*(&raw const RENDERER) };
-        governor.update(renderer.triangle_count as u32);
+        let now = frames_elapsed();
+        if peek(STATUS + status::HOLD) == 0 {
+            tick = now % PATH_LEN;
+        }
+        stopwatch_start();
+        let cam = frame_setup(c, tick);
+        poke16(STATUS + status::SETUP_US, stopwatch_stop());
 
-        status_set32(status::FRAME_TICKS, end.wrapping_sub(previous));
-        status_set32(status::GEOMETRY_TICKS, geometry.wrapping_sub(start));
-        status_set32(status::PAGING_TICKS, paged_geometry.wrapping_sub(start).wrapping_add(paged_pixels.wrapping_sub(geometry)));
-        status_set32(status::PIXELS_TICKS, end.wrapping_sub(geometry));
-        status_set16(status::COMMANDS, renderer.triangle_count);
-        status_set16(status::TERRAIN_TRIS, stats.triangles as u16);
-        status_set32(status::RESOLUTION, governor.lod.resolution_q8 as u32);
-        status_set16(status::NODES, stats.nodes as u16);
-        status_set16(status::MISSES, TERRAIN.0.take_misses());
-        status_set16(status::DROPPED, renderer.dropped);
-        previous = end;
-        frame = frame.wrapping_add(1);
-        status_set16(status::FRAMES, frame);
-        status_set16(status::STACK_LOW, stack_low());
+        // Geometry: transform, cull and sort into the depth buckets, then file by first band.
+        stopwatch_start();
+        let st = geom::draw(c, scene, cam, layout::BUFFERS[0].bitmap, work, verts);
+        unsafe { geo_bin() };
+        poke16(STATUS + status::GEOM_US, stopwatch_stop());
+
+        // Band by band: build each cell row in STAGE (floor, then the triangles crossing it, in painter's
+        // order) and publish it when the raster is elsewhere. One buffer; a frame tears between bands.
+        let doubled = peek(STATUS + status::MODE) & 1;
+        stopwatch_start();
+        unsafe { floor_begin(doubled) };
+        for band in 0..BANDS as u8 {
+            let active = unsafe { geo_activate(band) };
+            if band < FLOOR_ROW as u8 {
+                let dirty = &mut sky_dirty[band as usize];
+                if active > 0 || *dirty {
+                    c.fill(STAGE, layout::ROW_STRIDE, chopper::mode7::SKY_BYTE);
+                    if active > 0 {
+                        unsafe { geo_draw(band) };
+                    }
+                    unsafe { band_publish(band) };
+                }
+                *dirty = active > 0;
+            } else {
+                unsafe { floor_row(STAGE, band * 8) };
+                if active > 0 {
+                    unsafe { geo_draw(band) };
+                }
+                unsafe { band_publish(band) };
+            }
+        }
+        unsafe { floor_end() };
+        poke16(STATUS + status::RENDER_US, stopwatch_stop());
+        poke(STATUS + status::TRIS, peek(GEO_ARGS + geo_args::TRIS));
+        poke(STATUS + status::OBJECTS, st.objects);
+        poke16(STATUS + status::TICK, tick);
+
+        frames = frames.wrapping_add(1);
+        poke16(STATUS + status::FRAMES, frames);
+        in_window += 1;
+        if now.wrapping_sub(window) >= 60 {
+            poke(STATUS + status::FPS, in_window);
+            window = now;
+            in_window = 0;
+        }
+
+        // Fire on joystick 2 toggles full / line-doubled.
+        let fire = peek(0xDC00) & 0x10 == 0;
+        if fire && !fire_was {
+            poke(STATUS + status::MODE, doubled ^ 1);
+        }
+        fire_was = fire;
     }
-}
-
-/// The soft stack's lowest legal address (just above the status block).
-const STACK_FLOOR: u16 = 0x0240;
-
-/// The lowest soft-stack byte that no longer holds the boot paint.
-fn stack_low() -> u16 {
-    let mut a = STACK_FLOOR;
-    while a < 0x0700 && peek(a) == 0xA5 {
-        a += 1;
-    }
-    a
 }
 
 #[panic_handler]

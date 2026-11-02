@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the C64 program (WSL/Linux with rust-mos + llvm-mos SDK). Pattern: ../mode7/scripts/build-target.sh.
+# Build the C64 program (WSL/Linux with rust-mos + llvm-mos SDK); from ../talonhd/scripts/build-target.sh.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -14,6 +14,4 @@ for elf in "$native_target/mos-c64-none/release/deps"/chopper_c64-*.elf; do
     fi
 done
 "$LLVM_MOS/bin/llvm-size" -A dist/chopper.elf | grep -v '^\.debug' || true
-python3 tools/phases.py dist/chopper.elf dist/chopper.prg dist/phases
-python3 tools/check_phases.py dist/chopper.elf
 ls -l dist/chopper.prg

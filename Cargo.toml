@@ -2,8 +2,7 @@
 name = "chopper"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
-description = "A Super Huey tribute: free-flight flat-shaded helicopter sim for the 64 MHz C64 Ultimate + 16 MiB REU"
+description = "A Super Huey tribute: helicopter sim on a mode-7 floor with streamed 3D objects, for the 64 MHz C64 Ultimate + 16 MiB REU (renderer from ../mode7)"
 
 [lib]
 name = "chopper"

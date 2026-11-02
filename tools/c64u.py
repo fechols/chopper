@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Drive the C64 Ultimate for MODE 7: run the PRG, upload the REU image, read the status block, hold a
-frame and dump it for `mode7 compare`. Device class (REST + DMA socket) from ../talonhd/tools/c64u.py,
+frame and dump it for `chopper compare`. Device class (REST + DMA socket) from ../talonhd/tools/c64u.py,
 itself adapted from impact/tools/c64u_device.py (MIT).
 
-    python tools/c64u.py run dist/mode7.prg
-    python tools/c64u.py upload-reu dist/mode7.reu
+    python tools/c64u.py run dist/chopper.prg
+    python tools/c64u.py upload-reu dist/chopper.reu
     python tools/c64u.py status
     python tools/c64u.py mode full|doubled
     python tools/c64u.py pop PIXELS
@@ -22,8 +22,8 @@ import time
 import urllib.parse
 import urllib.request
 
-STATUS = 0x0200
-BUFFERS = [0x6000, 0xA000]
+STATUS = 0xCA80
+BUFFERS = [0x6000]
 
 
 class Device:
@@ -138,7 +138,7 @@ def main():
         dev.write(STATUS + 20, bytes([args.pixels]))
     elif args.cmd == 'dump':
         if args.hold:
-            dev.write(STATUS + 6, b'')
+            dev.write(STATUS + 6, bytes([1]))  # HOLD: any nonzero value freezes the path tick
             time.sleep(0.5)  # let the frames in flight finish and flip
         out = Path(args.dir)
         out.mkdir(parents=True, exist_ok=True)

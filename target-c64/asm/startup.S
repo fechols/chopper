@@ -1,5 +1,5 @@
-; Runs before the C runtime: take the machine over for good. No ROM, no IRQs.
-; (From ../mode7/target-c64/asm/startup.S.)
+; Runs before the CRT: take the machine over for good. No ROM, no IRQs.
+; (From ../talonhd/target-c64/asm/startup.S, without its code relocation.)
 .section .init.000,"ax",@progbits
 .globl chopper_boot
 chopper_boot:

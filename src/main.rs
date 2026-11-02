@@ -1,216 +1,215 @@
-//! Host tools: world generation, previews and LOD budget measurements.
+//! `chopper compare [--view roto|floor|both] [--angle DEG] [--zoom Z] [--height H] [--x X] [--y Y] [--out DIR]`
+//!
+//! Renders a view with every path on the C64 model, prints the modeled C64U cost, and writes
+//! `<out>/<view>_<path>.png` plus a 2×2 sheet `<out>/<view>_sheet.png` (reference, dma, dma-pre, cpu4).
 
-use chopper::camera::{Camera, WorldPos};
-use chopper::render::{PALETTE_RGB, Renderer};
-use chopper::screen::Screen;
-use chopper::terrain::{self, Governor, Lod, SIZE, TerrainData};
-use chopper::worldgen::{self, World};
-use chopper::{horizon, png};
-use std::path::{Path, PathBuf};
+use chopper::camera::{self, Frame, View};
+use chopper::cost::{Cost, FRAME_US};
+use chopper::layout::BUFFERS;
+use chopper::model::Machine;
+use chopper::palette::PALETTE;
+use chopper::{map, mode7 as m7, png};
+use std::path::PathBuf;
 
+const COLORS: [u8; 4] = [5, 12, 1, 2]; // grass, tarmac, paint, kerbs
 const SKY: u8 = 14;
-const SEA: u8 = 6;
-const SEED: u32 = 1983;
 
-fn usage() -> ! {
-    eprintln!(
-        "usage:\n  chopper map <out.png>\n  chopper view <out.png> <x> <agl> <z> <yaw°> <pitch°> <roll°>\n  chopper tour <out-dir>"
-    );
-    std::process::exit(2);
+#[derive(Clone, Copy)]
+enum Path {
+    Dma,
+    DmaPre,
+    Cpu(u8),
 }
 
-fn angle(degrees: f64) -> u16 {
-    ((degrees / 360.0 * 65536.0).round() as i64).rem_euclid(65536) as u16
-}
-
-struct Frame {
-    renderer: Renderer,
-    stats: terrain::Stats,
-}
-
-fn render_frame(world: &World, camera: &Camera, lod: Lod) -> Frame {
-    let mut renderer = Renderer::new();
-    renderer.begin(SKY);
-    horizon::draw_ground(&mut renderer, camera, SEA);
-    let stats = terrain::render(world, camera, lod, &mut renderer);
-    renderer.finish();
-    Frame { renderer, stats }
-}
-
-fn save(frame: &Frame, path: &Path, caption: &str) {
-    let mut screen = Screen::new();
-    screen.draw_view(&frame.renderer, |_, _| {});
-    let text = caption.to_ascii_uppercase();
-    screen.draw_panel(|band, px| {
-        px.fill(11);
-        chopper::render::draw_text(band, px, 4, 140, text.as_bytes(), 1, 1);
-    });
-    screen.save_png(path).unwrap();
-}
-
-fn camera_at(world: &World, x: i32, agl: i32, z: i32, yaw: f64, pitch: f64, roll: f64) -> Camera {
-    let ground = terrain::height_at(world, x, z);
-    Camera::new(WorldPos { x, y: ground + agl, z }, angle(yaw), angle(pitch), angle(roll))
-}
-
-/// Run the governor to its steady state on one view.
-fn settle(world: &World, camera: &Camera) -> (Frame, Lod) {
-    let mut governor = Governor::new();
-    let mut frame = render_frame(world, camera, governor.lod);
-    for _ in 0..40 {
-        governor.update(frame.renderer.triangle_count as u32);
-        frame = render_frame(world, camera, governor.lod);
-    }
-    (frame, governor.lod)
-}
-
-fn report(name: &str, frame: &Frame, lod: Lod) {
-    let s = frame.stats;
-    println!(
-        "{name:>12}: res {:5.2}  nodes {:4}  culled {:4}  leaves {:4}  terrain tris {:3}  commands {:3}  dropped {}  reads {}  violations {}",
-        lod.resolution_q8 as f64 / 256.0,
-        s.nodes,
-        s.culled,
-        s.leaves,
-        s.triangles,
-        frame.renderer.triangle_count,
-        frame.renderer.dropped,
-        s.reads,
-        s.restriction_violations
-    );
-}
-
-fn map(world: &World, path: &Path) {
-    let scale = 2;
-    let w = SIZE / scale;
-    let mut rgb = Vec::with_capacity(w * w);
-    for y in 0..w {
-        for x in 0..w {
-            let (i, j) = (x * scale, (w - 1 - y) * scale);
-            let k = world.kind(i, j) as usize;
-            let shade = if world.height(i, j) > world.height((i + 2).min(SIZE - 1), (j + 2).min(SIZE - 1)) { 0 } else { 1 };
-            rgb.push(PALETTE_RGB[terrain::RAMPS[k][shade] as usize]);
+impl Path {
+    fn name(self) -> String {
+        match self {
+            Path::Dma => "dma".into(),
+            Path::DmaPre => "dma-pre".into(),
+            Path::Cpu(n) => format!("cpu{n}"),
         }
     }
-    for pad in &world.pads {
-        let (x, y) = (pad.i / scale, w - 1 - pad.j / scale);
-        for d in 0..5 {
-            rgb[y * w + x - 2 + d] = [255, 0, 0];
-            rgb[(y - 2 + d) * w + x] = [255, 0, 0];
+}
+
+fn render(path: Path, f: &Frame, image: &[u8]) -> (Vec<[u8; 3]>, Cost, Option<Cost>) {
+    let mut m = Machine::new(image);
+    let buf = BUFFERS[0];
+    m7::setup_colors(&mut m, buf, COLORS, SKY, f.horizon_row);
+    let (cost, fill) = match path {
+        Path::Dma => (m7::per_byte_dma(&mut m, buf, &f.lines, m7::DmaMode::RAW), None),
+        Path::DmaPre => (m7::per_byte_dma(&mut m, buf, &f.lines, m7::DmaMode::PRE), None),
+        Path::Cpu(n) => {
+            let fill = m7::fill_cache(&mut m, f.window.0, f.window.1);
+            (m7::cpu_gather(&mut m, buf, &f.lines, n), Some(fill))
+        }
+    };
+    assert_eq!(m.stats.stray_writes, 0);
+    (m.decode(buf, COLORS[0]), cost, fill)
+}
+
+fn colorize(codes: &[u8], horizon_row: u16) -> Vec<[u8; 3]> {
+    codes
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let row = (i / 160 / 8) as u16;
+            let col = if c == 3 && row < horizon_row { SKY } else { COLORS[c as usize] };
+            PALETTE[col as usize]
+        })
+        .collect()
+}
+
+fn sheet(panels: &[&[[u8; 3]]]) -> (u32, u32, Vec<[u8; 3]>) {
+    const GAP: usize = 4;
+    let (pw, ph) = (320, 200);
+    let (w, h) = (2 * pw + GAP, 2 * ph + GAP);
+    let mut out = vec![[32u8, 32, 32]; w * h];
+    for (i, p) in panels.iter().enumerate() {
+        let (ox, oy) = ((i % 2) * (pw + GAP), (i / 2) * (ph + GAP));
+        for y in 0..ph {
+            for x in 0..pw {
+                out[(oy + y) * w + ox + x] = p[y * 160 + x / 2];
+            }
         }
     }
-    png::save(path, w as u32, w as u32, &rgb).unwrap();
+    (w as u32, h as u32, out)
 }
 
-/// Records which samples a frame touches (the REU fetch footprint).
-struct Tracing<'a> {
-    world: &'a World,
-    touched: std::cell::RefCell<std::collections::HashSet<(usize, usize)>>,
+fn arg(args: &[String], name: &str) -> Option<String> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
-impl TerrainData for Tracing<'_> {
-    fn height(&self, i: usize, j: usize) -> u8 {
-        self.touched.borrow_mut().insert((i, j));
-        self.world.height(i, j)
-    }
-    fn kind(&self, i: usize, j: usize) -> u8 {
-        self.touched.borrow_mut().insert((i, j));
-        self.world.kind(i, j)
-    }
-    fn d2(&self, i: usize, j: usize) -> u8 {
-        self.touched.borrow_mut().insert((i, j));
-        self.world.d2(i, j)
-    }
-    fn hmax(&self, i: usize, j: usize) -> u8 {
-        self.touched.borrow_mut().insert((i, j));
-        self.world.hmax(i, j)
-    }
+fn num(args: &[String], name: &str, default: f32) -> f32 {
+    arg(args, name).map_or(default, |s| s.parse().unwrap_or_else(|_| panic!("{name}: not a number: {s}")))
 }
 
-/// Fly a circuit at 12 fps and report the per-frame sample footprint: with
-/// 4-byte interleaved records, each unique sample is one small REU DMA.
-fn streaming(world: &World) {
-    let tracing = Tracing { world, touched: Default::default() };
-    let mut governor = Governor::new();
-    let mut previous = std::collections::HashSet::new();
-    let (mut total, mut new_total, mut worst, frames) = (0usize, 0usize, 0usize, 240);
-    for f in 0..frames {
-        // 50 m/s (200 units/s) at 12 fps around a 6 km circle, 150 m up.
-        let t = f as f64 / 12.0;
-        let a = t * 200.0 / 6000.0;
-        let (x, z) = ((6000.0 * a.sin()) as i32, (-6000.0 * a.cos()) as i32 - 2000);
-        let yaw = 90.0 + a.to_degrees();
-        let camera = camera_at(world, x, 600, z, yaw, -6.0, 15.0);
-        tracing.touched.borrow_mut().clear();
-        let mut renderer = Renderer::new();
-        renderer.begin(SKY);
-        horizon::draw_ground(&mut renderer, &camera, SEA);
-        terrain::render(&tracing, &camera, governor.lod, &mut renderer);
-        governor.update(renderer.triangle_count as u32);
-        let touched = tracing.touched.borrow().clone();
-        let new = touched.difference(&previous).count();
-        total += touched.len();
-        new_total += new;
-        worst = worst.max(touched.len());
-        previous = touched;
+fn bake(args: &[String]) -> Result<(), String> {
+    let out = PathBuf::from(args.get(1).cloned().unwrap_or("dist/chopper.reu".into()));
+    let image = chopper::package::bake(&map::generate());
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
+    std::fs::write(&out, &image).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("{}: {} bytes, package version {}", out.display(), image.len(), chopper::format::PACKAGE_VERSION);
+    Ok(())
+}
+
+fn frame(args: &[String]) -> Result<(), String> {
+    let reu = std::fs::read(arg(args, "--reu").unwrap_or("dist/chopper.reu".into())).map_err(|e| e.to_string())?;
+    let tick = num(args, "--tick", 0.0) as u16;
+    let doubled = args.iter().any(|a| a == "--doubled");
+    let out = PathBuf::from(arg(args, "--out").unwrap_or("output/frame".into()));
+    let (m, cost, geo) = chopper::package::render(&reu, tick, doubled);
+    let buf = BUFFERS[0];
+    png::save_wide(&out.with_extension("png"), 160, &m.decode(buf, COLORS[0]))?;
+    let bitmap = &m.ram[buf.bitmap as usize..buf.bitmap as usize + 8000];
+    std::fs::write(out.with_extension("bin"), bitmap).map_err(|e| e.to_string())?;
     println!(
-        "streaming: {} unique samples/frame (worst {worst}), {} new/frame; per-sample DMA at ~5.5 us: {:.1} ms/frame",
-        total / frames,
-        new_total / frames,
-        (total / frames) as f64 * 5.5 / 1000.0
+        "tick {tick} {}: {} DMAs, {} I/O writes, modeled {:.2} ms; {} objects, {} triangles ({} dropped)",
+        if doubled { "doubled" } else { "full" },
+        cost.dma_cmds,
+        cost.io_writes,
+        cost.us() / 1000.0,
+        geo.objects,
+        geo.tris,
+        geo.dropped
     );
+    Ok(())
 }
 
-fn main() {
+/// `mode7 walks [--reu R] [--tick N]`: every set-up triangle of a frame, as the C64 passes them to
+/// `asm/tri.S` (debugging the C64 against the host).
+fn walks(args: &[String]) -> Result<(), String> {
+    use chopper::geom::{self, Walk};
+    use chopper::hw::Hw;
+    struct Rec(Machine, Vec<Walk>);
+    impl Hw for Rec {
+        fn peek(&mut self, a: u16) -> u8 {
+            self.0.peek(a)
+        }
+        fn poke(&mut self, a: u16, v: u8) {
+            self.0.poke(a, v)
+        }
+        fn reu_exec(&mut self, c: u8) {
+            self.0.reu_exec(c)
+        }
+    }
+    let reu = std::fs::read(arg(args, "--reu").unwrap_or("dist/chopper.reu".into())).map_err(|e| e.to_string())?;
+    let tick = num(args, "--tick", 0.0) as u16;
+    let mut r = Rec(Machine::new(&reu), Vec::new());
+    let cam = chopper::package::camera(&reu, tick);
+    let mut work = Box::new(geom::Work::new());
+    geom::draw(&mut r, chopper::package::scene(&reu), cam, BUFFERS[0].bitmap, &mut work, &mut Box::new(geom::Verts::new()));
+    // Each triangle as set up (before its walk).
+    let (order, n, _, _) = geom::bin(&work);
+    for &i in &order[..n as usize] {
+        if let Some(w) = geom::setup(BUFFERS[0].bitmap, &work.tri(i)) {
+            r.1.push(w);
+        }
+    }
+    for w in &r.1 {
+        println!("{} {} {} {} {} {} {} {} {} {}", w.long.x, w.long.step, w.short.x, w.short.step, w.lower.x, w.lower.step, w.first, w.mid, w.end, w.pat[0]);
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let world = worldgen::generate(SEED);
     match args.first().map(String::as_str) {
-        Some("map") if args.len() == 2 => map(&world, Path::new(&args[1])),
-        Some("package") if args.len() == 2 => {
-            // Code phases from the C64 build (scripts/build-target.sh), if present.
-            let phases: Vec<Vec<u8>> = chopper::paging::NAMES
-                .iter()
-                .map(|n| std::fs::read(format!("dist/phases/{n}.bin")).unwrap_or_default())
-                .collect();
-            let image = chopper::package::build(&world, &phases);
-            let sizes: Vec<String> = chopper::paging::NAMES.iter().zip(&phases).map(|(n, p)| format!("{n} {}", p.len())).collect();
-            println!("phases: {}", sizes.join(", "));
-            let path = Path::new(&args[1]);
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).unwrap();
-            }
-            std::fs::write(path, &image).unwrap();
-            println!("{}: {} bytes", path.display(), image.len());
-        }
-        Some("view") if args.len() == 8 => {
-            let n = |i: usize| args[i].parse::<f64>().unwrap_or_else(|_| usage());
-            let camera = camera_at(&world, n(2) as i32, n(3) as i32, n(4) as i32, n(5), n(6), n(7));
-            let (frame, lod) = settle(&world, &camera);
-            report("view", &frame, lod);
-            save(&frame, Path::new(&args[1]), "view");
-        }
-        Some("tour") if args.len() == 2 => {
-            let dir = PathBuf::from(&args[1]);
-            let base = worldgen::pad_position(&world, &world.pads[0]);
-            let views: [(&str, i32, i32, i32, f64, f64, f64); 8] = [
-                ("base", base.x - 600, 24, base.z - 900, 20.0, -4.0, 0.0),
-                ("lowlevel", base.x, 200, base.z + 2000, 0.0, -3.0, 0.0),
-                ("climb", base.x, 1200, base.z + 3000, 10.0, -8.0, 0.0),
-                ("bank", base.x + 3000, 600, base.z + 6000, 40.0, -6.0, 30.0),
-                ("mountains", 0, 900, 4000, 45.0, -2.0, 0.0),
-                ("valley", -6000, 300, 0, 80.0, -4.0, -10.0),
-                ("coast", 0, 400, -26000, 0.0, -5.0, 0.0),
-                ("high", 0, 3000, -9000, 0.0, -20.0, 0.0),
-            ];
-            for (name, x, agl, z, yaw, pitch, roll) in views {
-                let camera = camera_at(&world, x, agl, z, yaw, pitch, roll);
-                let (frame, lod) = settle(&world, &camera);
-                report(name, &frame, lod);
-                save(&frame, &dir.join(format!("{name}.png")), name);
-            }
-            streaming(&world);
-        }
-        _ => usage(),
+        Some("bake") => return bake(&args),
+        Some("frame") => return frame(&args),
+        Some("walks") => return walks(&args),
+        Some("compare") => {}
+        _ => return Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | compare [...]".into()),
     }
+    let out = PathBuf::from(arg(&args, "--out").unwrap_or("output".into()));
+    let which = arg(&args, "--view").unwrap_or("both".into());
+    let angle = num(&args, "--angle", 30.0).to_radians();
+    let (x, y) = (num(&args, "--x", 220.0), num(&args, "--y", 128.0));
+    let mut views = Vec::new();
+    if which == "roto" || which == "both" {
+        views.push(("roto", View::Roto { x, y, angle, zoom: num(&args, "--zoom", 0.25) }));
+    }
+    if which == "floor" || which == "both" {
+        views.push(("floor", View::Floor { x, y, angle, height: num(&args, "--height", 12.0), horizon: 48, focal: 160.0 }));
+    }
+    if views.is_empty() {
+        return Err(format!("unknown view {which}"));
+    }
+
+    eprintln!("baking the REU image (raw plane + 240 pre-sampled planes)...");
+    let codes = map::generate();
+    let image = map::bake(&codes);
+
+    for (name, view) in views {
+        let f = camera::frame(&view);
+        let reference = colorize(&camera::reference(&f, &codes), f.horizon_row);
+        png::save_wide(&out.join(format!("{name}_reference.png")), 160, &reference)?;
+        println!("\n{name}: {view:?}, cache window {:?}", f.window);
+        println!("{:<8} {:>9} {:>9} {:>7} {:>10} {:>9} {:>7}", "path", "texels/ln", "I/O wr", "DMAs", "cycles", "ms", "fps");
+        let mut panels = vec![reference];
+        for path in [Path::Dma, Path::DmaPre, Path::Cpu(1), Path::Cpu(2), Path::Cpu(4)] {
+            let (rgb, cost, fill) = render(path, &f, &image);
+            let across = match path {
+                Path::Dma | Path::Cpu(1) => 40,
+                Path::Cpu(2) => 80,
+                _ => 160,
+            };
+            let ms = cost.us() / 1000.0;
+            let fps = (1000.0 / ms).min(1_000_000.0 / FRAME_US);
+            println!("{:<8} {:>9} {:>9} {:>7} {:>10} {:>9.2} {:>7.1}", path.name(), across, cost.io_writes, cost.dma_cmds, cost.cycles, ms, fps);
+            if let (Path::Cpu(4), Some(fill)) = (path, fill) {
+                println!("  cache fill (whole 128x128 window, once per recentre): {} DMAs, {:.2} ms", fill.dma_cmds, fill.us() / 1000.0);
+            }
+            png::save_wide(&out.join(format!("{name}_{}.png", path.name())), 160, &rgb)?;
+            if matches!(path, Path::Dma | Path::DmaPre | Path::Cpu(4)) {
+                panels.push(rgb);
+            }
+        }
+        let refs: Vec<&[[u8; 3]]> = panels.iter().map(|p| p.as_slice()).collect();
+        let (w, h, px) = sheet(&refs);
+        png::save(&out.join(format!("{name}_sheet.png")), w, h, &px)?;
+    }
+    println!("\nPNGs in {}", out.display());
+    Ok(())
 }
