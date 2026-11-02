@@ -38,9 +38,17 @@ pub const MAP_TEXELS: u32 = 2048;
 pub const MAP_TILES: u8 = (MAP_TEXELS / 256) as u8;
 pub const LEVELS: u8 = 4;
 
-/// Fill bytes: sky (code 1 in every pixel), haze (codes 1 and 0 alternating).
+/// Fill bytes: sky (code 1 in every pixel), haze (codes 1 and 0 alternating; the other phase on odd
+/// lines, [`haze_byte`], so it is a checkerboard rather than columns).
 pub const SKY_BYTE: u8 = 0x55;
 pub const HAZE_BYTE: u8 = 0x44;
+pub const HAZE_ODD: u8 = 0x11;
+
+/// The haze byte of line `line` of a band (drawn lines alternate: in line-doubled mode a drawn line
+/// covers two).
+pub fn haze_byte(line: u8, doubled: bool) -> u8 {
+    if (line >> doubled as u8) & 1 == 0 { HAZE_BYTE } else { HAZE_ODD }
+}
 /// Ground beyond this many texels (along the ray, roughly) is drawn as haze.
 pub const HAZE_TEXELS: i32 = 320;
 /// The steepest step a run may read from a level, 8.8 texels per byte (above it, the next level).
@@ -142,12 +150,14 @@ pub struct SpanArgs {
     /// `bb`'s x and z, for `asm/spans.S`'s `bt_build`.
     pub bbx: i32,
     pub bbz: i32,
+    /// The line's haze byte ([`haze_byte`]).
+    pub haze: u8,
 }
-const _: () = assert!(core::mem::size_of::<SpanArgs>() == 82);
+const _: () = assert!(core::mem::size_of::<SpanArgs>() == 83);
 
 impl SpanArgs {
     pub fn new(cam: &FloorCam, rays: &Rays) -> Self {
-        Self { t: rays.t, dw: rays.dw, w_haze: rays.w_haze, cam_u: cam.u, cam_v: cam.v, hc: rays.hc, a: rays.a0, n: 0, bbx: rays.bb[0], bbz: rays.bb[2] }
+        Self { t: rays.t, dw: rays.dw, w_haze: rays.w_haze, cam_u: cam.u, cam_v: cam.v, hc: rays.hc, a: rays.a0, n: 0, bbx: rays.bb[0], bbz: rays.bb[2], haze: HAZE_BYTE }
     }
 }
 
@@ -251,7 +261,7 @@ fn class(rays: &Rays, w: i32) -> u8 {
 /// `w` is linear along the line (`w(b + 2^k) = w(b) − dw[k]`), so the run length is found by comparing
 /// `w` at the run's start with the frame's thresholds `Rays::t`, and a stretch of sky or haze (`w` is
 /// monotone, so it is one stretch) by galloping over it in power-of-two steps.
-pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX_SPANS]) -> usize {
+pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], haze: u8, out: &mut [Span; MAX_SPANS]) -> usize {
     let ray_at = |b: u8| add(a, &rays.bt(b));
     let mut n = 0;
     let mut b = 0u8;
@@ -272,7 +282,7 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX
                     }
                 }
             }
-            put_fill(out, &mut n, m, if c == 0 { SKY_BYTE } else { HAZE_BYTE });
+            put_fill(out, &mut n, m, if c == 0 { SKY_BYTE } else { haze });
             b += m;
             w0 = w - rays.dw[0];
             start = None;
@@ -289,7 +299,7 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX
         // A one-byte run whose far end is already haze: its step (so its level) is unknown, and it is the
         // last ground byte before the haze, so it joins the haze.
         if k == 0 && w0 < rays.t[0] {
-            put_fill(out, &mut n, 1, HAZE_BYTE);
+            put_fill(out, &mut n, 1, haze);
             b += 1;
             w0 -= rays.dw[0];
             start = None;
@@ -319,7 +329,7 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX
                 };
                 n += 1;
             }
-            None => put_fill(out, &mut n, len, HAZE_BYTE),
+            None => put_fill(out, &mut n, len, haze),
         }
         start = Some(p1);
         b += len;

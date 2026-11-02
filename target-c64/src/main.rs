@@ -270,6 +270,7 @@ pub extern "C" fn main() -> i16 {
             let mut line = 0u8;
             while line < 8 {
                 args.a = a;
+                args.haze = floor::haze_byte(line, doubled != 0);
                 unsafe {
                     span_line();
                     floor_line();

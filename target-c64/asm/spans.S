@@ -21,6 +21,7 @@ R_A      = RAYS + 61
 R_N      = RAYS + 73
 R_BBX    = RAYS + 74
 R_BBZ    = RAYS + 78
+R_HAZE   = RAYS + 82
 BT       = $B800
 BTX0     = BT + 0 * 64
 BTX1     = BT + 1 * 64
@@ -31,7 +32,6 @@ BTZ2     = BT + 10 * 64
 SPANS    = $C400
 RECIP    = $9000
 SKY      = $55
-HAZE     = $44
 COLS     = 40
 REC      = 12
 
@@ -200,7 +200,7 @@ fills:
     bpl 5b
     lda CLS
     beq 6f
-    lda #HAZE
+    lda R_HAZE
     bne 7f
 6:  lda #SKY
 7:  jsr putfill
@@ -306,7 +306,7 @@ ground:
     bne 9b
 10: jsr level
     bcc 11f
-    lda #HAZE
+    lda R_HAZE
     jsr putfill
     jmp advance
 11: jsr putground
@@ -419,7 +419,7 @@ putfill:
 hazerun:
     lda #0
     sta SVALID
-    lda #HAZE
+    lda R_HAZE
     jmp putfill
 
 ; A ground record from P0, DU, DV at level LVL: u = (cam_u + p0u) >> level, v likewise (24-bit),

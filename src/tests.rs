@@ -90,7 +90,7 @@ fn every_ground_byte_samples_within_a_texel_of_the_exact_ray() {
         let rays = Rays::new(&cam);
         let mut spans = [Span::default(); MAX_SPANS];
         for y in (0..VIEW_LINES).step_by(5) {
-            let n = floor::make_line(&cam, &rays, &rays.line(y), &mut spans);
+            let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, &mut spans);
             let exact = exact_line(&cam, y);
             let mut b = 0usize;
             for s in &spans[..n] {
@@ -187,7 +187,7 @@ fn thresholds_and_galloping_give_the_searched_runs() {
         let (mut x, mut y) = ([Span::default(); MAX_SPANS], [Span::default(); MAX_SPANS]);
         for line in 0..VIEW_LINES {
             let a = rays.line(line);
-            let n = floor::make_line(&cam, &rays, &a, &mut x);
+            let n = floor::make_line(&cam, &rays, &a, floor::HAZE_BYTE, &mut x);
             let m = searched_line(&cam, &rays, &a, &mut y);
             assert_eq!(&x[..n], &y[..m], "camera {cam:?} line {line}");
         }
@@ -202,7 +202,7 @@ fn a_level_line_is_one_run() {
     let rays = Rays::new(&cam);
     let mut spans = [Span::default(); MAX_SPANS];
     for y in 0..VIEW_LINES {
-        let n = floor::make_line(&cam, &rays, &rays.line(y), &mut spans);
+        let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, &mut spans);
         let ground = spans[..n].iter().filter(|s| s.fill().is_none()).count();
         assert!(ground <= 2, "line {y}: {:?}", &spans[..n]);
     }

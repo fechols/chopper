@@ -18,7 +18,7 @@ pub mod texel {
     pub const FIELD_A: u8 = 0x22;
     pub const FIELD_B: u8 = 0x88;
     pub const ROCK: u8 = 0xAA;
-    pub const SCREE: u8 = 0xA6;
+    pub const SCREE: u8 = 0xA2; // brown with a green pixel (no sky colour on the ground)
     pub const ROAD: u8 = 0xAA;
     pub const PAD: u8 = 0x55;
     pub const PAD_MARK: u8 = 0xAA;

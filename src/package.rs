@@ -71,7 +71,7 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, cam: &FloorCam, doubled: bool)
     for band in 0..VIEW_BANDS {
         for line in (0..8u8).step_by(if doubled { 2 } else { 1 }) {
             let a = rays.line(band * 8 + line as u16);
-            let n = floor::make_line(cam, &rays, &a, &mut spans);
+            let n = floor::make_line(cam, &rays, &a, floor::haze_byte(line, doubled), &mut spans);
             st.spans += n as u32;
             st.ground_spans += spans[..n].iter().filter(|s| s.fill().is_none()).count() as u32;
             let c = floor::draw_line(m, &spans[..n], LINEBUF, &mut shadow);
