@@ -2072,19 +2072,37 @@ W_V     = WA + 22
 W_Y     = WA + 26
 W_SCALE = WA + 28
 W_GRIDS = WA + 30
-W_OBJ   = WA + 92
-W_CELLS = WA + 93
-G_DIR    = 0
+W_OBJ   = WA + 180
+W_CELLS = WA + 181
+G_DIR    = 0          ; `geom::GridIn`, from walk_args
 G_STRIDE = 3
 G_NU     = 5
 G_NV     = 6
-G_BASE   = 7
-G_EU     = 13
-G_EV     = 19
-G_R      = 25
-G_FAR    = 27
-G_RN     = 29
-GRID_LEN = 31
+G_D0     = 7
+G_K      = 13
+G_R      = 14
+G_FAR    = 16
+G_RN     = 18
+G_SH     = 20
+G_BASE   = 21         ; `geom::GridWalk`, derived by wsetup
+G_EU     = 27
+G_EV     = 33
+G_S0     = 39
+G_SU     = 51
+G_SV     = 63
+GRID_LEN = 75
+; object records (`geom::scene`)
+O_DU     = 0
+O_DV     = 1
+O_DY     = 2
+O_YAW    = 3
+O_MESH   = 4
+; RAM (XFORM_RAM, past geo_xform's MAB / MSG)
+WROW     = $8F20        ; (12) the row's first cell: `Look::cell_sums`, 3 x i32
+WCEL     = $8F2C        ; (12) this cell's
+RAB      = $8F40        ; |rt|, 9 x u16, once a frame
+RSG      = $8F52        ; rt's sign bytes, 9
+WSHF     = $8F5B        ; the grid's record shift
 
 DIR_RAM   = $8E40
 CELL_RAM  = $C910
@@ -2092,7 +2110,6 @@ CELL_MAX  = 44
 SCENE_RAM = $8000
 OBJ_BANK  = 88
 FARQ      = 5120        ; geom::FAR
-SPANQ     = 9216        ; geom::SPAN
 
 GP     = $A0    ; (2) the grid's GridWalk
 ROWN   = $A2    ; rows left
@@ -2113,9 +2130,9 @@ SR     = $C6    ; (2) radius
 SF     = $C8    ; (2) reach
 RHALF  = $CA    ; (2)
 ACC    = $CC    ; (4) 32-bit work
-ODX    = $D0    ; (2) the object's offset from the camera (world, Q4): east, up, north
-ODY    = $D2
-ODZ    = $D4
+OT     = $D0    ; (3) orow's rotated offset, 24-bit
+OJ     = $D3    ; orow's row
+OE     = $D4    ; oprod's rt entry
 YC     = $D6    ; (2) the rotation's first column entry
 YS     = $D8    ; (2) its third
 JR     = $DA    ; row offset (0, 6, 12)
@@ -2127,6 +2144,29 @@ SGNB   = $DC    ; acc_sub's sign byte (V's: free outside geo_xform)
 .globl geo_walk
 .type geo_walk,@function
 geo_walk:
+    ; |rt| and its signs, for orow's products
+    ldx #0
+1:  txa
+    asl
+    tay
+    lda W_RT+1,y
+    sta RSG,x
+    bpl 2f
+    sec
+    lda #0
+    sbc W_RT,y
+    sta RAB,y
+    lda #0
+    sbc W_RT+1,y
+    sta RAB+1,y
+    jmp 3f
+2:  lda W_RT,y
+    sta RAB,y
+    lda W_RT+1,y
+    sta RAB+1,y
+3:  inx
+    cpx #9
+    bne 1b
     lda #$ff
     sta PDR
     lda #0
@@ -2150,6 +2190,7 @@ wgrid:
     bne 1f
     rts
 1:  sta ROWN
+    jsr wsetup
     ldy #0
 2:  lda (GP),y
     sta DIRA,y
@@ -2164,6 +2205,17 @@ wgrid:
     inx
     cpx #6
     bne 3b
+    ldy #G_S0
+    ldx #0
+4:  lda (GP),y
+    sta WROW,x
+    iny
+    inx
+    cpx #12
+    bne 4b
+    ldy #G_SH
+    lda (GP),y
+    sta WSHF
 wrow:
     ; this row's entries -> DIR_RAM (nu * 4 bytes)
     lda #<DIR_RAM
@@ -2255,6 +2307,7 @@ wcol:
     sta SF+1
     jsr sphere
     bcc wnext
+    jsr wcsum
     lda COLK
     asl
     asl
@@ -2299,6 +2352,18 @@ wnext:
     inx
     cpx #6
     bne 3b
+    ldy #G_SV
+    ldx #0
+5:  clc
+    .rept 4
+    lda WROW,x
+    adc (GP),y
+    sta WROW,x
+    inx
+    iny
+    .endr
+    cpx #12
+    bne 5b
     ldy #G_STRIDE
     clc
     lda DIRA
@@ -2316,6 +2381,245 @@ wnext:
     jmp wrow
 4:  rts
 
+; The grid's derived fields (`geom::GridWalk::new`) into its block at GP: per row j of rt, s0 = rt . d0,
+; base = (s0 + rt[j][1] << 7) >> 14, su = rt[j][0] << k, sv = rt[j][2] << k, eu / ev = those >> 14.
+; (Its own section: it lives in low RAM, link.ld.)
+.section .text.geo_wsetup,"ax",@progbits
+wsetup:
+    lda #0
+    sta JR              ; rt row offset (0, 6, 12)
+    sta JO              ; 4j
+ws1:
+    ldx JR
+    ldy #G_D0
+    jsr wdot
+    jsr acc_ldp
+    ldx JR
+    inx
+    inx
+    ldy #G_D0 + 2
+    jsr wdot
+    jsr acc_addp
+    ldx JR
+    inx
+    inx
+    inx
+    inx
+    ldy #G_D0 + 4
+    jsr wdot
+    jsr acc_addp
+    lda JO
+    clc
+    adc #G_S0
+    tay
+    ldx #0
+1:  lda ACC,x
+    sta (GP),y
+    iny
+    inx
+    cpx #4
+    bne 1b
+    ; base
+    ldx JR
+    inx
+    inx
+    lda #7
+    jsr wpx
+    jsr acc_addp
+    jsr acc_q14
+    lda JO
+    lsr
+    clc
+    adc #G_BASE
+    tay
+    lda ACC+2
+    sta (GP),y
+    iny
+    lda ACC+3
+    sta (GP),y
+    ; su, eu
+    ldx JR
+    ldy #G_K
+    lda (GP),y
+    jsr wpx
+    lda JO
+    lsr
+    clc
+    adc #G_EU
+    sta OE
+    lda JO
+    clc
+    adc #G_SU
+    tay
+    jsr wput
+    ; sv, ev
+    ldx JR
+    inx
+    inx
+    inx
+    inx
+    ldy #G_K
+    lda (GP),y
+    jsr wpx
+    lda JO
+    lsr
+    clc
+    adc #G_EV
+    sta OE
+    lda JO
+    clc
+    adc #G_SV
+    tay
+    jsr wput
+    lda JR
+    clc
+    adc #6
+    sta JR
+    lda JO
+    clc
+    adc #4
+    sta JO
+    cmp #12
+    beq 2f
+    jmp ws1
+2:  rts
+
+; P = the rt entry at W_RT + X times the i16 at (GP),Y.
+wdot:
+    lda W_RT,x
+    sta AL
+    lda W_RT+1,x
+    sta AH
+    lda (GP),y
+    sta BL
+    iny
+    lda (GP),y
+    sta BH
+    jmp smul
+
+; P = the rt entry at W_RT + X, sign-extended, << A (A >= 1).
+wpx:
+    tay
+    lda W_RT,x
+    sta P0
+    lda W_RT+1,x
+    sta P1
+    ora #$7f
+    bmi 1f
+    lda #0
+1:  sta P2
+    sta P3
+2:  asl P0
+    rol P1
+    rol P2
+    rol P3
+    dey
+    bne 2b
+    rts
+
+; P into the block at GP + Y (i32), and (P >> 14) as i16 at GP + OE.
+wput:
+    ldx #0
+1:  lda P0,x
+    sta (GP),y
+    sta ACC,x
+    iny
+    inx
+    cpx #4
+    bne 1b
+    jsr acc_q14
+    ldy OE
+    lda ACC+2
+    sta (GP),y
+    iny
+    lda ACC+3
+    sta (GP),y
+    rts
+
+; The streamed cell's exact sums (`GridWalk::s0 + row sv + col su`): WCEL = WROW + (COLK * rt[j][0]) << k.
+.section .text.geo_wcsum,"ax",@progbits
+wcsum:
+    lda COLK
+    bne 1f
+    ldx #11
+5:  lda WROW,x
+    sta WCEL,x
+    dex
+    bpl 5b
+    rts
+1:  sta PLA
+    sta PHA
+    eor #$ff
+    sta NLA
+    sta NHA
+    lda #0
+    sta JR              ; 6j: rt[j][0] in RAB
+    sta OJ              ; 3j: its sign in RSG
+    sta JO              ; 4j
+2:  ldx JR
+    ldy RAB,x
+    XPROD XP0, XP1
+    ldy RAB+1,x
+    XPROD XP2, XP3
+    ; the product << 8, then << (k - 8)
+    lda #0
+    sta ACC
+    lda XP0
+    sta ACC+1
+    clc
+    lda XP1
+    adc XP2
+    sta ACC+2
+    lda XP3
+    adc #0
+    sta ACC+3
+    ldy #G_K
+    lda (GP),y
+    sec
+    sbc #8
+    tax
+3:  asl ACC
+    rol ACC+1
+    rol ACC+2
+    rol ACC+3
+    dex
+    bne 3b
+    ldx OJ
+    lda RSG,x
+    bpl 4f
+    jsr acc_neg
+4:  ldx JO
+    clc
+    lda WROW,x
+    adc ACC
+    sta WCEL,x
+    lda WROW+1,x
+    adc ACC+1
+    sta WCEL+1,x
+    lda WROW+2,x
+    adc ACC+2
+    sta WCEL+2,x
+    lda WROW+3,x
+    adc ACC+3
+    sta WCEL+3,x
+    lda JR
+    clc
+    adc #6
+    sta JR
+    lda OJ
+    clc
+    adc #3
+    sta OJ
+    lda JO
+    clc
+    adc #4
+    sta JO
+    cmp #12
+    beq 6f
+    jmp 2b
+6:  rts
+
+.section .text.geo_walk,"ax",@progbits
 ; One cell (`geom::cell`), its directory entry at DIR_RAM + Y.
 wcell:
     lda DIR_RAM+2,y
@@ -2385,102 +2689,10 @@ wcell:
     bne 3b
     rts
 
-; ACC = ((at << 3) - cam) >> 4, at = (RECP),Y (u16), cam the i32 at WA + X (W_U or W_V). Carry set
-; when |ACC| <= SPAN (`geom::object`'s span test passes).
-woffset:
-    lda (RECP),y
-    sta ACC
-    iny
-    lda (RECP),y
-    sta ACC+1
-    lda #0
-    sta ACC+2
-    sta ACC+3
-    ldy #3
-1:  asl ACC
-    rol ACC+1
-    rol ACC+2
-    dey
-    bne 1b
-    sec
-    lda ACC
-    sbc WA,x
-    sta ACC
-    lda ACC+1
-    sbc WA+1,x
-    sta ACC+1
-    lda ACC+2
-    sbc WA+2,x
-    sta ACC+2
-    lda ACC+3
-    sbc WA+3,x
-    sta ACC+3
-    ldy #4
-2:  lda ACC+3
-    cmp #$80
-    ror ACC+3
-    ror ACC+2
-    ror ACC+1
-    ror ACC
-    dey
-    bne 2b
-    ; |ACC| > SPAN?
-    lda ACC+3
-    bpl 3f
-    ; negative: within when ACC >= -SPAN ($FFFFDC00), unsigned
-    lda ACC
-    cmp #$00
-    lda ACC+1
-    sbc #$dc
-    lda ACC+2
-    sbc #$ff
-    lda ACC+3
-    sbc #$ff
-    rts
-3:  lda #<SPANQ
-    cmp ACC
-    lda #>SPANQ
-    sbc ACC+1
-    lda #0
-    sbc ACC+2
-    lda #0
-    sbc ACC+3
-    ; within when SPAN >= ACC
-    rts
-
 ; One object (`geom::object`), its record at RECP.
 wobject:
-    ldy #0
-    ldx #W_U - WA
-    jsr woffset
-    bcs 1f
-    rts                 ; out of span
-1:
-    lda ACC
-    sta ODX
-    lda ACC+1
-    sta ODX+1
-    ldy #2
-    ldx #W_V - WA
-    jsr woffset
-    bcs 1f
-    rts
-1:
-    lda ACC
-    sta ODZ
-    lda ACC+1
-    sta ODZ+1
-    ldy #4
-    sec
-    lda (RECP),y
-    sbc W_Y
-    sta ODY
-    iny
-    lda (RECP),y
-    sbc W_Y+1
-    sta ODY+1
     ; the mesh record: SCENE_RAM + 8 + mesh * 10
-    ldy #7
+    ldy #O_MESH
     lda (RECP),y
     jsr meshp
     ; r = rad << 4, far = pop_depth(rad)
@@ -2500,12 +2712,10 @@ wobject:
     sta SF
     lda POPD+1
     sta SF+1
-    ; c = to_camera(d): z first, and out early on the depth tests (the same ones `sphere` makes)
-    lda #12
-    sta JR
-    lda #4
-    sta JO
-    jsr trow
+    ; the centre (`geom::object_centre`): z first, and out early on the depth tests (the same ones
+    ; `sphere` makes)
+    ldx #2
+    jsr orow
     ldx #SZ
     jsr acc_ld
     ldx #SR
@@ -2528,15 +2738,10 @@ wobject:
     jsr acc_sub
     jsr accpos
     bcs 9f
-    lda #0
-    sta JR
-    sta JO
-    jsr trow
-    lda #6
-    sta JR
-    lda #2
-    sta JO
-    jsr trow
+    ldx #0
+    jsr orow
+    ldx #1
+    jsr orow
     jsr sphere
     bcs 2f
 9:  rts
@@ -2569,7 +2774,7 @@ wobject:
     jsr meshp
 3:  ; rotation rows (`geom::object`): yaw in quarter turns q (bits 7-6), columns (a, b) = rt[j][0], rt[j][2]:
     ; q 0: (a, b), 1: (-b, a), 2: (-a, -b), 3: (b, -a); the middle column is rt[j][1]
-    ldy #6
+    ldy #O_YAW
     lda (RECP),y
     sta JO
     ldx #0
@@ -2709,47 +2914,128 @@ meshp:
     sta MP+1
     rts
 
-; One row of to_camera (`Look::to_camera`): (rt row at W_RT + JR) . (ODX, ODY, ODZ) >> 14 into SX + JO.
-trow:
-    ldx JR
-    lda W_RT,x
-    sta AL
-    lda W_RT+1,x
-    sta AH
-    lda ODX
-    sta BL
-    lda ODX+1
-    sta BH
-    jsr smul
-    jsr acc_ldp
-    ldx JR
-    lda W_RT+2,x
-    sta AL
-    lda W_RT+3,x
-    sta AH
-    lda ODY
-    sta BL
-    lda ODY+1
-    sta BH
-    jsr smul
-    jsr acc_addp
-    ldx JR
-    lda W_RT+4,x
-    sta AL
-    lda W_RT+5,x
-    sta AH
-    lda ODZ
-    sta BL
-    lda ODZ+1
-    sta BH
-    jsr smul
-    jsr acc_addp
+; Row X of the object's centre (`geom::object_centre`) into SX + 2X: (WCEL[X] + (rt row X . (du, dy, dv))
+; << WSHF) >> 14. Each product is |d| (a byte) times |rt| by two quarter-square lookups (XPROD).
+orow:
+    stx OJ
+    lda #0
+    sta OT
+    sta OT+1
+    sta OT+2
+    txa
+    asl
+    adc OJ
+    sta OE              ; entry 3j: column u
+    ldy #O_DU
+    lda (RECP),y
+    jsr oprod
+    inc OE              ; up
+    ldy #O_DY
+    lda (RECP),y
+    jsr oprod
+    inc OE              ; v
+    ldy #O_DV
+    lda (RECP),y
+    jsr oprod
+    lda OT
+    sta ACC
+    lda OT+1
+    sta ACC+1
+    lda OT+2
+    sta ACC+2
+    ora #$7f
+    bmi 1f
+    lda #0
+1:  sta ACC+3
+    ldx WSHF
+2:  asl ACC
+    rol ACC+1
+    rol ACC+2
+    rol ACC+3
+    dex
+    bne 2b
+    lda OJ
+    asl
+    asl
+    tax
+    clc
+    lda ACC
+    adc WCEL,x
+    sta ACC
+    lda ACC+1
+    adc WCEL+1,x
+    sta ACC+1
+    lda ACC+2
+    adc WCEL+2,x
+    sta ACC+2
+    lda ACC+3
+    adc WCEL+3,x
+    sta ACC+3
     jsr acc_q14
-    ldx JO
+    lda OJ
+    asl
+    tax
     lda ACC+2
     sta SX,x
     lda ACC+3
     sta SX+1,x
+    rts
+
+; OT += A (i8, flags set by its load) * rt entry OE.
+oprod:
+    bne 1f
+    rts
+1:  sta CSGN
+    bpl 2f
+    eor #$ff
+    clc
+    adc #1
+2:  sta PLA
+    sta PHA
+    eor #$ff
+    sta NLA
+    sta NHA
+    ldx OE
+    lda RSG,x
+    eor CSGN
+    sta CSGN
+    txa
+    asl
+    tax
+    ldy RAB,x
+    XPROD XP0, XP1
+    ldy RAB+1,x
+    XPROD XP2, XP3
+    clc
+    lda XP1
+    adc XP2
+    sta XP1
+    lda XP3
+    adc #0
+    sta XP2
+    bit CSGN
+    bmi 3f
+    clc
+    lda OT
+    adc XP0
+    sta OT
+    lda OT+1
+    adc XP1
+    sta OT+1
+    lda OT+2
+    adc XP2
+    sta OT+2
+    rts
+3:  sec
+    lda OT
+    sbc XP0
+    sta OT
+    lda OT+1
+    sbc XP1
+    sta OT+1
+    lda OT+2
+    sbc XP2
+    sta OT+2
     rts
 
 ; POPD = min(A * scale, FAR) (`geom::pop_depth`); the last radius's is kept (they repeat).

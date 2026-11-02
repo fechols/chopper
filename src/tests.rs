@@ -406,15 +406,22 @@ fn a_ground_point_projects_onto_the_floor_byte_that_samples_it() {
 fn the_grid_visits_every_object_the_cull_accepts() {
     // Brute force: every object of the package against the per-object cull, at many cameras; the grid
     // walk must accept exactly as many (a cell skipped wrongly would lose some).
-    use crate::geom::{Look, SPAN, View, pop_depth, sphere_visible};
-    use crate::format::{OBJ_RECORDS};
+    use crate::geom::{BIG_CELL, BIG_GRID, BIG_SHIFT, CELL, GRID, Look, Q, SHIFT, View, object_centre, pop_depth, sphere_visible};
+    use crate::format::{BIG_DIR, OBJ_DIR, OBJ_RECORDS};
     let reu = package();
     let block = scene(reu);
-    let n = {
-        let w = crate::world::generate(1983);
-        crate::scene::objects(&w).len()
-    };
-    let records = &reu[OBJ_RECORDS as usize..][..8 * n];
+    // Every cell of both grids: its centre (Q4), its records, the records' shift.
+    let mut cells = Vec::new();
+    for (dir, n, cell, sh) in [(OBJ_DIR, GRID, CELL * Q, SHIFT), (BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_SHIFT)] {
+        for k in 0..n * n {
+            let e = &reu[dir as usize + 4 * k..][..4];
+            let (first, count) = (u16::from_le_bytes([e[0], e[1]]) as usize, e[2] as usize);
+            let centre = ((k % n) as i32 * cell + cell / 2, (k / n) as i32 * cell + cell / 2);
+            for r in 0..count {
+                cells.push((centre, sh, &reu[OBJ_RECORDS as usize + 8 * (first + r)..][..8]));
+            }
+        }
+    }
     let mut rng = Rng(0xC0FFEE);
     let mut total = 0u32;
     for case in 0..400 {
@@ -427,15 +434,13 @@ fn the_grid_visits_every_object_the_cull_accepts() {
         let view = View { cam, pop };
         let look = Look::new(&view);
         let mut want = 0u32;
-        for rec in records.chunks(8) {
-            let (ou, ov) = (u16::from_le_bytes([rec[0], rec[1]]), u16::from_le_bytes([rec[2], rec[3]]));
-            let oy = i16::from_le_bytes([rec[4], rec[5]]);
-            let (dx, dz) = ((((ou as i32) << 3) - cam.u) >> 4, (((ov as i32) << 3) - cam.v) >> 4);
-            if dx.abs() > SPAN || dz.abs() > SPAN {
+        for &((cu, cv), sh, rec) in &cells {
+            // Only near enough for the offsets to fit i16 (the walk's reach is well inside this).
+            if (cu - (cam.u >> 4)).abs() > 20000 || (cv - (cam.v >> 4)).abs() > 20000 {
                 continue;
             }
-            let rad = block[8 + rec[7] as usize * 10 + 7];
-            let c = look.to_camera([dx as i16, oy.wrapping_sub(look.y), dz as i16]);
+            let rad = block[8 + rec[crate::geom::scene::O_MESH] as usize * 10 + 7];
+            let c = object_centre(&look, look.cell_sums(cu, cv), sh, rec);
             if sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale)) {
                 want += 1;
             }

@@ -33,14 +33,16 @@ pub const GRID: usize = 32;
 pub const CELL_PAD: i32 = 32;
 pub const BIG_CELL: i32 = 256;
 pub const BIG_GRID: usize = 8;
+/// Object records hold offsets from their cell's centre in quarter texels (the grid: `<< SHIFT` is Q4)
+/// and whole texels (the big grid).
+pub const SHIFT: u8 = 2;
+pub const BIG_SHIFT: u8 = 4;
 /// Cells either way from the camera's cell that can hold an object the cull accepts: within [`FAR`]
 /// plus its radius along the view and 45° to either side, so up to about √2 of that away.
 pub const REACH: i32 = 8;
 pub const BIG_REACH: i32 = 3;
 const _: () = assert!(CELL - 1 + (FAR / Q + CELL_PAD) * 17 / 12 < (REACH + 1) * CELL);
 const _: () = assert!(BIG_CELL - 1 + (FAR / Q + 160) * 17 / 12 < (BIG_REACH + 1) * BIG_CELL);
-/// Objects farther than this from the camera along either map axis are skipped (Q4; keeps offsets i16).
-pub const SPAN: i32 = FAR + 256 * Q;
 /// Screen coordinates are clamped to ±1000 pixels (Q4), which keeps every edge product in i32.
 pub const LIMIT: i32 = 1000 * 16;
 /// Screen lines the band pipeline draws (the view above the cockpit) and its bands.
@@ -62,9 +64,15 @@ pub mod scene {
     /// Directory entry (one per grid cell, then one per big-grid cell): the first object (u16, an index
     /// into the records), the count (u8) and the largest bounding radius among them (u8, texels).
     pub const DIR_ENTRY: usize = 4;
-    /// Object record: u, v u16 (texels · 32), base height i16 (Q4 texels), yaw u8
-    /// (256 a turn, quarter turns only: the top two bits), mesh u8.
+    /// Object record: the offset from its cell's centre (east, north, up: i8 each, in quarter texels in
+    /// the grid, whole texels in the big grid; see [`super::object_centre`]), yaw u8 (256 a turn, quarter
+    /// turns only: the top two bits), mesh u8, 3 spare.
     pub const OBJECT: usize = 8;
+    pub const O_DU: usize = 0;
+    pub const O_DV: usize = 1;
+    pub const O_DY: usize = 2;
+    pub const O_YAW: usize = 3;
+    pub const O_MESH: usize = 4;
     /// Vertex: u, v (east, north) and h (up), i8 in quarter texels << shift.
     pub const VERTEX: usize = 3;
     /// Face: three vertex indices, shade (`poly::PATTERNS` index), wound so that the front is clockwise
@@ -126,13 +134,26 @@ impl Look {
 
     /// A world offset (Q4 texels, x/y/z = east/up/north) in camera space (Q4).
     pub fn to_camera(&self, d: [i16; 3]) -> [i32; 3] {
-        core::array::from_fn(|j| (mul(self.rt[j][0], d[0]) + mul(self.rt[j][1], d[1]) + mul(self.rt[j][2], d[2])) >> 14)
+        self.sums(d).map(|x| x >> 14)
     }
 
-    /// The offset (Q4) from the camera of a map position (texels · 32) along one axis; `cam` in Q8.
-    fn offset(at: u16, cam: i32) -> i32 {
-        (((at as i32) << 3) - cam) >> 4
+    /// [`Look::to_camera`] before its shift: `Rᵀ·d`, Q18. Exact, so sums of these add up exactly.
+    pub fn sums(&self, d: [i16; 3]) -> [i32; 3] {
+        core::array::from_fn(|j| mul(self.rt[j][0], d[0]) + mul(self.rt[j][1], d[1]) + mul(self.rt[j][2], d[2]))
     }
+
+    /// [`Look::sums`] of a cell centre (`cu`, `cv`: Q4 texels on the map) at ground level.
+    pub fn cell_sums(&self, cu: i32, cv: i32) -> [i32; 3] {
+        self.sums([(cu - (self.u >> 4)) as i16, self.y.wrapping_neg(), (cv - (self.v >> 4)) as i16])
+    }
+}
+
+/// An object's centre in camera space (Q4) from its cell's [`Look::cell_sums`] `s` and its record: the
+/// offset `(du, dy, dv) << sh` (Q4) rotated and added before the shift (`asm/geom.S` `orow`).
+pub fn object_centre(look: &Look, s: [i32; 3], sh: u8, rec: &[u8]) -> [i32; 3] {
+    let d = [scene::O_DU, scene::O_DY, scene::O_DV].map(|k| (rec[k] as i8 as i16) << sh);
+    let t = look.sums(d);
+    core::array::from_fn(|j| (s[j] + t[j]) >> 14)
 }
 
 /// Whether a sphere of radius `r` (Q4) round camera-space point `c` may be in view: in front of the near
@@ -442,29 +463,14 @@ pub fn raster<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> u8 {
     tris
 }
 
-/// The grid cell (column, row) of a map position (texels · 32).
-pub fn cell_of(u: u16, v: u16) -> (u8, u8) {
-    ((u >> 11) as u8, (v >> 11) as u8)
-}
-
-/// The big-grid cell of a map position.
-pub fn big_cell_of(u: u16, v: u16) -> (u8, u8) {
-    ((u >> 13) as u8, (v >> 13) as u8)
-}
-
 /// Cull one object (a `scene::OBJECT` record) and, if it may be in view, transform and sort it (the
 /// reference for `asm/geom.S` `wobject`).
 #[inline(never)]
-fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], look: &Look, w: &mut Work, v: &mut Verts, st: &mut Stats) {
-    let (ou, ov) = (u16::from_le_bytes([rec[0], rec[1]]), u16::from_le_bytes([rec[2], rec[3]]));
-    let (oy, yaw, mesh) = (i16::from_le_bytes([rec[4], rec[5]]), rec[6], rec[7] as usize);
-    let (dx, dz) = (Look::offset(ou, look.u), Look::offset(ov, look.v));
-    if dx.abs() > SPAN || dz.abs() > SPAN {
-        return;
-    }
+fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], look: &Look, s: [i32; 3], sh: u8, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+    let (yaw, mesh) = (rec[scene::O_YAW], rec[scene::O_MESH] as usize);
     let m = scene::MESHES + mesh * scene::MESH;
     let rad = scene[m + 7];
-    let c = look.to_camera([dx as i16, oy.wrapping_sub(look.y), dz as i16]);
+    let c = object_centre(look, s, sh, rec);
     if !sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale)) {
         return;
     }
@@ -501,7 +507,7 @@ fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], l
 /// Stream one cell's objects (directory entry at `DIR_RAM + at`) from the REU into `CELL_RAM` and cull /
 /// draw each.
 #[inline(never)]
-fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, s: [i32; 3], sh: u8, w: &mut Work, v: &mut Verts, st: &mut Stats) {
     let n = hw.peek(DIR_RAM + at + 2).min(CELL_MAX as u8) as u16;
     if n == 0 {
         return;
@@ -515,83 +521,116 @@ fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, w: &mut 
         for (k, b) in rec.iter_mut().enumerate() {
             *b = hw.peek(p + k as u16);
         }
-        object(hw, scene, &rec, look, w, v, st);
+        object(hw, scene, &rec, look, s, sh, w, v, st);
         p += scene::OBJECT as u16;
     }
 }
 
-/// One grid's walk this frame: the rows `nv` of `nu` cells round the camera (clipped to the map), their
-/// directory entries (row by row from `dir`, `stride` bytes apart), the first cell's centre in camera
-/// space (`base`, Q4) and the steps one cell east and north (`eu`, `ev`), and the cells' bounding
-/// sphere (`r`, Q4: half-diagonal plus padding) and reach (`far`). An object's centre is within `rn`
-/// (Q4) of its cell's centre. All camera-space sums stay in i16.
+/// One grid's walk this frame, as `geo_walk` is given it (`walk_args`): the rows `nv` of `nu` cells round
+/// the camera (clipped to the map), their directory entries (row by row from `dir`, `stride` bytes
+/// apart), the first cell's centre at ground level relative to the camera (`d0`, Q4 world axes), the
+/// cell size (`1 << k`, Q4), the cells' bounding sphere (`r`, Q4: half-diagonal plus padding) and reach
+/// (`far`), how far (`rn`, Q4) an object's centre can be from its cell's, and the shift of the records'
+/// offsets (`sh`: 2 for quarter texels, 4 for whole ones).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GridWalk {
+pub struct GridIn {
     pub dir: u32,
     pub stride: u16,
     pub nu: u8,
     pub nv: u8,
-    pub base: [i16; 3],
-    pub eu: [i16; 3],
-    pub ev: [i16; 3],
+    pub d0: [i16; 3],
+    pub k: u8,
     pub r: i16,
     pub far: i16,
     pub rn: i16,
+    pub sh: u8,
 }
 
-impl GridWalk {
+impl GridIn {
     /// The grid of `grid`² cells of `cell_q` (Q4, a power of two) whose directory is at `dir`, within
     /// `reach` cells of the camera's; `pad`: how far (Q4) beyond its cell an object can reach.
-    pub fn new(look: &Look, dir: u32, grid: usize, cell_q: i32, reach: i32, pad: i32) -> Self {
+    pub fn new(look: &Look, dir: u32, grid: usize, cell_q: i32, reach: i32, pad: i32, sh: u8) -> Self {
         // Q8 texels → cells.
-        let shift = cell_q.trailing_zeros() + 4;
-        let (cu, cv) = (look.u >> shift, look.v >> shift);
+        let k = cell_q.trailing_zeros();
+        let (cu, cv) = (look.u >> (k + 4), look.v >> (k + 4));
         let (u0, u1) = ((cu - reach).max(0), (cu + reach).min(grid as i32 - 1));
         let (v0, v1) = ((cv - reach).max(0), (cv + reach).min(grid as i32 - 1));
         if u0 > u1 || v0 > v1 {
-            return GridWalk::default();
+            return GridIn::default();
         }
         let half = cell_q >> 1;
-        let first = |c: i32, cam: i32| (c * cell_q + half - (cam >> 4)) as i16;
-        let base = look.to_camera([first(u0, look.u), (8 * Q as i16).wrapping_sub(look.y), first(v0, look.v)]);
-        let (eu, ev) = (look.to_camera([cell_q as i16, 0, 0]), look.to_camera([0, 0, cell_q as i16]));
-        GridWalk {
+        GridIn {
             dir: dir + ((v0 as u32 * grid as u32 + u0 as u32) << 2),
             stride: (grid as u16) << 2,
             nu: (u1 - u0 + 1) as u8,
             nv: (v1 - v0 + 1) as u8,
-            base: base.map(|x| x as i16),
-            eu: eu.map(|x| x as i16),
-            ev: ev.map(|x| x as i16),
+            d0: [(u0 * cell_q + half - (look.u >> 4)) as i16, look.y.wrapping_neg(), (v0 * cell_q + half - (look.v >> 4)) as i16],
+            k: k as u8,
             // Half-diagonal (< 0.75 cell) plus the objects' reach and height.
             r: (half + (half >> 1) + pad) as i16,
             far: (FAR + pad) as i16,
             // 3/4 of a cell covers the half-diagonal (0.71) with the centres' height (9 texels) too.
             rn: (half + (half >> 1)) as i16,
+            sh,
         }
     }
 }
 
 /// The frame's grids: the big one (mountains), then the fine one.
-pub fn grids(look: &Look) -> [GridWalk; 2] {
+pub fn grids(look: &Look) -> [GridIn; 2] {
     use crate::format::{BIG_DIR, OBJ_DIR};
     [
-        GridWalk::new(look, BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_REACH, 255 * Q),
-        GridWalk::new(look, OBJ_DIR, GRID, CELL * Q, REACH, (CELL_PAD + 16) * Q),
+        GridIn::new(look, BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_REACH, 255 * Q, BIG_SHIFT),
+        GridIn::new(look, OBJ_DIR, GRID, CELL * Q, REACH, (CELL_PAD + 16) * Q, SHIFT),
     ]
+}
+
+/// What `geo_walk` derives from a [`GridIn`] (`wsetup`): the cells' exact [`Look::sums`], the first's
+/// (`s0`) and the steps one cell east and north (`su`, `sv`: Rᵀ's columns times the cell); and for the
+/// cull, the cell centres at 8 texels up in camera space, i16: the first (`base`) and the steps (`eu`,
+/// `ev`), those sums shifted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GridWalk {
+    pub g: GridIn,
+    pub base: [i16; 3],
+    pub eu: [i16; 3],
+    pub ev: [i16; 3],
+    pub s0: [i32; 3],
+    pub su: [i32; 3],
+    pub sv: [i32; 3],
+}
+
+impl GridWalk {
+    pub fn new(look: &Look, g: GridIn) -> Self {
+        let rt = &look.rt;
+        let s0 = look.sums(g.d0);
+        let su: [i32; 3] = core::array::from_fn(|j| (rt[j][0] as i32) << g.k);
+        let sv: [i32; 3] = core::array::from_fn(|j| (rt[j][2] as i32) << g.k);
+        GridWalk {
+            g,
+            base: core::array::from_fn(|j| ((s0[j] + ((rt[j][1] as i32) << 7)) >> 14) as i16),
+            eu: su.map(|x| (x >> 14) as i16),
+            ev: sv.map(|x| (x >> 14) as i16),
+            s0,
+            su,
+            sv,
+        }
+    }
 }
 
 /// Walk one grid ([`GridWalk`]): fetch each row's directory entries to `DIR_RAM`; stream every cell
 /// whose sphere may be in view and that holds an object big enough to have popped in (the reference
 /// for `asm/geom.S` `geo_walk`).
 #[inline(never)]
-fn grid<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], look: &Look, g: &GridWalk, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+fn grid<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], look: &Look, gw: &GridWalk, w: &mut Work, v: &mut Verts, st: &mut Stats) {
     let add = |a: [i16; 3], b: [i16; 3]| [a[0].wrapping_add(b[0]), a[1].wrapping_add(b[1]), a[2].wrapping_add(b[2])];
+    let add32 = |a: [i32; 3], b: [i32; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    let g = &gw.g;
     let n = g.nu as u16;
-    let (mut row, mut dir) = (g.base, g.dir);
+    let (mut row, mut dir, mut srow) = (gw.base, g.dir, gw.s0);
     for _ in 0..g.nv {
         crate::hw::fetch(hw, dir, DIR_RAM, n << 2);
-        let mut c = row;
+        let (mut c, mut s) = (row, srow);
         for k in 0..n {
             let cc = c.map(|x| x as i32);
             let r = g.r as i32;
@@ -599,11 +638,13 @@ fn grid<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], look: &Look, g: &GridWalk, w: 
             // any object of the cell can be.
             let rmax = hw.peek(DIR_RAM + (k << 2) + 3);
             if sphere_visible(cc, r, g.far as i32) && cc[2] - g.rn as i32 - ((rmax as i32) << 4) <= pop_depth(rmax, look.scale) {
-                cell(hw, scene, k << 2, look, w, v, st);
+                cell(hw, scene, k << 2, look, s, g.sh, w, v, st);
             }
-            c = add(c, g.eu);
+            c = add(c, gw.eu);
+            s = add32(s, gw.su);
         }
-        row = add(row, g.ev);
+        row = add(row, gw.ev);
+        srow = add32(srow, gw.sv);
         dir += g.stride as u32;
     }
 }
@@ -617,7 +658,7 @@ pub fn draw<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], view: &View, w: &mut Work,
     w.clear();
     let look = Look::new(view);
     for g in grids(&look) {
-        grid(hw, scene, &look, &g, w, v, &mut st);
+        grid(hw, scene, &look, &GridWalk::new(&look, g), w, v, &mut st);
     }
     st.dropped = w.dropped;
     st
@@ -633,10 +674,12 @@ pub mod walk {
     pub const V: u16 = 22;
     pub const Y: u16 = 26;
     pub const SCALE: u16 = 28;
-    /// Two [`super::GridWalk`]s of `GRID_LEN` bytes: dir u24, stride u16, nu, nv, base/eu/ev 3 × i16 each,
-    /// r, far, rn i16.
+    /// Two grids of `GRID_LEN` bytes: a [`super::GridIn`] (dir u24, stride u16, nu, nv, d0 3 × i16, k,
+    /// r, far, rn i16, sh; `IN_LEN` bytes), then room for what `geo_walk` derives ([`super::GridWalk`]:
+    /// base/eu/ev 3 × i16, s0/su/sv 3 × i32).
     pub const GRIDS: u16 = 30;
-    pub const GRID_LEN: u16 = 31;
+    pub const IN_LEN: u16 = 21;
+    pub const GRID_LEN: u16 = IN_LEN + 54;
     /// out u8: objects drawn, cells streamed.
     pub const OBJECTS: u16 = GRIDS + 2 * GRID_LEN;
     pub const CELLS: u16 = OBJECTS + 1;
@@ -666,14 +709,17 @@ pub fn walk_args<H: Hw + ?Sized>(hw: &mut H, at: u16, view: &View) {
         put(hw, &g.dir.to_le_bytes()[..3]);
         put(hw, &g.stride.to_le_bytes());
         put(hw, &[g.nu, g.nv]);
-        for vec in [g.base, g.eu, g.ev] {
-            for x in vec {
-                put(hw, &x.to_le_bytes());
-            }
+        for x in g.d0 {
+            put(hw, &x.to_le_bytes());
         }
+        put(hw, &[g.k]);
         put(hw, &g.r.to_le_bytes());
         put(hw, &g.far.to_le_bytes());
         put(hw, &g.rn.to_le_bytes());
+        put(hw, &[g.sh]);
+        for _ in walk::IN_LEN..walk::GRID_LEN {
+            put(hw, &[0]);
+        }
     }
     put(hw, &[0, 0]);
 }

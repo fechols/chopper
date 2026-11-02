@@ -299,7 +299,7 @@ pub fn bake(world: &crate::world::World) -> Baked {
 }
 
 pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
-    use crate::geom::{BIG_GRID, CELL_PAD, GRID, Q, big_cell_of, cell_of};
+    use crate::geom::{BIG_CELL, BIG_GRID, CELL, CELL_PAD, GRID};
     let mut out = vec![0u8; fmt::MESHES + meshes.len() * fmt::MESH];
     out[fmt::N_MESHES] = meshes.len() as u8;
     let mut radius = Vec::new();
@@ -331,22 +331,28 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
         out[rec + 9] = dist;
     }
     // File each object under its centre's cell; one that reaches past the padding goes in the big grid.
+    // A record holds the offset from the cell's centre: quarter texels in the grid, whole ones in the big
+    // grid (`geom::SHIFT`, `geom::BIG_SHIFT`), so positions round to those.
     let mut lists: Vec<Vec<[u8; fmt::OBJECT]>> = vec![Vec::new(); GRID * GRID + BIG_GRID * BIG_GRID];
     for o in objects {
-        let (u, v) = ((o.u * 32.0).round() as u16, (o.v * 32.0).round() as u16);
         let r = radius[o.mesh as usize] as i32;
-        let at = if r > CELL_PAD {
-            assert!(r <= 160, "mesh {} too big for the big grid", o.mesh);
-            let (cu, cv) = big_cell_of(u, v);
-            GRID * GRID + cv as usize * BIG_GRID + cu as usize
-        } else {
-            let (cu, cv) = cell_of(u, v);
-            cv as usize * GRID + cu as usize
+        let big = r > CELL_PAD;
+        assert!(r <= 160, "mesh {} too big for the big grid", o.mesh);
+        // units per texel, cells per row, units per cell
+        let (per, n, cell) = if big { (1.0, BIG_GRID, BIG_CELL) } else { (4.0, GRID, CELL * 4) };
+        let (u, v) = ((o.u * per).round() as i32, (o.v * per).round() as i32);
+        let (cu, cv) = (u.div_euclid(cell), v.div_euclid(cell));
+        assert!((0..n as i32).contains(&cu) && (0..n as i32).contains(&cv), "object off the map at {}, {}", o.u, o.v);
+        let off = |x: i32, c: i32| {
+            let d = x - (c * cell + cell / 2);
+            assert!((-128..128).contains(&d));
+            d as i8 as u8
         };
-        let y = ((o.y * Q as f32).round() as i16).to_le_bytes();
-        let ([u0, u1], [v0, v1]) = (u.to_le_bytes(), v.to_le_bytes());
+        let dy = (o.y * per).round() as i32;
+        assert!((-128..128).contains(&dy), "object height {}", o.y);
+        let at = if big { GRID * GRID + cv as usize * BIG_GRID + cu as usize } else { cv as usize * GRID + cu as usize };
         // Yaw to the nearest quarter turn (`geom::object` turns meshes by quarters only).
-        lists[at].push([u0, u1, v0, v1, y[0], y[1], o.yaw.wrapping_add(32) & 0xC0, o.mesh]);
+        lists[at].push([off(u, cu), off(v, cv), dy as i8 as u8, o.yaw.wrapping_add(32) & 0xC0, o.mesh, 0, 0, 0]);
     }
     let (mut dir, mut records) = (Vec::new(), Vec::new());
     for l in &lists {
@@ -354,7 +360,7 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
         let first = (records.len() / fmt::OBJECT) as u16;
         dir.extend(first.to_le_bytes());
         dir.push(l.len() as u8);
-        dir.push(l.iter().map(|r| radius[r[7] as usize]).max().unwrap_or(0));
+        dir.push(l.iter().map(|r| radius[r[crate::geom::scene::O_MESH] as usize]).max().unwrap_or(0));
         for r in l {
             records.extend(r);
         }
