@@ -116,6 +116,84 @@ fn every_ground_byte_samples_within_a_texel_of_the_exact_ray() {
     assert!(checked > 100_000, "{checked}");
 }
 
+/// `make_line` as it was before the thresholds: `w` evaluated at every candidate run end and every
+/// sky or haze byte. The thresholds and the galloping must give the same runs.
+fn searched_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX_SPANS]) -> usize {
+    use floor::{HAZE_BYTE, SKY_BYTE, ground_offset, level_for, mul_small, put_fill};
+    let w_at = |b: u8| -(a[1] + mul_small(rays.bb[1], b));
+    let at = |b: u8| {
+        let d = rays.bt(b);
+        ground_offset(rays.hc, a[0] + d[0], a[2] + d[2], w_at(b))
+    };
+    let (mut n, mut b) = (0, 0u8);
+    while b < COLS {
+        let w0 = w_at(b);
+        if w0 < rays.w_haze {
+            put_fill(out, &mut n, 1, if w0 <= 0 { SKY_BYTE } else { HAZE_BYTE });
+            b += 1;
+            continue;
+        }
+        let mut k = 5;
+        while (1u8 << k) > COLS - b {
+            k -= 1;
+        }
+        while k > 0 {
+            let w1 = w_at(b + (1 << k));
+            if w1 >= rays.w_haze && floor::ERR * (rays.bb[1].abs() << (2 * k)) <= w0 + w1 {
+                break;
+            }
+            k -= 1;
+        }
+        let len = 1u8 << k;
+        if w_at(b + len) < rays.w_haze {
+            put_fill(out, &mut n, 1, HAZE_BYTE);
+            b += 1;
+            continue;
+        }
+        let (p0, p1) = (at(b), at(b + len));
+        let (du, dv) = ((p1.0 - p0.0) >> k, (p1.1 - p0.1) >> k);
+        match level_for(du, dv) {
+            Some(level) => {
+                out[n] = Span {
+                    len,
+                    flags: level,
+                    u: (cam.u + p0.0) >> level,
+                    v: (cam.v + p0.1) >> level,
+                    du: (du >> level) as i16,
+                    dv: (dv >> level) as i16,
+                };
+                n += 1;
+            }
+            None => put_fill(out, &mut n, len, HAZE_BYTE),
+        }
+        b += len;
+    }
+    n
+}
+
+#[test]
+fn thresholds_and_galloping_give_the_searched_runs() {
+    let mut rng = Rng(0x1357_9bdf);
+    let deg = |d: i32| (d * 182) as u16;
+    for _ in 0..300 {
+        let m = crate::camera::Matrix14::orientation(rng.next() as u16, deg(rng.below(90) as i32 - 60), deg(rng.below(181) as i32 - 90));
+        let cam = FloorCam {
+            u: rng.below(2048 << 8) as i32,
+            v: rng.below(2048 << 8) as i32,
+            h: (64 + rng.below(200 * 256)) as u16,
+            r: m.m,
+        };
+        let rays = Rays::new(&cam);
+        let (mut x, mut y) = ([Span::default(); MAX_SPANS], [Span::default(); MAX_SPANS]);
+        for line in 0..VIEW_LINES {
+            let a = rays.line(line);
+            let n = floor::make_line(&cam, &rays, &a, &mut x);
+            let m = searched_line(&cam, &rays, &a, &mut y);
+            assert_eq!(&x[..n], &y[..m], "camera {cam:?} line {line}");
+        }
+    }
+}
+
 #[test]
 fn a_level_line_is_one_run() {
     // No roll: every line is at one depth, so its ground is one run (as in mode7).

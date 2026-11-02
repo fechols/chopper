@@ -104,7 +104,7 @@ class Device:
 def status(dev):
     st = dev.read(STATUS, 21)
     return dict(magic=f'${st[0]:02X}', front=st[1], tick=st[2] | st[3] << 8,
-                render_us=st[4] | st[5] << 8, hold=st[6], mode='doubled' if st[7] & 1 else 'full',
+                render_us=(st[4] | st[5] << 8) * 4, hold=st[6], mode='doubled' if st[7] & 1 else 'full',
                 frames=st[8] | st[9] << 8, fps=st[10], probes=st[12] | st[13] << 8,
                 setup_us=st[14] | st[15] << 8, geom_us=st[16] | st[17] << 8, tris=st[18], objects=st[19], pop=st[20])
 

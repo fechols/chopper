@@ -17,7 +17,7 @@ use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::format::{COLORS, HEADER, MAGIC, PACKAGE_VERSION};
 use chopper::geom::{Obj, Verts, Work, geo_args};
 use chopper::hw::{self, Hw};
-use chopper::layout::{self, BOUNCE, BT, BUFFERS, GEO_ARGS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, status};
+use chopper::layout::{self, BOUNCE, BUFFERS, GEO_ARGS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, status};
 use chopper::pilot::{LAP, autopilot};
 use chopper::poly::{Row, args};
 
@@ -27,6 +27,7 @@ unsafe extern "C" {
     /// the line buffer) and `floor_copy` (into band line `line` of `STAGE`, and the next when doubled).
     /// `asm/spans.S`: the runs of the line whose ray is `RAYS.a` into `SPANS` (`floor::make_line`).
     fn span_line();
+    fn bt_build();
     fn floor_begin();
     fn floor_end();
     fn floor_line();
@@ -138,6 +139,17 @@ fn stopwatch_stop() -> u16 {
     !(peek(0xDC04) as u16 | (peek(0xDC05) as u16) << 8)
 }
 
+/// The running stopwatch's ticks, without stopping it (they wrap after 65 ms: read it more often).
+fn stopwatch_read() -> u16 {
+    loop {
+        let hi = peek(0xDC05);
+        let lo = peek(0xDC04);
+        if peek(0xDC05) == hi {
+            return !(lo as u16 | (hi as u16) << 8);
+        }
+    }
+}
+
 fn in_vblank() -> bool {
     peek(0xD011) & 0x80 != 0 || peek(0xD012) >= 251
 }
@@ -199,22 +211,6 @@ fn video_init(c: &mut C64) {
     poke(0xD011, layout::D011);
 }
 
-/// `Rays::bt` for b = 0..40 into `BT`, field-major, by adding `bb` up (no table on the small stack).
-#[inline(never)]
-fn put_bt(bb: &[i32; 3]) {
-    let mut t = [0i32; 3];
-    for b in 0..=floor::COLS as u16 {
-        for (c, &v) in t.iter().enumerate() {
-            for i in 0..4u16 {
-                poke(BT + (4 * c as u16 + i) * 64 + b, (v >> (8 * i)) as u8);
-            }
-        }
-        for c in 0..3 {
-            t[c] = t[c].wrapping_add(bb[c]);
-        }
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> i16 {
     let c = &mut C64;
@@ -257,7 +253,7 @@ pub extern "C" fn main() -> i16 {
         let (cam, _yaw) = autopilot(tick);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
-        put_bt(&rays.bb);
+        unsafe { bt_build() };
         poke16(STATUS + status::SETUP_US, stopwatch_stop());
         stopwatch_start();
         poke16(STATUS + status::GEOM_US, stopwatch_stop());
@@ -265,6 +261,8 @@ pub extern "C" fn main() -> i16 {
         let doubled = peek(STATUS + status::MODE) & 1;
         stopwatch_start();
         unsafe { floor_begin() };
+        // The bands can take longer than the 16-bit stopwatch: add it up band by band.
+        let (mut render, mut last) = (0u32, 0u16);
         // Line y's ray at byte 0, stepped (exactly) line by line.
         let mut a = rays.a0;
         let step: [i32; 3] = if doubled != 0 { rays.ay.map(|c| c * 2) } else { rays.ay };
@@ -281,9 +279,13 @@ pub extern "C" fn main() -> i16 {
                 line += 1 + doubled;
             }
             unsafe { band_publish(band) };
+            let now = stopwatch_read();
+            render += now.wrapping_sub(last) as u32;
+            last = now;
         }
         unsafe { floor_end() };
-        poke16(STATUS + status::RENDER_US, stopwatch_stop());
+        render += stopwatch_stop().wrapping_sub(last) as u32;
+        poke16(STATUS + status::RENDER_US, (render >> 2) as u16);
         poke(STATUS + status::TRIS, 0);
         poke(STATUS + status::OBJECTS, 0);
         poke16(STATUS + status::TICK, tick);

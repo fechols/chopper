@@ -32,6 +32,7 @@ def main():
     ap.add_argument('--frames', type=int, default=2)
     ap.add_argument('--elf', default='dist/chopper.elf')
     ap.add_argument('--render', action='store_true', help='profile the band loop instead of the geometry')
+    ap.add_argument('--setup', action='store_true', help='profile the frame set-up instead of the geometry')
     args = ap.parse_args()
     prg = Path('dist/chopper.prg').read_bytes()
     mem = bytearray(0x10000)
@@ -43,20 +44,28 @@ def main():
     syms = text_symbols(args.elf)
     addrs = [a for a, _ in syms]
     by = collections.Counter()
+    calls = collections.Counter()
+    names = {a: n for a, n in syms}
     frames, total = 0, 0
     while frames < args.frames:
         n = len(cpu.watch)
-        inside = n % 6 == (5 if args.render else 3)  # geometry: events 3-4; the band loop: 5-6
+        # set-up: events 1-2; geometry: 3-4; the band loop: 5-6
+        inside = n % 6 == (5 if args.render else 1 if args.setup else 3)
         pc, c0 = cpu.pc, cpu.cycles
         cpu.step()
         if inside:
             i = bisect.bisect_right(addrs, pc) - 1
             by[syms[i][1] if i >= 0 else '?'] += cpu.cycles - c0
             total += cpu.cycles - c0
+            if cpu.mem[pc] == 0x20:  # jsr
+                t = cpu.mem[pc + 1] | cpu.mem[pc + 2] << 8
+                calls[names.get(t, hex(t))] += 1
         if len(cpu.watch) != n and len(cpu.watch) % 6 == 0:
             frames += 1
     for name, c in by.most_common(20):
-        print(f'{c / total * 100:5.1f}%  {c / args.frames / 64000:6.2f} ms  {name}')
+        n = calls[name] / args.frames
+        per = f'{n:7.0f} calls {c / args.frames / n:6.0f} cyc' if n else ''
+        print(f'{c / total * 100:5.1f}%  {c / args.frames / 64000:6.2f} ms  {name:12s} {per}')
     print(f'total {total / args.frames / 64000:.2f} ms a frame')
 
 

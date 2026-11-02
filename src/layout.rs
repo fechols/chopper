@@ -63,8 +63,8 @@ pub const LINEBUF: u16 = 0xBF00;
 pub const TILES: u16 = 0xC000;
 pub const SPANS: u16 = 0xC400;
 pub const SPAN_LINE: u16 = (crate::floor::MAX_SPANS * crate::floor::SPAN_BYTES) as u16;
-/// `asm/spans.S`'s arguments (`floor::SpanArgs`), and the frame's ray table (`floor::Rays::bt_rows`:
-/// 12 rows of 64 bytes, of which 41 are used).
+/// `asm/spans.S`'s arguments (`floor::SpanArgs`), and the frame's ray table (`floor::Rays::bt`, built by
+/// `bt_build`: rows of 64 bytes, of which 41 are used; rows 0-2 hold bytes 0-2 of x, rows 8-10 of z).
 pub const RAYS: u16 = 0xC640;
 pub const BT: u16 = 0xB800;
 const _: () = assert!(BT as u32 + 12 * 64 <= LINEBUF as u32);
@@ -119,7 +119,7 @@ pub mod status {
     pub const FRONT: u16 = 1;
     /// u16: path tick of the frame shown.
     pub const TICK: u16 = 2;
-    /// u16: microseconds (CIA ticks) the last floor took to draw.
+    /// u16: the time the last floor took to draw, in units of 4 µs (4 CIA ticks).
     pub const RENDER_US: u16 = 4;
     /// u8: set by the host to freeze the path tick (0 = run).
     pub const HOLD: u16 = 6;

@@ -11,7 +11,7 @@
 //! horizon (`w = −D_y > 0`) it meets the ground at `cam + H·(D_x, D_z)/w`.
 //!
 //! **Spans**: a line is cut into runs. Sky and haze runs are filled with a constant byte (no DMA).
-//! Ground runs have a power-of-two length, exact texel positions at both ends (one reciprocal and three
+//! Ground runs have a power-of-two length, exact texel positions at both ends (one reciprocal and two
 //! multiplies), and a constant step per byte between them (a shift). A run is as long as the affine
 //! error allows (from the change of `w` across it alone, so no division is wasted on rejected runs): a
 //! level line (no roll) is one run. Each run reads the mip level its step needs.
@@ -19,7 +19,7 @@
 //! [`make_line`] is shared by the host and the C64 (same bits); [`draw_line`] is the reference for
 //! `target-c64/asm/floor.S`.
 
-use crate::fixed::{mul, mulsu, recip, umul};
+use crate::fixed::{mul, mulsu, recip};
 use crate::hw::{Hw, reu};
 
 /// Horizontal and vertical focal lengths in multicolor pixels: about 90° across, and square pixels on
@@ -56,16 +56,24 @@ pub struct FloorCam {
     pub r: [[i32; 3]; 3],
 }
 
-/// Per-frame ray set-up: line `y`'s ray at byte `b` is `a + y·ay + b·bb` (Q22 world directions).
+/// Per-frame ray set-up: line `y`'s ray at byte `b` is `a + y·ay + b·bb` (Q22 world directions, except
+/// that the x and z components are pre-multiplied by `h / 2^L`, `L` = `h`'s bit length, so a ground
+/// point needs no multiply by the altitude).
 #[derive(Clone, Copy, Debug)]
 pub struct Rays {
     pub a0: [i32; 3],
     pub ay: [i32; 3],
     pub bb: [i32; 3],
-    /// A run of `2^k` bytes is short enough when `limit[k] ≤ w0 + w1` (see [`make_line`]).
-    pub limit: [i32; 6],
+    /// How much `w` drops over `2^k` bytes: `bb.y << k`.
+    pub dw: [i32; 6],
+    /// For k ≥ 1, a run of `2^k` bytes from a byte with `w = w0` stays on visible ground within the error
+    /// budget exactly when `w0 ≥ t[k]` (see [`make_line`]). `t[0]`: a one-byte run whose far end is
+    /// still visible ground needs `w0 ≥ t[0]`.
+    pub t: [i32; 6],
     /// `w` below which the ground is haze.
     pub w_haze: i32,
+    /// `26 − L`: the exponent the altitude scaling leaves for [`ground_offset`].
+    pub hc: u8,
 }
 
 /// The error budget: a run of `len` bytes is accepted when `ERR · len² · |Δw per byte| ≤ w0 + w1`.
@@ -74,19 +82,35 @@ pub struct Rays {
 pub const ERR: i32 = 2;
 
 impl Rays {
+    /// `cam.h` must be at least 64 (a quarter texel).
     pub fn new(cam: &FloorCam) -> Self {
         let col = |j: usize| [cam.r[0][j], cam.r[1][j], cam.r[2][j]];
         let (right, up, fwd) = (col(0), col(1), col(2));
         // Q14 → Q22 is ×256. Byte step: 4 pixels / FX. Byte 0's centre: pixel 2, (2 − 80)/80 = −78/80.
         // Line 0's centre: (CY_HALF/2)/FY above the axis.
-        let bb = right.map(|c| c * (256 * 4) / FX);
-        let ay = up.map(|c| -(c * 256) / FY);
-        let a0 = core::array::from_fn(|k| fwd[k] * 256 + right[k] * (-78 * 256) / FX + up[k] * (CY_HALF * 128) / FY);
-        // |Δw per byte| ≤ 2^22 / 20; ERR · 4^5 · that stays within i32.
-        let limit = core::array::from_fn(|k| ERR * (bb[1].abs() << (2 * k)));
+        let mut bb = right.map(|c| c * (256 * 4) / FX);
+        let mut ay = up.map(|c| -(c * 256) / FY);
+        let mut a0: [i32; 3] = core::array::from_fn(|k| fwd[k] * 256 + right[k] * (-78 * 256) / FX + up[k] * (CY_HALF * 128) / FY);
+        let l = 16 - cam.h.leading_zeros();
+        let scale = |c: &mut i32| *c = ((*c as i64 * cam.h as i64) >> l) as i32;
+        for v in [&mut a0, &mut ay, &mut bb] {
+            scale(&mut v[0]);
+            scale(&mut v[2]);
+        }
         // A ray of length ~1 (Q22 = 2^22) reaches HAZE_TEXELS when w = H/HAZE_TEXELS (H in 8.8 texels).
         let w_haze = ((cam.h as i32) << 14) / HAZE_TEXELS;
-        Self { a0, ay, bb, limit, w_haze }
+        // |Δw per byte| ≤ 2^22 / 20; ERR · 4^5 · that stays within i32.
+        let dw = core::array::from_fn(|k| bb[1] << k);
+        // w1 = w0 − dw[k]: `w1 ≥ w_haze` and `limit ≤ w0 + w1 = 2·w0 − dw[k]`.
+        let t = core::array::from_fn(|k| {
+            if k == 0 {
+                w_haze + dw[0]
+            } else {
+                let limit = ERR * (bb[1].abs() << (2 * k));
+                (w_haze + dw[k]).max((limit + dw[k] + 1) >> 1)
+            }
+        });
+        Self { a0, ay, bb, dw, t, w_haze, hc: (26 - l) as u8 }
     }
 
     /// Line `y`'s ray at byte 0 (the frame loop steps it by [`Rays::ay`] instead).
@@ -94,32 +118,36 @@ impl Rays {
         core::array::from_fn(|k| self.a0[k] + mul_small(self.ay[k], y as u8))
     }
 
-    /// `b · bb`: byte `b`'s ray is the line's ray at byte 0 plus this. The C64 keeps it as a table
-    /// (`layout::BT`, field-major: row `4c + i` holds byte i of component c for b = 0..40), built by
-    /// adding `bb` up, which gives the same values.
+    /// `b · bb`: byte `b`'s ray is the line's ray at byte 0 plus this. The C64 keeps the x and z
+    /// components as a table (`layout::BT`, field-major: row `4c + i` holds byte i of component c for
+    /// b = 0..40), built by adding `bb` up, which gives the same values.
     pub fn bt(&self, b: u8) -> [i32; 3] {
         self.bb.map(|c| mul_small(c, b))
     }
 }
 
 /// `asm/spans.S`'s arguments (`layout::RAYS`): written once a frame, `a` (the line's ray at byte 0)
-/// before each line; the kernel leaves the run count in `n`. `Rays::bt` goes to `layout::BT`.
+/// before each line; the kernel leaves the run count in `n`. `bt_build` fills `layout::BT` from it.
 #[derive(Clone, Copy, Debug)]
 #[repr(C, packed)]
 pub struct SpanArgs {
-    pub limit: [i32; 6],
+    pub t: [i32; 6],
+    pub dw: [i32; 6],
     pub w_haze: i32,
     pub cam_u: i32,
     pub cam_v: i32,
-    pub h: u16,
+    pub hc: u8,
     pub a: [i32; 3],
     pub n: u8,
+    /// `bb`'s x and z, for `asm/spans.S`'s `bt_build`.
+    pub bbx: i32,
+    pub bbz: i32,
 }
-const _: () = assert!(core::mem::size_of::<SpanArgs>() == 51);
+const _: () = assert!(core::mem::size_of::<SpanArgs>() == 82);
 
 impl SpanArgs {
     pub fn new(cam: &FloorCam, rays: &Rays) -> Self {
-        Self { limit: rays.limit, w_haze: rays.w_haze, cam_u: cam.u, cam_v: cam.v, h: cam.h, a: rays.a0, n: 0 }
+        Self { t: rays.t, dw: rays.dw, w_haze: rays.w_haze, cam_u: cam.u, cam_v: cam.v, hc: rays.hc, a: rays.a0, n: 0, bbx: rays.bb[0], bbz: rays.bb[2] }
     }
 }
 
@@ -167,48 +195,32 @@ fn norm16(v: u16) -> (u16, i8) {
     (m, e)
 }
 
-/// The ground point (16.8 texels, level 0) of ray `d` (`w = −d.y`, at least `w_haze`), relative to the
-/// camera: `H · (d.x, d.z) / w`. The ray's components are used as 16-bit values (`>> 8`: at most
-/// ~6·10⁻⁵ of the distance off), `H / w` as a 16-bit factor whose exponent is rounded to whole bytes
-/// (at least 9 significant bits: 0.2%), so the 6502 needs one normalisation, three 16×16 multiplies and
-/// whole-byte shifts. Both errors stay far below a texel of the mip level read at that distance.
-pub fn ground_offset(h: u16, d: &[i32; 3]) -> (i32, i32) {
-    let x = (d[0] >> 8) as i16;
-    let w = ((-d[1]) >> 8) as u16;
-    let z = (d[2] >> 8) as i16;
-    let (m, k) = norm16(w);
-    // h / w ≈ (h · recip(m)) · 2^(−26 − k), recip(m) ≈ 2^26 / m.
-    let hr = umul(h, recip(m));
-    // Shift h·r right by s ≥ 16 − (its spare top bits) so it fits 16 bits and the remaining exponent
-    // e = s − 26 − k is a whole number of bytes.
-    let mut s = 0i8;
-    while (hr >> s) >= 0x1_0000 {
-        s += 1;
-    }
-    while (s - 26 - k).rem_euclid(8) != 0 {
-        s += 1;
-    }
-    let p = (hr >> s) as u16;
-    let e = s - 26 - k;
-    let off = |n: i16| {
-        let v = mulsu(n, p);
-        if e >= 0 { v << e } else { v >> -e }
-    };
+/// The ground point (16.8 texels, level 0) relative to the camera of the ray whose (altitude-scaled,
+/// [`Rays`]) x and z components are `x`, `z` and whose `w` is `w` (at least `w_haze`):
+/// `H · (x, z) / w`. The components are used as 16-bit values (`>> 8`: at most ~1.2·10⁻⁴ of the
+/// distance off) and `1 / w` as a 16-bit factor whose exponent is rounded to whole bytes (at least 9
+/// significant bits: 0.2%), so the 6502 needs one normalisation, two 16×16 multiplies and whole-byte
+/// shifts. Both errors stay far below a texel of the mip level read at that distance.
+pub fn ground_offset(hc: u8, x: i32, z: i32, w: i32) -> (i32, i32) {
+    let (m, k) = norm16((w >> 8) as u16);
+    // H·x/w = X·2^L/w ≈ X · recip(m) · 2^−(hc + k), recip(m) ≈ 2^26/m; take recip's low bits off so the
+    // remaining exponent is whole bytes.
+    let ck = (hc as i8 + k) as u8;
+    debug_assert!(ck < 32);
+    let p = recip(m) >> (ck & 7);
+    let e = ck & !7;
+    let off = |n: i32| mulsu((n >> 8) as i16, p) >> e;
     (off(x), off(z))
 }
 
 /// The mip level whose step stays within [`MAX_STEP`], or `None` beyond the last.
-fn level_for(du: i32, dv: i32) -> Option<u8> {
+pub(crate) fn level_for(du: i32, dv: i32) -> Option<u8> {
     let s = du.abs().max(dv.abs());
     (0..LEVELS).find(|&k| s >> k <= MAX_STEP)
 }
 
-fn add(a: &[i32; 3], b: &[i32; 3]) -> [i32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 /// Append `len` bytes of `fill`, extending the last run when it is the same fill.
-fn put_fill(out: &mut [Span; MAX_SPANS], n: &mut usize, len: u8, fill: u8) {
+pub(crate) fn put_fill(out: &mut [Span; MAX_SPANS], n: &mut usize, len: u8, fill: u8) {
     if *n > 0 && out[*n - 1].fill() == Some(fill) {
         out[*n - 1].len += len;
     } else {
@@ -217,21 +229,52 @@ fn put_fill(out: &mut [Span; MAX_SPANS], n: &mut usize, len: u8, fill: u8) {
     }
 }
 
+fn add(a: &[i32; 3], b: &[i32; 3]) -> [i32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// What a byte with depth `w` shows: 0 sky, 1 haze, 2 ground.
+fn class(rays: &Rays, w: i32) -> u8 {
+    if w <= 0 {
+        0
+    } else if w < rays.w_haze {
+        1
+    } else {
+        2
+    }
+}
+
 /// One line's runs into `out` from its ray at byte 0 (`Rays::line`); returns how many. The runs cover
-/// the 40 bytes in order. Sky (`w ≤ 0`) and haze bytes become fills; ground runs are as long as
-/// [`Rays::limit`] allows (a power of two, so the step is a shift), with exact end points.
+/// the 40 bytes in order. Sky (`w ≤ 0`) and haze bytes become fills; ground runs are as long as the error
+/// budget allows (a power of two, so the step is a shift), with exact end points.
+///
+/// `w` is linear along the line (`w(b + 2^k) = w(b) − dw[k]`), so the run length is found by comparing
+/// `w` at the run's start with the frame's thresholds `Rays::t`, and a stretch of sky or haze (`w` is
+/// monotone, so it is one stretch) by galloping over it in power-of-two steps.
 pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX_SPANS]) -> usize {
-    let w_at = |b: u8| -(a[1] + mul_small(rays.bb[1], b));
     let ray_at = |b: u8| add(a, &rays.bt(b));
     let mut n = 0;
     let mut b = 0u8;
+    let mut w0 = -a[1];
     // The previous run's end point, reused as the next run's start.
     let mut start: Option<(i32, i32)> = None;
     while b < COLS {
-        let w0 = w_at(b);
-        if w0 < rays.w_haze {
-            put_fill(out, &mut n, 1, if w0 <= 0 { SKY_BYTE } else { HAZE_BYTE });
-            b += 1;
+        let c = class(rays, w0);
+        if c < 2 {
+            // The longest stretch of the same fill: m bytes, w the last one's depth.
+            let (mut m, mut w) = (1u8, w0);
+            for k in (0..6).rev() {
+                if b + m + (1 << k) <= COLS {
+                    let wn = w - rays.dw[k];
+                    if class(rays, wn) == c {
+                        m += 1 << k;
+                        w = wn;
+                    }
+                }
+            }
+            put_fill(out, &mut n, m, if c == 0 { SKY_BYTE } else { HAZE_BYTE });
+            b += m;
+            w0 = w - rays.dw[0];
             start = None;
             continue;
         }
@@ -240,27 +283,29 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX
         while (1u8 << k) > COLS - b {
             k -= 1;
         }
-        while k > 0 {
-            let w1 = w_at(b + (1 << k));
-            if w1 >= rays.w_haze && rays.limit[k] <= w0 + w1 {
-                break;
-            }
+        while k > 0 && w0 < rays.t[k] {
             k -= 1;
         }
-        let len = 1u8 << k;
         // A one-byte run whose far end is already haze: its step (so its level) is unknown, and it is the
         // last ground byte before the haze, so it joins the haze.
-        if w_at(b + len) < rays.w_haze {
+        if k == 0 && w0 < rays.t[0] {
             put_fill(out, &mut n, 1, HAZE_BYTE);
             b += 1;
+            w0 -= rays.dw[0];
             start = None;
             continue;
         }
+        let len = 1u8 << k;
+        let w1 = w0 - rays.dw[k];
         let p0 = match start {
             Some(p) => p,
-            None => ground_offset(cam.h, &ray_at(b)),
+            None => {
+                let d = ray_at(b);
+                ground_offset(rays.hc, d[0], d[2], w0)
+            }
         };
-        let p1 = ground_offset(cam.h, &ray_at(b + len));
+        let d = ray_at(b + len);
+        let p1 = ground_offset(rays.hc, d[0], d[2], w1);
         let (du, dv) = ((p1.0 - p0.0) >> k, (p1.1 - p0.1) >> k);
         match level_for(du, dv) {
             Some(level) => {
@@ -273,14 +318,12 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX
                     dv: (dv >> level) as i16,
                 };
                 n += 1;
-                start = Some(p1);
             }
-            None => {
-                put_fill(out, &mut n, len, HAZE_BYTE);
-                start = None;
-            }
+            None => put_fill(out, &mut n, len, HAZE_BYTE),
         }
+        start = Some(p1);
         b += len;
+        w0 = w1;
     }
     n
 }
