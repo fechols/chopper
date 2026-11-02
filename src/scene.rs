@@ -3,7 +3,6 @@
 
 use crate::format::SCENE_MAX;
 use crate::geom::scene as fmt;
-use crate::map;
 use std::f32::consts::TAU;
 
 /// The sun (plane axes u, v, then up), for the faces' baked Lambert shade.
@@ -177,9 +176,16 @@ pub struct Object {
 }
 
 /// The track direction at `t` as a yaw, and the unit tangent and left normal.
+/// mode7's circuit centreline (`../mode7/src/map.rs`), which these placeholder props still follow until
+/// chopper's own objects replace them.
+pub fn centre(t: f32) -> [f32; 2] {
+    let a = t * TAU;
+    [128.0 + 92.0 * a.cos() + 18.0 * (3.0 * a).cos(), 128.0 + 80.0 * a.sin() + 22.0 * (2.0 * a).sin()]
+}
+
 fn frame_at(t: f32) -> ([f32; 2], u8, [f32; 2]) {
-    let p = map::centre(t);
-    let q = map::centre(t + 1e-4);
+    let p = centre(t);
+    let q = centre(t + 1e-4);
     let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
     let l = (dx * dx + dy * dy).sqrt();
     let a = dx.atan2(-dy);

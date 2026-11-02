@@ -6,7 +6,6 @@
 //! | screen RAM        | `$5C00` (`$D018=$78`) | `$8C00` (`$D018=$38`) |
 //! | bitmap            | `$6000`               | `$A000`               |
 //!
-//! `$0C00-$4BFF` is the 128×128-texel RAM cache of the CPU gather path ([`CACHE`]).
 
 /// Screen width in multicolor pixels.
 pub const WIDTH: i16 = 160;
@@ -47,12 +46,6 @@ pub const AI_RAM_END: u16 = 0xC000;
 
 pub const COLOR_RAM: u16 = 0xD800;
 
-/// The CPU gather path's texel cache: 128 rows × 128 texels, one byte per texel (the code replicated
-/// into all four pixel slots), row `v & 127` at `CACHE + (v & 127) * 128`, texel `u & 127` in it.
-pub const CACHE: u16 = 0x0C00;
-pub const CACHE_SIZE: u16 = 128;
-const _: () = assert!(CACHE as u32 + CACHE_SIZE as u32 * CACHE_SIZE as u32 <= BUFFERS[0].screen as u32);
-
 /// Byte offset of screen line `y` (0..199) within a bitmap column.
 #[inline(always)]
 pub const fn line_offset(y: u16) -> u16 {
@@ -63,8 +56,20 @@ pub const fn line_offset(y: u16) -> u16 {
 pub const D011: u8 = 0x3B;
 pub const D016: u8 = 0x18;
 
-/// The C64's copy of this frame's line table (`format::LINE_BLOCK` bytes, field-major), camera added.
-pub const LINE_RAM: u16 = 0xC000;
+/// The floor (`floor`, `asm/floor.S`): one drawn line (40 bytes), that line's runs as `floor::make_line`
+/// writes them (`floor::Span`, up to 40), and the four mip levels' tile → bank tables (`floor::tile_table`, 256 bytes
+/// each, level `k` at `TILES + 256 k`). Lines are generated and drawn one at a time.
+pub const LINEBUF: u16 = 0xBF00;
+pub const TILES: u16 = 0xC000;
+pub const SPANS: u16 = 0xC400;
+pub const SPAN_LINE: u16 = (crate::floor::MAX_SPANS * crate::floor::SPAN_BYTES) as u16;
+/// `asm/spans.S`'s arguments (`floor::SpanArgs`), and the frame's ray table (`floor::Rays::bt_rows`:
+/// 12 rows of 64 bytes, of which 41 are used).
+pub const RAYS: u16 = 0xC640;
+pub const BT: u16 = 0xB800;
+const _: () = assert!(BT as u32 + 12 * 64 <= LINEBUF as u32);
+const _: () = assert!(SPANS + SPAN_LINE <= RAYS && RAYS as u32 + core::mem::size_of::<crate::floor::SpanArgs>() as u32 <= POLY_ARGS as u32);
+const _: () = assert!(TILES as u32 + 4 * 256 <= SPANS as u32);
 /// `asm/poly.S`'s arguments (`poly::args`).
 pub const POLY_ARGS: u16 = 0xC780;
 /// `asm/tri.S`'s arguments (`geom::walk_args`).

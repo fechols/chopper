@@ -1,36 +1,36 @@
-//! MODE 7 for the C64 Ultimate, milestone 3: a perspective floor flying round the test circuit, drawn by
-//! `asm/floor.S` (one REU DMA per bitmap byte, the REU address stepped per byte) into a double-buffered
-//! 160×200 multicolour bitmap. Pattern: `../talonhd/target-c64/src/main.rs`.
+//! Chopper for the C64 Ultimate, milestone F1: the floor. The autopilot (`chopper::pilot`, shared with
+//! the host) flies a banked circle over the 2048×2048-texel island; every view line is cut into runs by
+//! `chopper::floor::make_line` (the same Rust on both sides, so the frames match the host byte for byte)
+//! and drawn by `asm/floor.S`, one REU DMA per ground byte, into a single buffer one band at a time
+//! (`band_publish`). Pattern: `../mode7/target-c64/src/main.rs`.
 //!
-//! Needs the matching `mode7.reu` at REU address 0 (16 MB REU); until it appears the border flashes, so it
-//! may be uploaded after starting. Fire on joystick 2 (or `STATUS+MODE`) toggles full / line-doubled.
+//! Needs the matching `chopper.reu` at REU address 0; until it appears the border flashes, so it may be
+//! uploaded after starting. Fire on joystick 2 (or `STATUS+MODE`) toggles full / line-doubled.
 //! Performance is in the status block at `$CA80` (`layout::status`).
-//!
-//! Milestone 4: flat-shaded 3D over the floor. `chopper::geom` (shared with the host, so both compute the
-//! same bits) transforms, clips, culls and depth-sorts the scene; `asm/poly.S` writes each triangle's cell
-//! rows, whole bytes wherever a cell is fully covered.
 
 #![no_std]
 #![no_main]
 
 use core::ptr::{read_volatile, write_volatile};
 
-use chopper::format::{
-    COLORS, FLOOR_ROW, H_PATH, HEADER, LINE_BLOCK, MAGIC, PACKAGE_VERSION, PATH_ENTRY, PATH_LEN, SCENE, SCENE_MAX,
-    SKY_COLOR, line_table,
-};
-use chopper::geom::{self, BANDS, Camera, Obj, Verts, Work, geo_args};
+use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
+use chopper::format::{COLORS, HEADER, MAGIC, PACKAGE_VERSION};
+use chopper::geom::{Obj, Verts, Work, geo_args};
 use chopper::hw::{self, Hw};
-use chopper::layout::{self, BOUNCE, BUFFERS, LINE_RAM, GEO_ARGS, PATS, POLY_ARGS, SCENE_RAM, STAGE, STATUS, STATUS_MAGIC, VERTS, WORK, status};
+use chopper::layout::{self, BOUNCE, BT, BUFFERS, GEO_ARGS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, status};
+use chopper::pilot::{LAP, autopilot};
 use chopper::poly::{Row, args};
 
 unsafe extern "C" {
     fn reu_execute(command: u8);
-    /// `asm/floor.S`: the floor a cell row at a time (`floor_row` into 320 bytes at `dest`, lines
-    /// `line..line + 8` of the line table at `LINE_RAM`), between `floor_begin` and `floor_end`.
-    fn floor_begin(doubled: u8);
-    fn floor_row(dest: u16, line: u8);
+    /// `asm/floor.S`: once a frame `floor_begin`; per view line `floor_line` (the runs at `SPANS` into
+    /// the line buffer) and `floor_copy` (into band line `line` of `STAGE`, and the next when doubled).
+    /// `asm/spans.S`: the runs of the line whose ray is `RAYS.a` into `SPANS` (`floor::make_line`).
+    fn span_line();
+    fn floor_begin();
     fn floor_end();
+    fn floor_line();
+    fn floor_copy(line: u8, doubled: u8);
     /// `asm/floor.S`: copy `STAGE` to the bitmap's cell row `band` once the raster is not in it.
     fn band_publish(band: u8);
     /// `asm/poly.S`: one cell row of a polygon from `POLY_ARGS`.
@@ -40,9 +40,6 @@ unsafe extern "C" {
     /// active), draw the active ones' rows into `STAGE`.
     fn geo_xform();
     fn geo_faces();
-    fn geo_bin();
-    fn geo_activate(band: u8) -> u8;
-    fn geo_draw(band: u8);
     /// `asm/floor.S`: CIA 2 ticks for 20,480 cycles.
     fn turbo_probe() -> u16;
 }
@@ -178,47 +175,44 @@ fn wait_image(c: &mut C64) {
 }
 
 fn video_init(c: &mut C64) {
-    let sky_bytes = FLOOR_ROW * layout::ROW_STRIDE;
-    for buf in BUFFERS {
-        c.fill(buf.screen, layout::CELLS, COLORS[1] << 4 | COLORS[2]);
-        c.fill(buf.bitmap, sky_bytes, chopper::mode7::SKY_BYTE);
-        c.fill(buf.bitmap + sky_bytes, layout::BITMAP_BYTES - sky_bytes, 0);
+    let buf = BUFFERS[0];
+    c.fill(buf.screen, layout::CELLS, COLORS[1] << 4 | COLORS[2]);
+    c.fill(layout::COLOR_RAM, layout::CELLS, COLORS[3]);
+    c.fill(buf.bitmap, VIEW_BANDS * layout::ROW_STRIDE, floor::SKY_BYTE);
+    // The cockpit panel (`package::panel_byte`), drawn once.
+    for band in VIEW_BANDS..layout::ROWS {
+        for col in 0..layout::COLS {
+            for line in 0..8 {
+                let byte = if band == VIEW_BANDS && line < 2 { 0x55 } else { 0xAA };
+                poke(buf.bitmap + band * layout::ROW_STRIDE + col * 8 + line, byte);
+            }
+        }
     }
-    c.fill(layout::COLOR_RAM, FLOOR_ROW * layout::COLS, SKY_COLOR);
-    c.fill(layout::COLOR_RAM + FLOOR_ROW * layout::COLS, layout::CELLS - FLOOR_ROW * layout::COLS, COLORS[3]);
     poke(0xD015, 0);
     poke(0xD020, 0);
     poke(0xD021, COLORS[0]);
     poke(0xDD02, peek(0xDD02) | 3);
-    poke(0xDD00, (peek(0xDD00) & !3) | BUFFERS[0].dd00);
-    poke(0xD018, BUFFERS[0].d018);
+    poke(0xDD00, (peek(0xDD00) & !3) | buf.dd00);
+    poke(0xD018, buf.d018);
     poke(0xD016, layout::D016);
     wait_vblank();
     poke(0xD011, layout::D011);
 }
 
-/// `asm/floor.S`'s camera (x, y in 8.8 texels; `layout::CAM_RAM`), copied to its zero page each row.
-const CAMERA: u16 = layout::CAM_RAM;
-
-/// Path frame `tick`: fetch the camera and its angle's line table.
-fn frame_setup(c: &mut C64, tick: u16) -> Camera {
-    let mut cam = [0u8; PATH_ENTRY as usize];
-    hw::read_into(c, HEADER + H_PATH + tick as u32 * PATH_ENTRY, BOUNCE, &mut cam);
-    hw::fetch(c, line_table(cam[4]), LINE_RAM, LINE_BLOCK as u16);
-    for (i, &b) in cam[..4].iter().enumerate() {
-        poke(CAMERA + i as u16, b);
+/// `Rays::bt` for b = 0..40 into `BT`, field-major, by adding `bb` up (no table on the small stack).
+#[inline(never)]
+fn put_bt(bb: &[i32; 3]) {
+    let mut t = [0i32; 3];
+    for b in 0..=floor::COLS as u16 {
+        for (c, &v) in t.iter().enumerate() {
+            for i in 0..4u16 {
+                poke(BT + (4 * c as u16 + i) * 64 + b, (v >> (8 * i)) as u8);
+            }
+        }
+        for c in 0..3 {
+            t[c] = t[c].wrapping_add(bb[c]);
+        }
     }
-    let pop = peek(STATUS + status::POP);
-    Camera { x: u16::from_le_bytes([cam[0], cam[1]]), y: u16::from_le_bytes([cam[2], cam[3]]), angle: cam[4], pop }
-}
-
-/// Fetch the scene block to `SCENE_RAM`; its length.
-fn scene_load(c: &mut C64) -> u16 {
-    let mut len = [0u8; 2];
-    hw::read_into(c, SCENE, BOUNCE, &mut len);
-    let len = u16::from_le_bytes(len).min(SCENE_MAX);
-    hw::fetch(c, SCENE, SCENE_RAM, len);
-    len
 }
 
 #[unsafe(no_mangle)]
@@ -230,15 +224,10 @@ pub extern "C" fn main() -> i16 {
     hw::init(c);
     wait_image(c);
     chopper::fixed::init_tables();
-    let scene_len = scene_load(c);
-    let scene = unsafe { core::slice::from_raw_parts(SCENE_RAM as *const u8, scene_len as usize) };
-    // The scratch lives at WORK and VERTS (outside the program image); geom::draw resets what it reads.
-    let work = unsafe { &mut *(WORK as *mut Work) };
-    let verts = unsafe { &mut *(VERTS as *mut Verts) };
-    // Shade patterns for asm/geom.S: even bytes, then odd.
-    for (i, p) in chopper::poly::PATTERNS.iter().enumerate() {
-        poke(PATS + i as u16, p[0]);
-        poke(PATS + 16 + i as u16, p[1]);
+    for level in 0..floor::LEVELS {
+        for (i, &b) in floor::tile_table(level).iter().enumerate() {
+            poke(TILES + level as u16 * 256 + i as u16, b);
+        }
     }
     video_init(c);
 
@@ -256,52 +245,47 @@ pub extern "C" fn main() -> i16 {
     let mut frames = 0u16;
     let (mut window, mut in_window) = (frames_elapsed(), 0u8);
     let mut fire_was = false;
-    // Sky bands geometry drew into last frame: republished (clean) even when nothing touches them now.
-    let mut sky_dirty = [false; FLOOR_ROW as usize];
+    let args = unsafe { &mut *(RAYS as *mut SpanArgs) };
     loop {
         let now = frames_elapsed();
         if peek(STATUS + status::HOLD) == 0 {
-            tick = now % PATH_LEN;
+            tick = now % LAP;
         }
+        // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry (none
+        // yet), the bands.
         stopwatch_start();
-        let cam = frame_setup(c, tick);
+        let (cam, _yaw) = autopilot(tick);
+        let rays = Rays::new(&cam);
+        *args = SpanArgs::new(&cam, &rays);
+        put_bt(&rays.bb);
         poke16(STATUS + status::SETUP_US, stopwatch_stop());
-
-        // Geometry: transform, cull and sort into the depth buckets, then file by first band.
         stopwatch_start();
-        let st = geom::draw(c, scene, cam, layout::BUFFERS[0].bitmap, work, verts);
-        unsafe { geo_bin() };
         poke16(STATUS + status::GEOM_US, stopwatch_stop());
 
-        // Band by band: build each cell row in STAGE (floor, then the triangles crossing it, in painter's
-        // order) and publish it when the raster is elsewhere. One buffer; a frame tears between bands.
         let doubled = peek(STATUS + status::MODE) & 1;
         stopwatch_start();
-        unsafe { floor_begin(doubled) };
-        for band in 0..BANDS as u8 {
-            let active = unsafe { geo_activate(band) };
-            if band < FLOOR_ROW as u8 {
-                let dirty = &mut sky_dirty[band as usize];
-                if active > 0 || *dirty {
-                    c.fill(STAGE, layout::ROW_STRIDE, chopper::mode7::SKY_BYTE);
-                    if active > 0 {
-                        unsafe { geo_draw(band) };
-                    }
-                    unsafe { band_publish(band) };
+        unsafe { floor_begin() };
+        // Line y's ray at byte 0, stepped (exactly) line by line.
+        let mut a = rays.a0;
+        let step: [i32; 3] = if doubled != 0 { rays.ay.map(|c| c * 2) } else { rays.ay };
+        for band in 0..VIEW_BANDS as u8 {
+            let mut line = 0u8;
+            while line < 8 {
+                args.a = a;
+                unsafe {
+                    span_line();
+                    floor_line();
+                    floor_copy(line, doubled);
                 }
-                *dirty = active > 0;
-            } else {
-                unsafe { floor_row(STAGE, band * 8) };
-                if active > 0 {
-                    unsafe { geo_draw(band) };
-                }
-                unsafe { band_publish(band) };
+                a = [a[0] + step[0], a[1] + step[1], a[2] + step[2]];
+                line += 1 + doubled;
             }
+            unsafe { band_publish(band) };
         }
         unsafe { floor_end() };
         poke16(STATUS + status::RENDER_US, stopwatch_stop());
-        poke(STATUS + status::TRIS, peek(GEO_ARGS + geo_args::TRIS));
-        poke(STATUS + status::OBJECTS, st.objects);
+        poke(STATUS + status::TRIS, 0);
+        poke(STATUS + status::OBJECTS, 0);
         poke16(STATUS + status::TICK, tick);
 
         frames = frames.wrapping_add(1);

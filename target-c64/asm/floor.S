@@ -1,241 +1,295 @@
-; MODE 7 floor kernel: one REU DMA per bitmap byte (or per line pair), the REU address stepped by a
-; per-line DDA. Reference: `mode7::per_byte_dma` with `DmaMode { pre: true, first_row: 6, doubled }`
-; (src/mode7.rs); `tools/emu.py` checks this file against it byte for byte.
+; Floor kernel: one view line drawn from its runs (`floor::make_line`, encoded by `floor::encode` at
+; SPANS), one REU DMA per ground byte into the 40-byte line buffer, then copied into the band stage.
+; Reference: `floor::draw_line` and `floor::copy_line` (src/floor.rs); `tools/emu.py` checks the frames
+; against the host byte for byte.
 ;
-; floor_begin / floor_row / floor_end: draws cell rows of the floor (6-24) one at a time, each into a
-; 320-byte destination (the band being built, `layout::STAGE`), from the line table at $C000 (field-major, 200 lines: u0 lo/hi, v0 lo/hi offsets from the camera, du*4 lo/hi, dv*4
-; lo/hi, bank) and the camera at CAMX/CAMY (8.8, zero page, set by the caller); the camera is added as
-; each cell row's lines are loaded (`mode7::lines_at`). The bitmap is walked in memory order (per cell row: per column: its 8 lines), so the
-; C64 address auto-increments. Full: mid and bank are written when they change (shadowed in zero page),
-; lo always and last (see fullbyte). Doubled: `$DF0A` bit 6 fixes the REU address and each DMA is 2 bytes (the length register is
-; rewritten every time: a transfer leaves it at 1), so lines 2k and 2k+1 get line 2k's byte.
+; Run record (12 bytes, written by asm/spans.S): len, flags (bit 7: fill; else the mip level), then a
+; fill byte (at 2), or u (16.8, bytes 2-4), v (5-7), du (8.8, 8-9), dv (10-11). Ground: the REU address is bank:v_hi:u_hi, the bank from the
+; level's tile table (TILES + 256·level, entry (v_tile & 15)·16 + (u_tile & 15)), looked up again only
+; when a tile coordinate changes. Mid and bank are written when they change (shadowed), lo always and
+; last (the C64U reloads the whole address on any address write). The C64 address is set at each ground
+; run's start and auto-increments.
 ;
-; Zero page $A0-$FF is this file's (the compiler's is $02-$8F; no KERNAL).
+; Zero page $A0-$B5 while a line is drawn (nothing is kept there between calls: the REU shadows live in
+; SAVE_MID / SAVE_BANK).
 
-UL     = $A0    ; 8 lines' u accumulators, lo
-UH     = $A8    ;                          hi = REU address lo
-VL     = $B0
-VH     = $B8    ; = REU address mid
-SUL    = $C0    ; steps per byte
-SUH    = $C8
-SVL    = $D0
-SVH    = $D8
-BK     = $E0    ; banks
-SHLO   = $F0    ; REU address registers as the last DMA left them
-SHMID  = $F1
-SHBANK = $F2
-ROW    = $F3    ; first line of the cell row
-COL    = $F4
-MODE   = $F5
-TMP    = $F6
-CAMX   = $F8    ; u16, set by the caller
-CAMY   = $FA    ; u16
+RUNP     = $A0    ; (2) the current run record
+XB     = $A2    ; next byte of the line buffer
+REM    = $A3    ; bytes left in the run
+LEN    = $A4
+UL     = $A5    ; u: 16.8 (UHH = tile column)
+UH     = $A6
+UHH    = $A7
+VL     = $A8
+VH     = $A9
+VHH    = $AA
+DUL    = $AB    ; du: 8.8, DUS its sign extension
+DUH    = $AC
+DUS    = $AD
+DVL    = $AE
+DVH    = $AF
+DVS    = $B0
+BK     = $B1
+SHMID  = $B2
+SHBANK = $B3
+TP     = $B4    ; (2) the level's tile table
 
-T_U0L = $C000
-T_U0H = $C0C8
-T_V0L = $C190
-T_V0H = $C258
-T_DUL = $C320
-T_DUH = $C3E8
-T_DVL = $C4B0
-T_DVH = $C578
-T_BK  = $C640
-
-FIRST_LINE = 48
-FETCH      = $91
+LINEBUF = $BF00
+TILES   = $C000
+SPANS   = $C400
+STAGE   = $8C00
+SAVE_MID  = $C7D4
+SAVE_BANK = $C7D5
+FETCH   = $91
+RECORD  = 12
+COLS    = 40
 
 .section .text.floor_draw,"ax",@progbits
-; floor_begin(A = doubled): the length / control registers and a known REU address to shadow, once a
-; frame. Nothing else may DMA until floor_end (the shadows and $DF0A must stay valid).
+
+; floor_begin(): once a frame before any floor_line: one-byte transfers, no fixed address, and a known
+; REU address in the shadows (`floor::floor_begin`).
 .globl floor_begin
 .type floor_begin,@function
-CAM_RAM    = $C7D4
-FLOOR_MODE = $C7D8
-
 floor_begin:
-    sta MODE
-    sta FLOOR_MODE
-    ldx #1
-    lda #0
-    ldy MODE
-    beq 1f
-    ldx #2
-    lda #$40
-1:  stx $df07
-    sta $df0a
+    lda #1
+    sta $df07
     lda #0
     sta $df08
+    sta $df0a
     sta $df04
     sta $df05
     sta $df06
-    sta SHLO
-    sta SHMID
-    sta SHBANK
+    sta SAVE_MID
+    sta SAVE_BANK
     rts
+.size floor_begin, .-floor_begin
 
-; floor_end(): $DF0A back to 0 (every other DMA assumes it).
+; floor_end(): nothing to undo ($DF0A stays 0); kept for the frame loop's shape.
 .globl floor_end
 .type floor_end,@function
 floor_end:
-    lda #0
-    sta $df0a
     rts
+.size floor_end, .-floor_end
 
-; floor_row(dest: u16 in A/X, line: u8 in __rc2): one cell row (lines line..line+7; line >= 48) into the
-; 320 bytes at dest.
-.globl floor_row
-.type floor_row,@function
-floor_row:
-    sta $df02
-    stx $df03
-    lda __rc2
-    sta ROW
-    ; The geometry kernels ran since the last row and used this zero page: restore the camera and mode,
-    ; and start from a known REU address to shadow.
-    ldx #3
-1:  lda CAM_RAM,x
-    sta CAMX,x
-    dex
-    bpl 1b
-    lda FLOOR_MODE
-    sta MODE
-    lda #0
-    sta $df04
-    sta $df05
-    sta $df06
-    sta SHLO
+; floor_line(): draw the runs at SPANS (covering 40 bytes) into LINEBUF.
+.globl floor_line
+.type floor_line,@function
+floor_line:
+    lda #<SPANS
+    sta RUNP
+    lda #>SPANS
+    sta RUNP+1
+    lda SAVE_MID
     sta SHMID
+    lda SAVE_BANK
     sta SHBANK
-
-rowloop:
-    ldx #0
-    ldy ROW
-2:  clc
-    lda T_U0L,y
-    adc CAMX
-    sta UL,x
-    lda T_U0H,y
-    adc CAMX+1
-    sta UH,x
-    clc
-    lda T_V0L,y
-    adc CAMY
-    sta VL,x
-    lda T_V0H,y
-    adc CAMY+1
-    sta VH,x
-    lda T_DUL,y
-    sta SUL,x
-    lda T_DUH,y
-    sta SUH,x
-    lda T_DVL,y
-    sta SVL,x
-    lda T_DVH,y
-    sta SVH,x
-    lda T_BK,y
-    sta BK,x
+    lda #0
+    sta XB
+    sta TP
+run:
+    ldy #0
+    lda (RUNP),y
+    sta LEN
+    sta REM
     iny
+    lda (RUNP),y
+    bpl ground
+    ; ---- fill run: CPU stores ----
+    iny
+    lda (RUNP),y
+    ldx XB
+    ldy REM
+1:  sta LINEBUF,x
     inx
-    cpx #8
-    bne 2b
-    lda #40
-    sta COL
-    lda MODE
-    beq fullcol
-    jmp dblcol
+    dey
+    bne 1b
+    stx XB
+    jmp next
 
-; ---- full: one byte a DMA, the REU address auto-increments ----
-fullcol:
+ground:
+    clc
+    adc #>TILES
+    sta TP+1
+    ldy #2
+    lda (RUNP),y
+    sta UL
+    iny
+    lda (RUNP),y
+    sta UH
+    iny
+    lda (RUNP),y
+    sta UHH
+    iny
+    lda (RUNP),y
+    sta VL
+    iny
+    lda (RUNP),y
+    sta VH
+    iny
+    lda (RUNP),y
+    sta VHH
+    iny
+    lda (RUNP),y
+    sta DUL
+    iny
+    lda (RUNP),y
+    sta DUH
     ldx #0
-fullbyte:
-    ; The C64U reloads the whole REU address from the values last written to $DF04-$DF06 whenever one
-    ; of them is written (an auto-incremented lo is lost), so mid and bank go first and lo is always
-    ; written last: the address never depends on the auto-increment.
-    lda VH,x
+    asl
+    bcc 2f
+    dex
+2:  stx DUS
+    iny
+    lda (RUNP),y
+    sta DVL
+    iny
+    lda (RUNP),y
+    sta DVH
+    ldx #0
+    asl
+    bcc 3f
+    dex
+3:  stx DVS
+    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned).
+    lda XB
+    sta $df02
+    lda #>LINEBUF
+    sta $df03
+    jsr lookup
+gbyte:
+    lda VH
     cmp SHMID
     beq 4f
     sta $df05
     sta SHMID
-4:  lda BK,x
+4:  lda BK
     cmp SHBANK
     beq 5f
     sta $df06
     sta SHBANK
-5:  lda UH,x
+5:  lda UH
     sta $df04
     lda #FETCH
     sta $df01
-    clc
-    lda UL,x
-    adc SUL,x
-    sta UL,x
-    lda UH,x
-    adc SUH,x
-    sta UH,x
-    clc
-    lda VL,x
-    adc SVL,x
-    sta VL,x
-    lda VH,x
-    adc SVH,x
-    sta VH,x
-    inx
-    cpx #8
-    beq 7f
-    jmp fullbyte
-7:  dec COL
-    beq rownext
-    jmp fullcol
-
-; ---- doubled: one 2-byte DMA a line pair, the REU address fixed ----
-dblcol:
+    ; u += du, v += dv; a new tile coordinate means a new bank.
     ldx #0
-dblbyte:
-    lda UH,x
-    cmp SHLO
-    beq 3f
-    sta $df04
-    sta SHLO
-3:  lda VH,x
-    cmp SHMID
-    beq 4f
-    sta $df05
-    sta SHMID
-4:  lda BK,x
-    cmp SHBANK
-    beq 5f
-    sta $df06
-    sta SHBANK
-5:  lda #2
-    sta $df07
-    lda #FETCH
-    sta $df01
     clc
-    lda UL,x
-    adc SUL,x
-    sta UL,x
-    lda UH,x
-    adc SUH,x
-    sta UH,x
-    clc
-    lda VL,x
-    adc SVL,x
-    sta VL,x
-    lda VH,x
-    adc SVH,x
-    sta VH,x
+    lda UL
+    adc DUL
+    sta UL
+    lda UH
+    adc DUH
+    sta UH
+    lda UHH
+    adc DUS
+    cmp UHH
+    beq 6f
+    sta UHH
     inx
-    inx
-    cpx #8
+6:  clc
+    lda VL
+    adc DVL
+    sta VL
+    lda VH
+    adc DVH
+    sta VH
+    lda VHH
+    adc DVS
+    cmp VHH
     beq 7f
-    jmp dblbyte
-7:  dec COL
-    beq rownext
-    jmp dblcol
+    sta VHH
+    inx
+7:  txa
+    beq 8f
+    jsr lookup
+8:  dec REM
+    bne gbyte
+    clc
+    lda XB
+    adc LEN
+    sta XB
 
-rownext:
+next:
+    lda XB
+    cmp #COLS
+    bcs done
+    clc
+    lda RUNP
+    adc #RECORD
+    sta RUNP
+    bcc 9f
+    inc RUNP+1
+9:  jmp run
+done:
+    lda SHMID
+    sta SAVE_MID
+    lda SHBANK
+    sta SAVE_BANK
     rts
-.size floor_row, .-floor_row
+
+; BK = the level's tile table at (VHH & 15) · 16 + (UHH & 15).
+lookup:
+    lda VHH
+    asl
+    asl
+    asl
+    asl
+    sta BK
+    lda UHH
+    and #15
+    ora BK
+    tay
+    lda (TP),y
+    sta BK
+    rts
+.size floor_line, .-floor_line
+
+; floor_copy(A = band line 0..7, X = doubled): LINEBUF into STAGE column by column (+8 a column), and
+; into the next line too when doubled.
+CP_D = $A0      ; (2)
+.globl floor_copy
+.type floor_copy,@function
+floor_copy:
+    clc
+    adc #<STAGE
+    sta CP_D
+    lda #>STAGE
+    adc #0
+    sta CP_D+1
+    txa
+    bne copy2
+    ldx #0
+    ldy #0
+1:  lda LINEBUF,x
+    sta (CP_D),y
+    tya
+    clc
+    adc #8
+    tay
+    bne 2f
+    inc CP_D+1
+2:  inx
+    cpx #COLS
+    bne 1b
+    rts
+copy2:
+    ldx #0
+    ldy #0
+3:  lda LINEBUF,x
+    sta (CP_D),y
+    iny
+    sta (CP_D),y
+    tya
+    clc
+    adc #7
+    tay
+    bne 4f
+    inc CP_D+1
+4:  inx
+    cpx #COLS
+    bne 3b
+    rts
+.size floor_copy, .-floor_copy
 
 ; turbo_probe() -> u16: CIA 2 timer A ticks for 4096 x 5 cycles (~20,500 at 1 MHz, ~320 at 64 MHz).
 ; The C64U engages turbo ~2 s after $D031 is written; main repeats this until it is fast.
@@ -266,7 +320,6 @@ turbo_probe:
 
 ; band_publish(A = band): copy STAGE (320 bytes) to the bitmap's cell row, once the raster is not in it
 ; (rows show on raster lines 51 + 8 * band ..; a copy takes about a line, so start 2 lines early).
-STAGE = $8C00
 BITMAP = $6000
 PB_TOP = $B4
 PB_BOT = $B5

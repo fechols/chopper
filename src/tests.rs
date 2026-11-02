@@ -1,170 +1,150 @@
-use crate::camera::{self, View};
-use crate::cost::Cost;
-use crate::hw;
-use crate::layout::{BUFFERS, CACHE};
-use crate::map;
-use crate::mode7 as m7;
+use crate::floor::{self, COLS, FloorCam, MAX_SPANS, Rays, Span, VIEW_LINES};
+use crate::layout::BUFFERS;
 use crate::model::Machine;
 use std::sync::OnceLock;
 
-fn plane() -> &'static (Vec<u8>, Vec<u8>) {
-    static P: OnceLock<(Vec<u8>, Vec<u8>)> = OnceLock::new();
+/// mode7's race-track scene (placeholder objects until chopper's own) installed in an otherwise empty
+/// image, for the geometry tests.
+fn scene_image() -> &'static Vec<u8> {
+    static P: OnceLock<Vec<u8>> = OnceLock::new();
     P.get_or_init(|| {
-        let codes = map::generate();
-        let image = map::bake(&codes);
-        (codes, image)
+        let mut reu = vec![0u8; crate::format::IMAGE_END as usize];
+        let (block, records) = crate::scene::bake();
+        crate::scene::install(&mut reu, &block, &records);
+        reu
     })
 }
 
-#[test]
-fn the_cost_model_reproduces_talonhds_bench() {
-    // talonhd docs/validation.md: REU fetch of 1 / 8 / 64 / 512 bytes.
-    for (n, measured) in [(1u32, 9.8f32), (8, 12.3), (64, 26.5), (512, 130.7)] {
-        let c = Cost { io_writes: 8, dma_cmds: 1, dma_bytes: n, cycles: 0 };
-        let err = (c.us() - measured).abs() / measured;
-        assert!(err < 0.10, "{n} B: model {:.1} us vs measured {measured} us", c.us());
-    }
+/// The scene block as the C64 fetches it.
+fn scene(reu: &[u8]) -> &[u8] {
+    let s = crate::format::SCENE as usize;
+    let len = u16::from_le_bytes([reu[s], reu[s + 1]]) as usize;
+    &reu[s..s + len]
 }
 
-#[test]
-fn the_dda_stays_within_a_texel_of_the_exact_transform() {
-    for view in [
-        View::Roto { x: 100.3, y: 77.7, angle: 0.52, zoom: 0.37 },
-        View::Floor { x: 40.0, y: 200.0, angle: 2.1, height: 12.0, horizon: 48, focal: 160.0 },
-    ] {
-        let f = camera::frame(&view);
-        for (l, e) in f.lines.iter().zip(&f.exact) {
-            let Some((p, st)) = e else { continue };
-            for x in 0..160u16 {
-                for (q, step, exact) in [(l.u0, l.du, p[0] + x as f32 * st[0]), (l.v0, l.dv, p[1] + x as f32 * st[1])] {
-                    let dda = q.wrapping_add((step as u16).wrapping_mul(x)) as f32 / 256.0;
-                    let d = (dda - exact.rem_euclid(256.0)).rem_euclid(256.0);
-                    assert!(d.min(256.0 - d) <= 1.0, "{view:?}: pixel {x} off by {d}");
-                }
-            }
-        }
-    }
+/// mode7's lap camera at `tick` (2,048 a lap), looking along the circuit.
+fn lap_camera(tick: u16) -> crate::geom::Camera {
+    use std::f32::consts::TAU;
+    let t = (tick % 2048) as f32 / 2048.0;
+    let p = crate::scene::centre(t);
+    let q = crate::scene::centre(t + 0.25 / 2048.0);
+    let a = (q[0] - p[0]).atan2(-(q[1] - p[1]));
+    let wrap = |v: f32| ((v * 256.0).round() as i64).rem_euclid(65536) as u16;
+    crate::geom::Camera { x: wrap(p[0]), y: wrap(p[1]), angle: ((a / TAU * 256.0).round() as i32).rem_euclid(256) as u8, pop: crate::geom::POP }
 }
 
-#[test]
-fn every_path_matches_the_reference_at_one_texel_per_byte() {
-    // Angle 0, 4 multicolour pixels per texel, integer start: all paths sample the same texels.
-    let (codes, image) = plane();
-    let f = camera::frame(&View::Roto { x: 120.0, y: 90.0, angle: 0.0, zoom: 0.125 });
-    let want = camera::reference(&f, codes);
-    let buf = BUFFERS[0];
-    for path in 0..3 {
-        let mut m = Machine::new(image);
-        match path {
-            0 => drop(m7::per_byte_dma(&mut m, buf, &f.lines, m7::DmaMode::RAW)),
-            1 => drop(m7::per_byte_dma(&mut m, buf, &f.lines, m7::DmaMode::PRE)),
-            _ => {
-                m7::fill_cache(&mut m, f.window.0, f.window.1);
-                m7::cpu_gather(&mut m, buf, &f.lines, 4);
-            }
-        }
-        let got = m.codes(buf);
-        let bad = got.iter().zip(&want).filter(|(a, b)| a != b).count();
-        assert_eq!(bad, 0, "path {path}: {bad} pixels differ");
-        assert_eq!((m.stats.stray_writes, m.stats.bank_wraps), (0, 0));
-    }
-}
-
-#[test]
-fn per_byte_dma_fetches_every_byte_once_and_skips_unchanged_registers() {
-    let (_, image) = plane();
-    let f = camera::frame(&View::Roto { x: 120.0, y: 90.0, angle: 0.0, zoom: 0.125 });
-    let mut m = Machine::new(image);
-    let c = m7::per_byte_dma(&mut m, BUFFERS[0], &f.lines, m7::DmaMode::RAW);
-    assert_eq!((c.dma_cmds, c.dma_bytes, m.stats.commands), (8000, 8000, 8000));
-    // At most lo + mid + bank + command per byte, plus the 4 setup writes; at this zoom far fewer.
-    assert!(c.io_writes < 4 + 8000 * 3, "{} I/O writes", c.io_writes);
-}
-
-#[test]
-fn the_cache_holds_the_window() {
-    let (codes, image) = plane();
-    let mut m = Machine::new(image);
-    let (wu, wv) = (200u8, 250u8);
-    m7::fill_cache(&mut m, wu, wv);
-    for dv in 0..128u8 {
-        for du in 0..128u8 {
-            let (u, v) = (wu.wrapping_add(du), wv.wrapping_add(dv));
-            let got = m.ram[(CACHE + (v as u16 & 127) * 128 + (u as u16 & 127)) as usize];
-            assert_eq!(got, codes[v as usize * 256 + u as usize] * 0x55, "texel ({u}, {v})");
-        }
-    }
-    let _ = hw::reu::FETCH;
+/// Lap frame `tick`'s objects drawn whole into buffer 0 of a model of the scene image.
+fn render_objects(tick: u16) -> (Machine, crate::geom::Stats) {
+    let reu = scene_image();
+    let mut m = Machine::new(reu);
+    let mut work = Box::new(crate::geom::Work::new());
+    let mut st = crate::geom::draw(&mut m, scene(reu), lap_camera(tick), BUFFERS[0].bitmap, &mut work, &mut Box::new(crate::geom::Verts::new()));
+    let (tris, top, dropped) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+    (st.tris, st.top_row) = (tris, top);
+    st.dropped = st.dropped.saturating_add(dropped);
+    (m, st)
 }
 
 fn package() -> &'static Vec<u8> {
     static P: OnceLock<Vec<u8>> = OnceLock::new();
-    P.get_or_init(|| crate::package::bake(&plane().0))
+    P.get_or_init(|| crate::package::bake(&crate::world::generate(1983)))
+}
+
+/// The exact ground texel (level 0, f64) each byte of line `y` samples, or `None` for sky / haze.
+fn exact_line(cam: &FloorCam, y: u16) -> Vec<Option<(f64, f64)>> {
+    let r = |i: usize, j: usize| cam.r[i][j] as f64 / 16384.0;
+    let h = cam.h as f64 / 256.0;
+    (0..COLS as usize)
+        .map(|b| {
+            let d = [((4 * b + 2) as f64 - 80.0) / floor::FX as f64, (68.0 - (y as f64 + 0.5)) / floor::FY as f64, 1.0];
+            let w: [f64; 3] = core::array::from_fn(|i| r(i, 0) * d[0] + r(i, 1) * d[1] + r(i, 2) * d[2]);
+            if w[1] >= 0.0 {
+                return None;
+            }
+            let t = h / -w[1];
+            Some((cam.u as f64 / 256.0 + t * w[0], cam.v as f64 / 256.0 + t * w[2]))
+        })
+        .collect()
 }
 
 #[test]
-fn line_tables_plus_the_camera_track_the_exact_floor() {
-    use crate::format::*;
-    let reu = package();
-    for tick in [0u16, 300, 777, 1500] {
-        let lines = crate::package::frame_lines(reu, tick);
-        let e = HEADER as usize + H_PATH as usize + tick as usize * PATH_ENTRY as usize;
-        let (x, y, a) = (u16::from_le_bytes([reu[e], reu[e + 1]]), u16::from_le_bytes([reu[e + 2], reu[e + 3]]), reu[e + 4]);
-        let f = camera::frame(&View::Floor {
-            x: x as f32 / 256.0,
-            y: y as f32 / 256.0,
-            angle: a as f32 / 256.0 * std::f32::consts::TAU,
-            height: CAMERA_HEIGHT,
-            horizon: HORIZON,
-            focal: FOCAL,
-        });
-        let mut drawn = 0;
-        for (l, e) in lines.iter().zip(&f.exact) {
-            if l.sky || l.bank == FOG_BANK {
-                continue;
-            }
-            let (p, st) = e.expect("a drawn line is a floor line");
-            drawn += 1;
-            for x in [0u16, 80, 159] {
-                for (q, step, exact) in [(l.u0, l.du, p[0] + x as f32 * st[0]), (l.v0, l.dv, p[1] + x as f32 * st[1])] {
-                    let dda = q.wrapping_add((step as u16).wrapping_mul(x)) as f32 / 256.0;
-                    let d = (dda - exact.rem_euclid(256.0)).rem_euclid(256.0);
-                    assert!(d.min(256.0 - d) <= 1.0, "tick {tick}: pixel {x} off by {d}");
+fn every_ground_byte_samples_within_a_texel_of_the_exact_ray() {
+    // Random cameras, including steep pitch and ±60° roll: each run's bytes, stepped as the kernel steps
+    // them, stay within ¾ of a level texel of the exact ray / ground intersection: the runs' affine
+    // error (~0.4, `floor::ERR`), the 8.8 step truncated over up to 32 bytes (~0.12) and the 16-bit
+    // ground points (a few hundredths).
+    let mut rng = Rng(0x2468_ace1);
+    let deg = |d: i32| (d * 182) as u16;
+    let mut checked = 0;
+    for _ in 0..300 {
+        let yaw = rng.next() as u16;
+        let pitch = deg(rng.below(70) as i32 - 50);
+        let roll = deg(rng.below(121) as i32 - 60);
+        let m = crate::camera::Matrix14::orientation(yaw, pitch, roll);
+        let cam = FloorCam {
+            u: (300 << 8) + rng.below(1400 << 8) as i32,
+            v: (300 << 8) + rng.below(1400 << 8) as i32,
+            h: (2 * 256 + rng.below(120 * 256)) as u16,
+            r: m.m,
+        };
+        let rays = Rays::new(&cam);
+        let mut spans = [Span::default(); MAX_SPANS];
+        for y in (0..VIEW_LINES).step_by(5) {
+            let n = floor::make_line(&cam, &rays, &rays.line(y), &mut spans);
+            let exact = exact_line(&cam, y);
+            let mut b = 0usize;
+            for s in &spans[..n] {
+                assert!(s.len.is_power_of_two() || s.fill().is_some(), "{s:?}");
+                if s.fill().is_none() {
+                    let (mut u, mut v) = (s.u, s.v);
+                    let unit = (1 << s.level()) as f64;
+                    for i in 0..s.len as usize {
+                        let (eu, ev) = exact[b + i].expect("a ground run over sky");
+                        let (gu, gv) = (u as f64 / 256.0 * unit, v as f64 / 256.0 * unit);
+                        let err = (gu - eu).abs().max((gv - ev).abs()) / unit;
+                        assert!(err <= 0.75, "camera {cam:?} line {y} byte {}: off by {err:.3} level-{} texels", b + i, s.level());
+                        u += s.du as i32;
+                        v += s.dv as i32;
+                        checked += 1;
+                    }
                 }
+                b += s.len as usize;
             }
+            assert_eq!(b, COLS as usize);
         }
-        assert!(drawn > 140, "tick {tick}: only {drawn} floor lines drawn");
+    }
+    assert!(checked > 100_000, "{checked}");
+}
+
+#[test]
+fn a_level_line_is_one_run() {
+    // No roll: every line is at one depth, so its ground is one run (as in mode7).
+    let m = crate::camera::Matrix14::orientation(0x1234, (-12 * 182) as u16, 0);
+    let cam = FloorCam { u: 1000 << 8, v: 900 << 8, h: 20 * 256, r: m.m };
+    let rays = Rays::new(&cam);
+    let mut spans = [Span::default(); MAX_SPANS];
+    for y in 0..VIEW_LINES {
+        let n = floor::make_line(&cam, &rays, &rays.line(y), &mut spans);
+        let ground = spans[..n].iter().filter(|s| s.fill().is_none()).count();
+        assert!(ground <= 2, "line {y}: {:?}", &spans[..n]);
     }
 }
 
 #[test]
-fn doubled_mode_repeats_each_even_line() {
+fn tiles_map_to_their_banks_and_the_sea_beyond() {
+    use crate::format::{LEVEL_BANK, SEA_BANK};
+    assert_eq!(floor::tile_bank(0, 0, 0), LEVEL_BANK[0]);
+    assert_eq!(floor::tile_bank(0, 7, 7), LEVEL_BANK[0] + 63);
+    assert_eq!(floor::tile_bank(0, 8, 0), SEA_BANK);
+    assert_eq!(floor::tile_bank(0, 0xFF, 3), SEA_BANK); // just west of the map
+    assert_eq!(floor::tile_bank(3, 0, 0), LEVEL_BANK[3]);
+    assert_eq!(floor::tile_bank(3, 1, 0), SEA_BANK);
+    // A texel's address in the image holds that texel.
     let reu = package();
-    let (full, _) = crate::package::render_floor(reu, 640, false);
-    let (dbl, cost) = crate::package::render_floor(reu, 640, true);
-    assert_eq!(cost.dma_cmds, 40 * (200 - crate::format::HORIZON as u32) / 2);
-    let (a, b) = (full.codes(BUFFERS[0]), dbl.codes(BUFFERS[0]));
-    for y in 0..200usize {
-        let src = if y >= crate::format::HORIZON as usize { y & !1 } else { y };
-        assert_eq!(&b[y * 160..][..160], &a[src * 160..][..160], "line {y}");
-    }
-    assert_eq!(dbl.stats.stray_writes, 0);
-}
-
-#[test]
-fn the_package_has_its_header_and_path() {
-    use crate::format::*;
-    let reu = package();
-    let h = HEADER as usize;
-    assert_eq!(&reu[h..h + 8], MAGIC);
-    assert_eq!(u16::from_le_bytes([reu[h + 8], reu[h + 9]]), PACKAGE_VERSION);
-    assert_eq!(u16::from_le_bytes([reu[h + 10], reu[h + 11]]), PATH_LEN);
-    // Consecutive path frames move a little and turn by at most a step.
-    let path = crate::package::path();
-    for w in path.windows(2) {
-        let d = (w[1].0.wrapping_sub(w[0].0) as i16).unsigned_abs() + (w[1].1.wrapping_sub(w[0].1) as i16).unsigned_abs();
-        assert!(d < 256, "jump of {d}/256 texels");
-        assert!((w[1].2.wrapping_sub(w[0].2) as i8).unsigned_abs() <= 2);
+    let w = crate::world::generate(1983);
+    for (u, v) in [(0usize, 0usize), (255, 256), (1024, 760), (2047, 2047), (1500, 33)] {
+        let a = floor::texel_addr(0, (u as i32) << 8, (v as i32) << 8) as usize;
+        assert_eq!(reu[a], w.texels[v * 2048 + u], "texel ({u}, {v})");
     }
 }
 
@@ -190,9 +170,9 @@ fn an_address_write_reloads_the_whole_reu_address() {
 #[test]
 fn every_frame_dma_stays_inside_a_512k_bank() {
     let reu = package();
-    for tick in [0u16, 512, 1024, 1536] {
+    for tick in [0u16, 512, 1024, 1536, 3000] {
         for doubled in [false, true] {
-            let (m, _, _) = crate::package::render(reu, tick, doubled);
+            let (m, _) = crate::package::render(reu, tick, doubled);
             assert_eq!((m.stats.bank_wraps, m.stats.stray_writes), (0, 0), "tick {tick} doubled {doubled}");
         }
     }
@@ -298,10 +278,9 @@ fn a_face_toward_the_camera_is_drawn_and_away_is_culled() {
 
 #[test]
 fn the_geometry_frames_draw_inside_ram() {
-    let reu = package();
     let mut total = 0u32;
     for tick in (0..2048u16).step_by(128) {
-        let (m, _, st) = crate::package::render(reu, tick, false);
+        let (m, st) = render_objects(tick);
         assert_eq!((m.stats.stray_writes, st.dropped), (0, 0), "tick {tick}");
         total += st.tris as u32;
     }
@@ -337,14 +316,13 @@ fn the_grid_visits_every_object_the_cull_accepts() {
     // cull accepts must sit in a cell of that angle's visibility list (or the global list).
     use crate::geom::{CELL_PAD, NEAR, Q, cell_of, cos, pop_depth, pop_scale, sin, visible_cells};
     let (block, records) = crate::scene::bake();
-    let reu = package();
     let mut rng = Rng(0xC0FFEE);
     let lists: Vec<Vec<(i8, i8, u8)>> = (0..=255u8).map(visible_cells).collect();
     let dir = u16::from_le_bytes([block[4], block[5]]) as usize;
     let global = (u16::from_le_bytes([block[dir + 1024], block[dir + 1025]]) as usize, block[dir + 1026] as usize);
     for case in 0..3000 {
         let cam = if case % 2 == 0 {
-            crate::package::camera(reu, rng.below(2048) as u16)
+            lap_camera(rng.below(2048) as u16)
         } else {
             crate::geom::Camera { x: rng.next() as u16, y: rng.next() as u16, angle: rng.next() as u8, pop: 0 }
         };
@@ -390,13 +368,13 @@ fn band_rendering_equals_whole_triangle_painting() {
     // Per pixel, drawing band by band (each triangle one row per band, in painter's order) must equal
     // painting whole triangles back to front, on real lap frames.
     use crate::geom::{Verts, Work, draw, raster, raster_bands};
-    let reu = package();
+    let reu = scene_image();
     let buf = BUFFERS[0];
     let mut checked = 0;
     for tick in (0..2048u16).step_by(64) {
-        let (mut a, _) = crate::package::render_floor(reu, tick, false);
+        let mut a = Machine::new(reu);
         let mut work = Box::new(Work::new());
-        draw(&mut a, crate::package::scene(reu), crate::package::camera(reu, tick), buf.bitmap, &mut work, &mut Box::new(Verts::new()));
+        draw(&mut a, scene(reu), lap_camera(tick), buf.bitmap, &mut work, &mut Box::new(Verts::new()));
         let mut b = Machine::new(&[]);
         b.ram.copy_from_slice(&a.ram);
         let (whole, top_a) = raster(&mut a, &work, buf.bitmap);
@@ -422,3 +400,4 @@ fn a_full_pool_drops_the_later_triangles() {
     let (tris, top, dropped) = raster_bands(&mut m, &w, BUFFERS[0].bitmap);
     assert_eq!((tris as usize, dropped as usize, top), (POOL, 120 - POOL, 3));
 }
+
