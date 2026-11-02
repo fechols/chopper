@@ -1143,20 +1143,22 @@ zeroedge:
 
 ; TRI_ARGS + X <- EX (x, 4 bytes), ES (step, 4 bytes)
 putedge:
-    ldy #0
-1:  lda EX,y
+    lda EX
     sta TRI_ARGS,x
-    inx
-    iny
-    cpy #4
-    bne 1b
-    ldy #0
-2:  lda ES,y
-    sta TRI_ARGS,x
-    inx
-    iny
-    cpy #4
-    bne 2b
+    lda EX+1
+    sta TRI_ARGS+1,x
+    lda EX+2
+    sta TRI_ARGS+2,x
+    lda EX+3
+    sta TRI_ARGS+3,x
+    lda ES
+    sta TRI_ARGS+4,x
+    lda ES+1
+    sta TRI_ARGS+5,x
+    lda ES+2
+    sta TRI_ARGS+6,x
+    lda ES+3
+    sta TRI_ARGS+7,x
     rts
 
 ; edge from corner X to corner Y at line A (`geom::Edge::new`): EX = x, ES = step.
@@ -1201,39 +1203,70 @@ edge:
     clc
     adc #14
     jsr sarv
-    ldx #3
-1:  lda V,x
-    sta PER,x
-    sta ES,x
-    dex
-    bpl 1b
-    ; step = per << 4
-    ldx #4
-2:  asl ES
-    rol ES+1
-    rol ES+2
-    rol ES+3
-    dex
-    bne 2b
+    ; PER = V; ES = V << 4 (by nibbles)
+    lda V
+    sta PER
+    asl
+    asl
+    asl
+    asl
+    sta ES
+    lda V+1
+    sta PER+1
+    asl
+    asl
+    asl
+    asl
+    sta ES+1
+    lda V
+    lsr
+    lsr
+    lsr
+    lsr
+    ora ES+1
+    sta ES+1
+    lda V+2
+    sta PER+2
+    asl
+    asl
+    asl
+    asl
+    sta ES+2
+    lda V+1
+    lsr
+    lsr
+    lsr
+    lsr
+    ora ES+2
+    sta ES+2
+    lda V+3
+    sta PER+3
+    asl
+    asl
+    asl
+    asl
+    sta ES+3
+    lda V+2
+    lsr
+    lsr
+    lsr
+    lsr
+    ora ES+3
+    sta ES+3
     ; d = line * 16 + 8 - ya
     lda LINE
-    sta DD
-    lda #0
+    lsr
+    lsr
+    lsr
+    lsr
     sta DD+1
-    ldx #4
-3:  asl DD
-    rol DD+1
-    dex
-    bne 3b
-    clc
-    lda DD
-    adc #8
-    sta DD
-    lda DD+1
-    adc #0
-    sta DD+1
+    lda LINE
+    asl
+    asl
+    asl
+    asl
+    ora #8              ; + 8: the low nibble is clear
     sec
-    lda DD
     sbc YAV
     sta DD
     sta AL
@@ -1255,6 +1288,22 @@ edge:
     sta EX+2
     lda P3
     sta EX+3
+    ; per >> 16: 0 adds nothing, $FFFF subtracts d (mod 2^16), else multiply
+    lda PER+2
+    and PER+3
+    cmp #$ff
+    bne 1f
+    sec
+    lda EX+2
+    sbc DD
+    sta EX+2
+    lda EX+3
+    sbc DD+1
+    sta EX+3
+    jmp 3f
+1:  lda PER+2
+    ora PER+3
+    beq 3f
     lda PER+2
     sta BL
     lda PER+3
@@ -1267,34 +1316,45 @@ edge:
     lda EX+3
     adc P1
     sta EX+3
-    ; + xa << 12
-    lda #0
+3:  ; + xa << 12: bytes 1-3 of (xa << 16) >> 4, made first (the shifts use the carry), then added
+    lda XAV
+    asl
+    asl
+    asl
+    asl
     sta V
     lda XAV
+    lsr
+    lsr
+    lsr
+    lsr
     sta V+1
     lda XAV+1
-    sta V+2
+    asl
+    asl
+    asl
+    asl
+    ora V+1
+    sta V+1
+    lda XAV+1
     cmp #$80
-    lda #0
-    adc #$ff
-    eor #$ff
-    sta V+3
-    ldx #4
-4:  jsr shlv
-    dex
-    bne 4b
+    ror
+    cmp #$80
+    ror
+    cmp #$80
+    ror
+    cmp #$80
+    ror
+    sta V+2
     clc
-    lda EX
-    adc V
-    sta EX
     lda EX+1
-    adc V+1
+    adc V
     sta EX+1
     lda EX+2
-    adc V+2
+    adc V+1
     sta EX+2
     lda EX+3
-    adc V+3
+    adc V+2
     sta EX+3
     rts
 .size tsetup, .-tsetup
