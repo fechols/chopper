@@ -38,7 +38,11 @@ def main():
     prg = Path(args.prg).read_bytes()
     image = bytearray(0x10000)
     image[0x801:0x801 + len(prg) - 2] = prg[2:]
-    entry = symbols(args.elf)['poly_row']
+    syms = symbols(args.elf)
+    entry = syms['poly_row']
+    # poly_row runs from .hitext: do the boot copy (asm/startup.S) here.
+    load, run, pages = (syms[n] for n in ('__hitext_load_start', '__hitext_start', '__hitext_pages'))
+    image[run:run + 256 * pages] = image[load:load + 256 * pages]
     rng = random.Random(7)
     cycles = []
     for case in range(args.cases):

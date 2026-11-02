@@ -2,7 +2,7 @@
 ; against the host.
 ;
 ; tri_row(A = row): one cell row of a set-up triangle from TRI_ARGS ($C7A0, `geom::walk_args`): long, short and lower edges
-; (x, step: i32 Q16 pixels per line), first / mid / end lines, bitmap. The pattern is already in
+; (x + $7FFF, step: i32 Q16 pixels per line), first / mid / end lines, bitmap. The pattern is already in
 ; POLY_ARGS. Per line: both edges' pixels (centre at or right of the bound, clamped 0..160), ordered
 ; into XL / XR; per cell row: poly_row.
 ;
@@ -28,27 +28,20 @@ ROW    = $B1
 K      = $B2
 LP     = $B3
 
-; A = pixel of the Q16 bound at \src: (x + $7FFF) >> 16, clamped to 0..160.
+; A = pixel of the Q16 bound at \src: (x + $7FFF) >> 16, clamped to 0..160. The edges are stored with
+; the $7FFF already added (geom.S putedge), so that is bytes 2-3.
 .macro PIXEL src
-    clc
-    lda \src
-    adc #$ff
-    lda \src+1
-    adc #$7f
-    lda \src+2
-    adc #0
-    tay
     lda \src+3
-    adc #0
-    bmi 1f
-    bne 2f
-    cpy #161
-    bcs 2f
-    tya
+    bne 1f
+    lda \src+2
+    cmp #161
+    bcc 3f
+    lda #160
     jmp 3f
-1:  lda #0
+1:  bmi 2f
+    lda #160
     jmp 3f
-2:  lda #160
+2:  lda #0
 3:
 .endm
 

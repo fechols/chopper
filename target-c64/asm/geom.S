@@ -1141,15 +1141,20 @@ zeroedge:
     bpl 1b
     rts
 
-; TRI_ARGS + X <- EX (x, 4 bytes), ES (step, 4 bytes)
+; TRI_ARGS + X <- EX + $7FFF (x biased for tri.S's PIXEL, 4 bytes), ES (step, 4 bytes)
 putedge:
+    clc
     lda EX
+    adc #$ff
     sta TRI_ARGS,x
     lda EX+1
+    adc #$7f
     sta TRI_ARGS+1,x
     lda EX+2
+    adc #0
     sta TRI_ARGS+2,x
     lda EX+3
+    adc #0
     sta TRI_ARGS+3,x
     lda ES
     sta TRI_ARGS+4,x
