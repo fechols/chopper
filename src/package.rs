@@ -29,10 +29,20 @@ pub fn bake(world: &World) -> Vec<u8> {
     reu[h + H_VERSION as usize..][..2].copy_from_slice(&PACKAGE_VERSION.to_le_bytes());
     let dlt = crate::digital::ROTOR;
     let d = crate::digital::Dlt5::parse(dlt).expect("rotor.dlt");
-    assert!(dlt.len() <= AUDIO_MAX as usize && d.frames == crate::digital::ROTOR_LOOP_END);
+    // asm/audio.S decodes whole 8-frame groups only.
+    assert!(dlt.len() <= AUDIO_MAX as usize && d.frames == crate::digital::ROTOR_LOOP_END && d.frames % crate::digital::GROUP == 0);
     reu[AUDIO_DLT as usize..][..dlt.len()].copy_from_slice(dlt);
-    for (at, v) in [(H_AUDIO_BYTES, dlt.len() as u32), (H_LOOP_START, crate::digital::ROTOR_LOOP_START), (H_LOOP_END, crate::digital::ROTOR_LOOP_END)] {
+    for (at, v) in [
+        (H_AUDIO_BYTES, dlt.len() as u32),
+        (H_LOOP_START, crate::digital::ROTOR_LOOP_START),
+        (H_LOOP_END, crate::digital::ROTOR_LOOP_END),
+        (H_STREAM, AUDIO_DLT + d.stream_offset() as u32),
+        (H_GROUPS, d.frames / crate::digital::GROUP),
+    ] {
         reu[h + at as usize..][..4].copy_from_slice(&v.to_le_bytes());
+    }
+    for (at, v) in [(H_SEG_GROUPS, (d.per_segment / crate::digital::GROUP) as u16), (H_SEG_LONG, d.long)] {
+        reu[h + at as usize..][..2].copy_from_slice(&v.to_le_bytes());
     }
     reu
 }

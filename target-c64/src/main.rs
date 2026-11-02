@@ -25,6 +25,9 @@ use chopper::poly::{Row, args};
 
 unsafe extern "C" {
     fn reu_execute(command: u8);
+    /// `asm/audio.S`: decode the rotor sound into the REU and start the sampler on it (1), or find no
+    /// sampler (0).
+    fn audio_boot() -> u8;
     /// `asm/floor.S`: once a frame `floor_begin`; per view line `floor_line` (the runs at `SPANS` into
     /// the line buffer) and `floor_copy` (into band line `line` of `STAGE`, and the next when doubled).
     /// `asm/spans.S`: the runs of the line whose ray is `RAYS.a` into `SPANS` (`floor::make_line`).
@@ -231,6 +234,13 @@ fn boot(c: &mut C64) -> u16 {
     let probes = wait_turbo();
     hw::init(c);
     wait_image(c);
+    // The frame clock starts with the sound, so the flight's time is the sound's (`pilot`): CIA 2 timer
+    // A underflows once an NTSC frame, timer B counts the underflows.
+    poke16(0xDD04, FRAME_CYCLES - 1);
+    poke16(0xDD06, 0xFFFF);
+    poke(0xDD0F, 0x51); // B: start, force load, count A underflows
+    poke(0xDD0E, 0x11); // A: start, force load, continuous
+    unsafe { audio_boot() };
     chopper::fixed::init_tables();
     scene_load(c);
     // Shade patterns for asm/geom.S: even bytes, then odd.
@@ -267,11 +277,6 @@ pub extern "C" fn main() -> i16 {
     let work = unsafe { &mut *(WORK as *mut Work) };
     video_init(c);
 
-    // The frame clock: CIA 2 timer A underflows once an NTSC frame, timer B counts the underflows.
-    poke16(0xDD04, FRAME_CYCLES - 1);
-    poke16(0xDD06, 0xFFFF);
-    poke(0xDD0F, 0x51); // B: start, force load, count A underflows
-    poke(0xDD0E, 0x11); // A: start, force load, continuous
 
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);

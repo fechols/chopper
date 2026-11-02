@@ -38,6 +38,13 @@ pub const H_VERSION: u32 = 8;
 pub const H_AUDIO_BYTES: u32 = 16;
 pub const H_LOOP_START: u32 = 20;
 pub const H_LOOP_END: u32 = 24;
+/// What `asm/audio.S` needs to walk the DLT5 without dividing: 8-frame groups per segment (u16; the
+/// first `H_SEG_LONG` segments have one more), the code stream's REU address (u32) and the groups in
+/// all (u32).
+pub const H_SEG_GROUPS: u32 = 28;
+pub const H_SEG_LONG: u32 = 30;
+pub const H_STREAM: u32 = 32;
+pub const H_GROUPS: u32 = 36;
 
 /// The object directory (`geom::scene::DIR_ENTRY` per cell: the grid's `GRID²`, then the big grid's
 /// `BIG_GRID²`), and the object records (`geom::scene::OBJECT`, sorted by cell), streamed per visible

@@ -10,7 +10,8 @@
  * - Relocated code (copied there at boot by asm/startup.S, whole pages): $0200-$03FF, $8300-$8BFF,
  *   $9B00-$9FFF, $AF00-$B7FF, $BB00-$BEFF, $F800-$FEFF. Boot-only code (`.text.boot`) and the
  *   relocated code's load images sit in $5C00-$82FF, the frame buffer and the scene area, free until
- *   the boot is done.
+ *   the boot is done. asm/audio.S runs once at boot from $C000 (loaded there with the PRG, after
+ *   padding over $8300-$BFFF that the relocation then overwrites).
  * Zero page: the compiler's $02-$7F, fixed.S's $80-$9B, the kernels' $A0-$FF.
  * $01 = $35 (RAM everywhere except I/O); no ROM routines are used. */
 __basic_zp_start = 0x0002;
@@ -30,6 +31,11 @@ MEMORY {
     hiram (rwx) : ORIGIN = 0xF800, LENGTH = 0x0700     /* under the KERNAL, after the sprite chunk */
     /* Boot-only code, then the relocated code's load images. */
     boot (rx) : ORIGIN = 0x5C00, LENGTH = 0x2700
+    /* Loaded with the PRG, never used: the relocated code is copied over it at boot. */
+    gap (r) : ORIGIN = 0x8300, LENGTH = 0x3D00
+    /* asm/audio.S, run once at boot, loaded in place: the floor's tiles and runs live here afterwards
+     * (layout::TILES, SPANS, below RAYS). */
+    audio (rx) : ORIGIN = 0xC000, LENGTH = 0x0640
 }
 
 /* Matched before commodore.ld's catch-all .text (first match wins). */
@@ -55,6 +61,9 @@ SECTIONS {
     .hitext : {
         *(.text.draw_cols_asm .rodata.copy_entry .rodata.line_tables .text.sprite_band .text.geo_draw .text.poly_row .rodata.poly_tables)
     } >hiram AT>boot
+    .audiotext : {
+        *(.text.audio_boot)
+    } >audio
     .noinit (NOLOAD) : {
         *(.noinit .noinit.* NULL INIT ZPSAVE)
     } >frames
@@ -88,5 +97,7 @@ __stack = 0xD000;
 OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))
     FULL(ram)
-    TRIM(boot)
+    FULL(boot)
+    FULL(gap)
+    TRIM(audio)
 }

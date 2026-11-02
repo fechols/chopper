@@ -185,11 +185,19 @@ class C64(Cpu):
         c64 = r[2] | r[3] << 8
         addr = r[4] | r[5] << 8 | r[6] << 16
         n = (r[7] | r[8] << 8) or 0x10000
-        if command & 3 != 1:
+        if command & 3 not in (0, 1):
             raise KernelError(f'REU command ${command:02X} not modelled')
+        stash = command & 3 == 0
         if not r[0xA] & 0x40 and (addr >> 19) != ((addr + n - 1) >> 19):
             raise KernelError(f'a DMA across a 512 KiB bank: ${addr:06X} + {n}')  # TALON HD's rule
         for _ in range(n):
+            if stash:
+                if 0xD000 <= c64 < 0xE000:
+                    raise KernelError(f'stash from I/O ${c64:04X}')
+                self.reu[addr % len(self.reu)] = self.mem[c64]
+                c64 = (c64 + 1) & 0xFFFF
+                addr = (addr & ~0x7FFFF) | ((addr + 1) & 0x7FFFF)
+                continue
             v = self.reu[addr % len(self.reu)]
             if 0xD000 <= c64 < 0xE000:
                 if 0xD800 <= c64 < 0xDC00:

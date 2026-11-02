@@ -99,6 +99,18 @@ fn flight(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The rotor sound decoded (`digital::decode`, signed 8-bit), the reference for tools/test_audio.py.
+fn pcm(args: &[String]) -> Result<(), String> {
+    let out = PathBuf::from(arg(args, "--out").unwrap_or("output/rotor.pcm".into()));
+    let pcm: Vec<u8> = chopper::digital::decode(chopper::digital::ROTOR).iter().map(|&s| s as u8).collect();
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&out, &pcm).map_err(|e| e.to_string())?;
+    println!("{}: {} frames", out.display(), pcm.len());
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -106,6 +118,7 @@ fn main() -> Result<(), String> {
         Some("frame") => frame(&args),
         Some("map") => map(&args),
         Some("flight") => flight(&args),
-        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--every N] [--frames K]".into()),
+        Some("pcm") => pcm(&args),
+        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--every N] [--frames K] | pcm [--out O]".into()),
     }
 }
