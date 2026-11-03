@@ -291,6 +291,7 @@ def host_agent(reu, tick):
 NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
 STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 1), (HUD + 4, 4)]
 WAR, WAR_LEN = 116 << 16, 0x5010    # world_sim::STATE, STATE_LEN: the war in the REU
+BRAINS, BRAINS_LEN = 117 << 16, 0x1000  # world_sim::BRAINS, BRAINS_LEN: the units' learned trees
 GAUGES = AGENT + AGENT_BYTES + 4
 
 
@@ -299,7 +300,8 @@ def snapshot(cpu):
     out = bytearray(b'CHSN')
     for addr, n in STATE_RAM:
         out += bytes([0]) + addr.to_bytes(4, 'little') + n.to_bytes(2, 'little') + bytes(cpu.mem[addr:addr + n])
-    out += bytes([1]) + WAR.to_bytes(4, 'little') + WAR_LEN.to_bytes(2, 'little') + bytes(cpu.reu[WAR:WAR + WAR_LEN])
+    for addr, n in [(WAR, WAR_LEN), (BRAINS, BRAINS_LEN)]:
+        out += bytes([1]) + addr.to_bytes(4, 'little') + n.to_bytes(2, 'little') + bytes(cpu.reu[addr:addr + n])
     return bytes(out)
 
 
@@ -405,7 +407,8 @@ def main():
                 bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
             # The state after the frame (the next one has not flown yet): the agent, the gauges.
             got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
-            got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 1]) + bytes(cpu.reu[WAR:WAR + WAR_LEN])
+            got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 1]) + bytes(cpu.reu[WAR:WAR + WAR_LEN]) + \
+                bytes(cpu.reu[BRAINS:BRAINS + BRAINS_LEN])
             want = host_frame(args.reu, state, doubled)
             # (The stick and the take-over in the agent are already the next frame's: the main loop reads
             # them before the set-up.)

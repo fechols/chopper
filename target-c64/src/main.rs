@@ -20,7 +20,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -87,6 +87,7 @@ unsafe extern "C" {
     static __actorstext_size: u8;
     static __worldtext_size: u8;
     static __world2text_size: u8;
+    static __world3text_size: u8;
     /// The second window's overlays (`.text.cockpit`, `.text.dyn`, run at `BAND_RAM`).
     static __cocktext_size: u8;
     static __dyntext_size: u8;
@@ -392,12 +393,13 @@ pub extern "C" fn main() -> i16 {
         agent.fly(&mut Senses(c), clock);
         let (cam, _yaw) = agent.camera();
         let t = agent.t;
-        // The war: a page of units, its move or its fight phase (each its own overlay, over the AI's).
-        if peek(chopper::world_sim::PHASE) == chopper::world_sim::MOVE {
-            hw::fetch(c, OVERLAY_WORLD, WORK, unsafe { &raw const __worldtext_size } as u16);
-        } else {
-            hw::fetch(c, OVERLAY_WORLD2, WORK, unsafe { &raw const __world2text_size } as u16);
-        }
+        // The war: a page of units, its move, decide or fight phase (each its own overlay, over the AI's).
+        let (ovl, size) = match peek(chopper::world_sim::PHASE) {
+            chopper::world_sim::MOVE => (OVERLAY_WORLD, unsafe { &raw const __worldtext_size } as u16),
+            chopper::world_sim::DECIDE => (OVERLAY_WORLD3, unsafe { &raw const __world3text_size } as u16),
+            _ => (OVERLAY_WORLD2, unsafe { &raw const __world2text_size } as u16),
+        };
+        hw::fetch(c, ovl, WORK, size);
         let (pu, pv) = agent.at();
         chopper::world_sim::step_page(c, t as u16, pu, pv);
         // The gauges whose readings changed, from their overlay over the (spent) band state.

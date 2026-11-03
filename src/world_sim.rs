@@ -13,10 +13,12 @@
 //! overlay a frame):
 //! - **move** (`.text.world`): along its route since its last step, its sector's counts kept, listed if
 //!   near the player; a dead unit respawned if its side has reinforcements due;
-//! - **fight** (`.text.world2`): it represents its side in its sector and fights the other side's
-//!   representative there by dice; the director, once round the file.
+//! - **decide** (`.text.world3`): it learns from what its last moves brought (damage dealt minus taken)
+//!   and walks its kind's decision tree (`roles`, `brain::walk_learn`): advance, hold, attack or retreat;
+//! - **fight** (`.text.world2`): it represents its side in its sector and, if it chose to attack, fires
+//!   at the other side's representative there by dice; the director, once round the file.
 //!
-//! So every unit moves and fights about once a second and a half: a human reaction time, by design.
+//! So every unit moves, decides and fights about every two seconds: a human reaction time, by design.
 //! Units near the player are listed in [`NEAR`] for the actors (drawn and, later, fought up close).
 
 use crate::format::WORLD;
@@ -29,9 +31,11 @@ pub const SECTORS: u32 = WORLD + 0x4000;
 pub const SECTOR: u16 = 8;
 pub const ROUTES: u32 = WORLD + 0x4800;
 pub const HEADER: u32 = WORLD + 0x5000;
-/// The REU the war writes as it runs (the snapshot gate carries it).
+/// The REU the war writes as it runs (the snapshot gate carries it), and the learned brains'.
 pub const STATE: u32 = WORLD;
 pub const STATE_LEN: u32 = 0x5000 + HEADER_LEN as u32;
+pub const BRAINS: u32 = crate::format::TREES;
+pub const BRAINS_LEN: u32 = crate::brain::UNIT_BYTES as u32;
 
 /// A unit's record.
 pub mod rec {
@@ -58,6 +62,8 @@ pub mod rec {
     pub const DEALT: u16 = 19;
     pub const TAKEN: u16 = 20;
     pub const SEED: u16 = 21;
+    /// Its last two decisions' learn nodes (blob offset u16, 0 none; branch taken u8), newest first.
+    pub const TRAIL: u16 = 22;
     /// Its sector (`sx | sy << 4`).
     pub const SECTOR: u16 = 28;
 }
@@ -71,6 +77,8 @@ pub mod act {
     pub const MOVE: u8 = 0;
     pub const FIGHT: u8 = 1;
     pub const HOLD: u8 = 2;
+    /// Turn back along its road (the move phase then carries on as `MOVE`).
+    pub const RETREAT: u8 = 3;
 }
 
 /// A sector: units of each side (u8 × 2), each side's representative (u16 × 2).
@@ -116,7 +124,8 @@ pub const NEAR_MAX: u8 = 12;
 pub const NEAR_LEN: u16 = 1 + 2 * NEAR_MAX as u16;
 pub const PHASE: u16 = NEAR + NEAR_LEN;
 pub const MOVE: u8 = 0;
-pub const FIGHT: u8 = 1;
+pub const DECIDE: u8 = 1;
+pub const FIGHT: u8 = 2;
 const _: () = assert!(PHASE + 1 <= 0xCB00);
 /// Within this many texels of the player (each way).
 pub const NEAR_RANGE: i16 = 320;
@@ -222,11 +231,81 @@ fn page<H: Hw + ?Sized>(hw: &mut H, first: u16, store: bool) {
 /// The next page's phase at tick `now`, the player at texels (`pu`, `pv`): the main loop has fetched
 /// that phase's overlay (`PHASE`).
 pub fn step_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
-    if hw.peek(PHASE) == MOVE {
-        move_page(hw, now, pu, pv);
-    } else {
-        fight_page(hw, now);
+    match hw.peek(PHASE) {
+        MOVE => move_page(hw, now, pu, pv),
+        DECIDE => decide_page(hw),
+        _ => fight_page(hw, now),
     }
+}
+
+/// The decide phase over the page.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
+pub fn decide_page<H: Hw + ?Sized>(hw: &mut H) {
+    let first = reu_get16(hw, HEADER + head::CURSOR as u32);
+    page(hw, first, false);
+    for slot in 0..PAGE {
+        decide_unit(hw, slot);
+    }
+    page(hw, first, true);
+    hw.poke(PHASE, FIGHT);
+}
+
+/// One unit's decision: learn from its last ones, then walk its kind's tree over its situation.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
+fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
+    use crate::brain::unit;
+    let r = at(slot);
+    let flags = hw.peek(r + rec::FLAGS);
+    if flags & ALIVE == 0 {
+        return;
+    }
+    let kind = hw.peek(r + rec::KIND) % crate::actors::kind::COUNT;
+    let k = kind as usize;
+    // What its last decisions brought: damage dealt minus taken.
+    let reward = (hw.peek(r + rec::DEALT) as i16 - hw.peek(r + rec::TAKEN) as i16).clamp(-15, 15) as i8;
+    hw.poke(r + rec::DEALT, 0);
+    hw.poke(r + rec::TAKEN, 0);
+    let t = r + rec::TRAIL;
+    let trail = [(rd(hw, t), hw.peek(t + 2)), (rd(hw, t + 3), hw.peek(t + 5))];
+    if reward != 0 {
+        crate::brain::learn(hw, BRAINS, kind, &trail, reward);
+    }
+    // Its situation.
+    let side = flags & SIDE;
+    let s = sector_at(hw.peek(r + rec::SECTOR));
+    let foes = reu_get(hw, s + sec::COUNT as u32 + 1 - side as u32);
+    let friends = reu_get(hw, s + sec::COUNT as u32 + side as u32);
+    let mut seed = hw.peek(r + rec::SEED);
+    let mut f = [0u8; unit::FEATURES];
+    f[unit::WOUNDED] = ((hw.peek(r + rec::HP) as u16) * 2 < stats::HP[k] as u16) as u8;
+    f[unit::FOES] = (foes > 0) as u8;
+    f[unit::OUTNUMBERED] = (foes > friends) as u8;
+    f[unit::READY] = (hw.peek(r + rec::COOL) == 0) as u8;
+    f[unit::ARMED] = (stats::HIT[k] > 0) as u8;
+    f[unit::MOBILE] = (stats::SPEED[k] > 0 && hw.peek(r + rec::ROUTE) != 0xFF) as u8;
+    for x in f[unit::LEARN0 as usize..].iter_mut() {
+        seed = roll(seed);
+        *x = seed;
+    }
+    hw.poke(r + rec::SEED, seed);
+    let (mv, node, took) = crate::brain::walk_learn(hw, BRAINS, kind, &f);
+    // The trail: this decision's learn node first, the last one's after it.
+    for i in 0..3 {
+        let b = hw.peek(t + i);
+        hw.poke(t + 3 + i, b);
+    }
+    wr(hw, t, node);
+    hw.poke(t + 2, took);
+    let static_ = f[unit::MOBILE] == 0;
+    hw.poke(r + rec::ACTION, match mv {
+        unit::ATTACK => act::FIGHT,
+        unit::RETREAT => act::RETREAT,
+        unit::HOLD => act::HOLD,
+        _ if static_ => act::HOLD,
+        _ => act::MOVE,
+    });
 }
 
 /// The move phase over the next page.
@@ -239,7 +318,7 @@ pub fn move_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
         move_unit(hw, first, slot, now, pu, pv);
     }
     page(hw, first, true);
-    hw.poke(PHASE, FIGHT);
+    hw.poke(PHASE, DECIDE);
 }
 
 /// The fight phase over the same page, then on to the next.
@@ -362,6 +441,13 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     if speed > 0 && route_no != 0xFF && hw.peek(r + rec::ACTION) != act::HOLD {
         let (start, len, mode) = route(hw, route_no);
         let mut leg = hw.peek(r + rec::LEG);
+        if hw.peek(r + rec::ACTION) == act::RETREAT {
+            // Turn back along a road: the same waypoint, from the other way.
+            if mode != LOOP && len > 1 {
+                leg = (2 * len - 1).wrapping_sub(leg) % (2 * len - 2);
+            }
+            hw.poke(r + rec::ACTION, act::MOVE);
+        }
         // Round a loop; along a road and back (legs len.. take its waypoints in reverse).
         let len = len.max(1);
         let k = if mode == LOOP || leg < len { leg % len } else { (2 * len - 2).wrapping_sub(leg) % len };
@@ -421,13 +507,9 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16) {
     let them = 1 - side;
     let foe = reu_get16(hw, s + sec::REP as u32 + 2 * them as u32);
     let present = reu_get(hw, s + sec::COUNT as u32 + them as u32) > 0;
-    let armed = stats::HIT[kind] > 0;
-    if hw.peek(r + rec::ACTION) != act::HOLD {
-        hw.poke(r + rec::ACTION, if present && armed { act::FIGHT } else { act::MOVE });
-    }
     if cool > 0 {
         hw.poke(r + rec::COOL, cool - 1);
-    } else if present && armed && foe < COUNT {
+    } else if present && hw.peek(r + rec::ACTION) == act::FIGHT && foe < COUNT {
         let seed = roll(hw.peek(r + rec::SEED));
         hw.poke(r + rec::SEED, seed);
         if fight(hw, first, id, kind, foe, seed) {

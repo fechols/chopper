@@ -43,6 +43,8 @@ pub mod png;
 #[cfg(feature = "host")]
 pub mod raster3d;
 #[cfg(feature = "host")]
+pub mod roles;
+#[cfg(feature = "host")]
 pub mod scene;
 #[cfg(feature = "host")]
 pub mod snapshot;

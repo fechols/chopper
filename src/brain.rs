@@ -55,3 +55,88 @@ pub fn walk<R: Reu + ?Sized>(reu: &mut R, base: u32, tree: usize, features: &[u8
     }
     0
 }
+
+/// The war's units' trees (`roles`, in `format::TREES`): their features, moves and learn nodes.
+pub mod unit {
+    /// Features (0 or 1), each a symbol of the planner: wounded, foes in the sector, outnumbered there,
+    /// weapon ready, armed, able to move; then three fresh random bytes for the learn nodes.
+    pub const WOUNDED: usize = 0;
+    pub const FOES: usize = 1;
+    pub const OUTNUMBERED: usize = 2;
+    pub const READY: usize = 3;
+    pub const ARMED: usize = 4;
+    pub const MOBILE: usize = 5;
+    pub const SYMBOLS: usize = 6;
+    pub const LEARN0: u8 = 6;
+    pub const FEATURES: usize = 9;
+    /// Moves (leaves).
+    pub const ADVANCE: u8 = 0;
+    pub const HOLD: u8 = 1;
+    pub const ATTACK: u8 = 2;
+    pub const RETREAT: u8 = 3;
+    pub const NAMES: [&str; 4] = ["advance", "hold", "attack", "retreat"];
+    /// Each kind's learning baseline (i8, the reward × 8 it has come to expect) in the header.
+    pub const BASELINES: usize = 48;
+}
+/// A learn node's odds stay in this band, so neither branch is ever lost.
+pub const LEARN_MIN: u8 = 8;
+pub const LEARN_MAX: u8 = 248;
+/// Room for the units' blob (`format::TREES`).
+pub const UNIT_BYTES: usize = 0x1000;
+
+/// Walk unit tree `tree` of the blob at REU `base`: the move, and the first learn node passed (its blob
+/// offset, or 0) with the branch taken (1: yes, the odds' branch). A learn node's feature is a fresh random
+/// byte: under the node's odds, yes.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
+pub fn walk_learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, features: &[u8; unit::FEATURES]) -> (u8, u16, u8) {
+    let mut n = [0u8; NODE_BYTES];
+    crate::hw::read_into(hw, base + (ROOTS + 2 * tree as usize) as u32, crate::layout::BOUNCE, &mut n[..2]);
+    let mut at = u16::from_le_bytes([n[0], n[1]]);
+    let (mut learned, mut took) = (0u16, 0u8);
+    for _ in 0..MAX_DEPTH {
+        crate::hw::read_into(hw, base + at as u32, crate::layout::BOUNCE, &mut n);
+        if n[0] == LEAF {
+            return (n[1], learned, took);
+        }
+        let f = features[n[0] as usize % unit::FEATURES];
+        let ge = f >= n[1];
+        if n[0] >= unit::LEARN0 && learned == 0 {
+            learned = at;
+            took = !ge as u8;
+        }
+        at = if ge { u16::from_le_bytes([n[2], n[3]]) } else { u16::from_le_bytes([n[4], n[5]]) };
+    }
+    (0, learned, took)
+}
+
+/// Teach kind `tree`'s learn nodes on a unit's trail (the last two walks' learn node and branch, newest
+/// first): `reward` (damage dealt minus taken since its last decision) against the kind's baseline; the
+/// choice that came before a better than expected outcome is made likelier, a worse one less likely, the
+/// older walk at half the step (Impact's rule).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
+pub fn learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, trail: &[(u16, u8); 2], reward: i8) {
+    let b = base + (unit::BASELINES + tree as usize) as u32;
+    let mut v = [0u8; 1];
+    crate::hw::read_into(hw, b, crate::layout::BOUNCE, &mut v);
+    let baseline = v[0] as i8;
+    let adv = (reward as i16 - (baseline as i16 >> 3)).clamp(-127, 127);
+    hw.poke(crate::layout::BOUNCE, (baseline as i16 + adv).clamp(-128, 127) as i8 as u8);
+    crate::hw::stash(hw, crate::layout::BOUNCE, b, 1);
+    if adv == 0 {
+        return;
+    }
+    let step = ((adv.unsigned_abs() << 1).min(32)) as u8;
+    for (k, &(node, took)) in trail.iter().enumerate() {
+        let s = step >> k;
+        if node == 0 || s == 0 {
+            continue;
+        }
+        let a = base + node as u32 + 1;
+        crate::hw::read_into(hw, a, crate::layout::BOUNCE, &mut v);
+        let p = if (took != 0) == (adv > 0) { v[0].saturating_add(s).min(LEARN_MAX) } else { v[0].saturating_sub(s).max(LEARN_MIN) };
+        hw.poke(crate::layout::BOUNCE, p);
+        crate::hw::stash(hw, crate::layout::BOUNCE, a, 1);
+    }
+}

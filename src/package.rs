@@ -33,6 +33,9 @@ pub fn bake(world: &World) -> Vec<u8> {
     for (k, b) in crate::hud::art::shapes().iter().enumerate() {
         reu[HUD_SHAPES as usize + k * 64..][..64].copy_from_slice(b);
     }
+    let brains = crate::roles::compile();
+    assert!(brains.len() <= crate::brain::UNIT_BYTES);
+    reu[TREES as usize..][..brains.len()].copy_from_slice(&brains);
     let war = crate::war::bake(world);
     reu[WORLD as usize..][..war.len()].copy_from_slice(&war);
     let vehicles = crate::scene::vehicle_bank();
@@ -84,6 +87,7 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".dyntext", OVERLAY_DYN, OVERLAY2_MAX),
         (".worldtext", OVERLAY_WORLD, OVERLAY_MAX),
         (".world2text", OVERLAY_WORLD2, OVERLAY_MAX),
+        (".world3text", OVERLAY_WORLD3, OVERLAY_MAX),
     ] {
         let code = crate::elf::section(elf, name)?;
         if code.len() as u32 > max {

@@ -19,7 +19,7 @@ pub const STATE_RAM: &[(u16, u16)] = &[
     (crate::hud::LOCK_STATE, crate::hud::LOCK_BYTES as u16),
 ];
 /// REU ranges the game writes as it plays: the war.
-pub const STATE_REU: &[(u32, u32)] = &[(crate::world_sim::STATE, crate::world_sim::STATE_LEN)];
+pub const STATE_REU: &[(u32, u32)] = &[(crate::world_sim::STATE, crate::world_sim::STATE_LEN), (crate::world_sim::BRAINS, crate::world_sim::BRAINS_LEN)];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {

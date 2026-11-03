@@ -1066,3 +1066,77 @@ fn the_war_goes_on_and_keeps_its_books() {
         assert_eq!([m.reu[a], m.reu[a + 1]], *c, "sector {s}'s counts");
     }
 }
+
+/// The units' brain: the baked tree reproduces the planner's decision in every situation; attacking when
+/// healthy and even is a learned choice against retreating; with no foes a mobile unit advances.
+#[test]
+fn the_units_tree_replays_the_plans() {
+    use crate::brain::unit;
+    use crate::roles::{Decision, decide, table, tree};
+    let t = tree();
+    for (s, d) in table().iter().enumerate() {
+        assert_eq!(t.eval(s as u8), *d, "situation {s:06b}");
+    }
+    let s = |bits: &[usize]| bits.iter().fold(0u8, |a, &b| a | 1 << b);
+    assert_eq!(decide(s(&[unit::MOBILE, unit::ARMED, unit::READY])), Decision::Do(unit::ADVANCE));
+    match decide(s(&[unit::FOES, unit::MOBILE, unit::ARMED, unit::READY])) {
+        Decision::Choose { yes, no, p } => {
+            assert_eq!((yes, no), (unit::ATTACK, unit::RETREAT));
+            assert!(p > 128, "attack should start likelier: {p}");
+        }
+        d => panic!("healthy and even: {d:?}"),
+    }
+    assert_eq!(decide(s(&[unit::FOES, unit::ARMED])), Decision::Do(unit::HOLD), "a static unit reloading holds");
+    // The blob: each kind's tree walks to the same moves (learn nodes at their priors aside).
+    let blob = crate::roles::compile();
+    assert!(blob.len() <= crate::brain::UNIT_BYTES);
+}
+
+/// Learning: a learn node's odds move toward the branch that paid off and away from the one that did not,
+/// stay inside the band, and the older walk on the trail moves half as far.
+#[test]
+fn learning_moves_the_odds_toward_what_paid() {
+    use crate::brain::{LEARN_MAX, LEARN_MIN, learn, unit};
+    use crate::hw::Hw;
+    let mut m = Machine::new(package());
+    let base = crate::format::TREES;
+    // Two learn nodes of tree 0: find them by their feature.
+    let blob = crate::roles::compile();
+    let nodes: Vec<u16> = (crate::brain::HEADER_BYTES..blob.len()).step_by(6).filter(|&o| blob[o] >= unit::LEARN0 && blob[o] != crate::brain::LEAF).map(|o| o as u16).take(2).collect();
+    assert_eq!(nodes.len(), 2);
+    let p = |m: &mut Machine, n: u16| m.reu[(base + n as u32 + 1) as usize];
+    let (a0, b0) = (p(&mut m, nodes[0]), p(&mut m, nodes[1]));
+    // Took yes on the newer, no on the older; a good outcome.
+    learn(&mut m, base, 0, &[(nodes[0], 1), (nodes[1], 0)], 10);
+    let (a1, b1) = (p(&mut m, nodes[0]), p(&mut m, nodes[1]));
+    assert!(a1 > a0 && b1 < b0, "{a0}->{a1}, {b0}->{b1}");
+    assert_eq!((a1 - a0) as i32, 2 * (b0 - b1) as i32, "the older walk at half the step");
+    // Again and again: pinned to the band, never out of it.
+    for _ in 0..200 {
+        learn(&mut m, base, 0, &[(nodes[0], 1), (0, 0)], 15);
+    }
+    assert_eq!(p(&mut m, nodes[0]), LEARN_MAX);
+    for _ in 0..400 {
+        learn(&mut m, base, 0, &[(nodes[0], 1), (0, 0)], -15);
+    }
+    assert_eq!(p(&mut m, nodes[0]), LEARN_MIN);
+    let _ = m.peek(0);
+}
+
+/// The war teaches the brains: after twenty minutes some kinds' learn nodes have moved off their priors,
+/// all within the band.
+#[test]
+fn the_war_teaches_the_brains() {
+    use crate::brain::{LEARN_MAX, LEARN_MIN, unit};
+    let mut m = Machine::new(package());
+    crate::war::run(&mut m, 0, 20 * 3600, 4);
+    let blob = crate::roles::compile();
+    let base = crate::format::TREES as usize;
+    let mut moved = 0;
+    for o in (crate::brain::HEADER_BYTES..blob.len()).step_by(6).filter(|&o| blob[o] >= unit::LEARN0 && blob[o] != crate::brain::LEAF) {
+        let now = m.reu[base + o + 1];
+        assert!((LEARN_MIN..=LEARN_MAX).contains(&now));
+        moved += (now != blob[o + 1]) as usize;
+    }
+    assert!(moved >= 3, "only {moved} learn nodes moved");
+}

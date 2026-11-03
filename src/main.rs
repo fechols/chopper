@@ -92,6 +92,8 @@ fn frame(args: &[String]) -> Result<(), String> {
     bin.extend_from_slice(&m.ram[near..near + chopper::world_sim::NEAR_LEN as usize + 1]);
     let war = chopper::world_sim::STATE as usize;
     bin.extend_from_slice(&m.reu[war..war + chopper::world_sim::STATE_LEN as usize]);
+    let brains = chopper::world_sim::BRAINS as usize;
+    bin.extend_from_slice(&m.reu[brains..brains + chopper::world_sim::BRAINS_LEN as usize]);
     std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
         "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
@@ -266,6 +268,25 @@ fn war(args: &[String]) -> Result<(), String> {
         }
         if minute < minutes {
             chopper::war::run(&mut m, minute * 3600, 3600, 4);
+        }
+    }
+    if args.iter().any(|a| a == "--learned") {
+        // Each kind's learn nodes: their odds of the first choice (of 256), prior -> now.
+        use chopper::brain::{LEAF, unit};
+        let blob = chopper::roles::compile();
+        let base = chopper::format::TREES as usize;
+        for k in 0..chopper::actors::kind::COUNT as usize {
+            let root = u16::from_le_bytes([blob[chopper::brain::ROOTS + 2 * k], blob[chopper::brain::ROOTS + 2 * k + 1]]) as usize;
+            let prev = if k == 0 { chopper::brain::HEADER_BYTES } else { u16::from_le_bytes([blob[chopper::brain::ROOTS + 2 * k - 2], blob[chopper::brain::ROOTS + 2 * k - 1]]) as usize + 6 };
+            let moves: Vec<String> = (prev..=root)
+                .step_by(6)
+                .filter(|&o| blob[o] >= unit::LEARN0 && blob[o] != LEAF)
+                .map(|o| {
+                    let (y, n) = (u16::from_le_bytes([blob[o + 4], blob[o + 5]]) as usize, u16::from_le_bytes([blob[o + 2], blob[o + 3]]) as usize);
+                    format!("{}/{} {}->{}", unit::NAMES[blob[y + 1] as usize], unit::NAMES[blob[n + 1] as usize], blob[o + 1], m.reu[base + o + 1])
+                })
+                .collect();
+            println!("{:>13}: {}", chopper::actors::kind::NAMES[k], moves.join(", "));
         }
     }
     Ok(())
