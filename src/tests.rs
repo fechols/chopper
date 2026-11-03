@@ -1090,6 +1090,32 @@ fn the_front_swings_both_ways() {
     assert!(taken[0] >= 2 && taken[1] >= 2, "pads taken (enemy, allies): {taken:?}");
 }
 
+/// The fleets meet: within an hour, enemy boats are sunk and the carrier group takes fire, and the
+/// carrier is still afloat at the end.
+#[test]
+fn the_fleets_meet() {
+    use crate::actors::{ALLIED, ENEMY, kind};
+    use crate::world_sim::{self as ws, ALIVE, SIDE, rec, stats};
+    let mut m = Machine::new(package());
+    let (mut sunk, mut hit) = (false, false);
+    for minute in 0..60 {
+        crate::war::run(&mut m, minute * 3600, 3600, 4);
+        for id in 0..ws::COUNT as usize {
+            let r = &m.reu[ws::UNITS as usize + id * ws::RECORD as usize..][..ws::RECORD as usize];
+            let k = r[rec::KIND as usize] as usize % kind::COUNT as usize;
+            if stats::CLASS[k] != 4 {
+                continue;
+            }
+            let (alive, side) = (r[rec::FLAGS as usize] & ALIVE != 0, r[rec::FLAGS as usize] & SIDE);
+            sunk |= side == ENEMY && !alive;
+            hit |= side == ALLIED && (!alive || r[rec::HP as usize] < stats::HP[k]);
+        }
+    }
+    assert!(sunk && hit, "enemy boats sunk {sunk}, allied ships hit {hit}");
+    let carrier = (0..ws::COUNT as usize).map(|id| &m.reu[ws::UNITS as usize + id * ws::RECORD as usize..][..ws::RECORD as usize]).find(|r| r[rec::KIND as usize] == kind::CARRIER).unwrap();
+    assert!(carrier[rec::FLAGS as usize] & ALIVE != 0, "the carrier sank");
+}
+
 /// The units' brain: the baked tree reproduces the planner's decision in every situation; attacking when
 /// healthy and even is a learned choice against retreating; with no foes a mobile unit advances.
 #[test]

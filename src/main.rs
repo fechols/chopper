@@ -274,7 +274,25 @@ fn war(args: &[String]) -> Result<(), String> {
     for minute in 0..=minutes {
         let r = chopper::war::report(&m.reu);
         let pads: String = r.owner.iter().map(|&o| if o == chopper::actors::ENEMY { 'E' } else { 'A' }).collect();
-        println!("minute {minute:3}: enemy {:3} alive, {:3} lost; allies {:3} alive, {:3} lost; pads {pads}", r.alive[0], r.lost[0], r.alive[1], r.lost[1]);
+        let fleet = if args.iter().any(|a| a == "--fleet") {
+            // Ships afloat per side, and the carrier's hit points (0: sunk).
+            use chopper::world_sim::{self as ws, ALIVE, SIDE, rec, stats};
+            let (mut ships, mut carrier) = ([0u16; 2], 0u8);
+            for id in 0..ws::COUNT as usize {
+                let r = &m.reu[ws::UNITS as usize + id * ws::RECORD as usize..][..ws::RECORD as usize];
+                let k = r[rec::KIND as usize] as usize % chopper::actors::kind::COUNT as usize;
+                if r[rec::FLAGS as usize] & ALIVE != 0 && stats::CLASS[k] == 4 {
+                    ships[(r[rec::FLAGS as usize] & SIDE) as usize] += 1;
+                    if k == chopper::actors::kind::CARRIER as usize {
+                        carrier = r[rec::HP as usize];
+                    }
+                }
+            }
+            format!("; ships {}/{}, carrier {carrier:3}", ships[0], ships[1])
+        } else {
+            String::new()
+        };
+        println!("minute {minute:3}: enemy {:3} alive, {:3} lost; allies {:3} alive, {:3} lost; pads {pads}{fleet}", r.alive[0], r.lost[0], r.alive[1], r.lost[1]);
         if !quiet && (minute % 5 == 0 || minute == minutes) {
             // North at the top: E enemy, A allied, * contested.
             for sy in (0..16).rev() {

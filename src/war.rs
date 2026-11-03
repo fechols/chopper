@@ -72,8 +72,10 @@ pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
         }
         ((1024.0 + c * (last + 70.0)) as i32, (1024.0 + s * (last + 70.0)) as i32)
     };
-    let west = [offshore(210.0), offshore(190.0), offshore(170.0), offshore(150.0)];
-    let carrier = [offshore(290.0), offshore(310.0), offshore(330.0), offshore(350.0)];
+    // The enemy flotilla raids from the west coast round the south; the carrier group's station overlaps
+    // the end of it, so the fleets meet.
+    let west = [offshore(200.0), offshore(230.0), offshore(260.0), offshore(290.0)];
+    let carrier = [offshore(270.0), offshore(290.0), offshore(310.0), offshore(330.0)];
     vec![
         (vec![pad(0), pad(1), pad(3)], PING_PONG),
         (vec![pad(2), pad(4)], PING_PONG),

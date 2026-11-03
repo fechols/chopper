@@ -172,7 +172,10 @@ pub mod stats {
     pub const DAMAGE: [u8; COUNT as usize] = [0, 3, 8, 4, 12, 0, 3, 10, 6, 0, 0, 4, 10, 0, 0];
     /// Fights between shots (each about a second and a half).
     pub const RELOAD: [u8; COUNT as usize] = [0, 0, 1, 0, 2, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0];
-    pub const TARGETS: [u8; COUNT as usize] = [0, 1, 1, 2, 2, 0, 3, 2, 3, 0, 0, 2, 3, 0, 0];
+    /// What each kind can hit, by class (`CLASS`): ground 1, air 2, sea 4.
+    pub const TARGETS: [u8; COUNT as usize] = [0, 1, 1, 2, 2, 0, 7, 6, 7, 0, 0, 2, 7, 0, 0];
+    /// Each kind's class: ground 1, air 2, sea 4.
+    pub const CLASS: [u8; COUNT as usize] = [1, 1, 1, 1, 1, 1, 4, 4, 2, 1, 1, 4, 4, 0, 0];
     /// Kinds that fly.
     pub const AIR: u8 = crate::actors::kind::GUNSHIP;
 }
@@ -578,6 +581,13 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     }
     let dt = now.wrapping_sub(last).min(255);
     wr(hw, r + rec::LAST, now);
+    // The carrier's damage control: a hit point back about every fourth lap.
+    if kind == crate::actors::kind::CARRIER as usize && now & 0x180 == 0 {
+        let hp = hw.peek(r + rec::HP);
+        if hp < stats::HP[kind] {
+            hw.poke(r + rec::HP, hp + 1);
+        }
+    }
     let speed = stats::SPEED[kind];
     if speed > 0 && route_no != 0xFF && hw.peek(r + rec::ACTION) != act::HOLD {
         let (start, len, mode) = route(hw, route_no);
@@ -707,8 +717,8 @@ fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16,
     // The foe's kind, flags and where it is, in one.
     let mut f = [0u8; rec::H as usize + 1];
     hw::read_into(hw, base, crate::layout::BOUNCE, &mut f);
-    let (air, foe_flags) = (f[rec::KIND as usize] == stats::AIR, f[rec::FLAGS as usize]);
-    if foe_flags & ALIVE == 0 || stats::TARGETS[kind] & if air { 2 } else { 1 } == 0 {
+    let (class, foe_flags) = (stats::CLASS[f[rec::KIND as usize] as usize % crate::actors::kind::COUNT as usize], f[rec::FLAGS as usize]);
+    if foe_flags & ALIVE == 0 || stats::TARGETS[kind] & class == 0 {
         return false;
     }
     let me = at(id.wrapping_sub(first));
