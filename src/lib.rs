@@ -43,6 +43,8 @@ pub mod raster3d;
 #[cfg(feature = "host")]
 pub mod scene;
 #[cfg(feature = "host")]
+pub mod snapshot;
+#[cfg(feature = "host")]
 pub mod world;
 
 #[cfg(all(test, feature = "host"))]

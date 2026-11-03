@@ -166,4 +166,43 @@ pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::
     (m, st)
 }
 
+/// One frame stepped from a snapshot of the C64's state at its start (`snapshot`), as the C64's main loop
+/// does: the agent flies to its clock, the gauges and the HUD follow, the frame is drawn. The model holds
+/// the state after it.
+pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bool) -> Result<(Machine, FloorStats), String> {
+    use crate::hw::Hw;
+    let mut m = Machine::new(reu);
+    for (at, bytes) in &snap.reu {
+        m.reu[*at as usize..][..bytes.len()].copy_from_slice(bytes);
+    }
+    setup(&mut m, BUFFERS[0]);
+    for (at, bytes) in &snap.ram {
+        for (i, &b) in bytes.iter().enumerate() {
+            m.poke(at + i as u16, b);
+        }
+    }
+    let mut agent = crate::agent::Agent::from_bytes(snap.ram_at(layout::AGENT, crate::agent::Agent::BYTES).ok_or("snapshot: no agent")?);
+    let clock = u32::from_le_bytes(snap.ram_at(layout::CLOCK, 4).ok_or("snapshot: no clock")?.try_into().unwrap());
+    agent.fly(&mut &m.reu[..], clock);
+    for (i, b) in agent.to_bytes().iter().enumerate() {
+        m.poke(layout::AGENT + i as u16, *b);
+    }
+    // The gauges: all drawn (the C64 redraws only those that changed, to the same bytes).
+    let mut gauges = [0xFF; crate::cockpit::gauge::COUNT];
+    crate::cockpit::update(&mut m, &agent, &mut gauges);
+    for (i, &g) in gauges.iter().enumerate() {
+        m.poke(layout::GAUGES + i as u16, g);
+    }
+    let (cam, _yaw) = agent.camera();
+    let lock: Vec<u8> = (0..crate::hud::LOCK_BYTES as u16).map(|i| m.peek(crate::hud::LOCK_STATE + i)).collect();
+    crate::hud::init(&mut m);
+    for (i, &b) in lock.iter().enumerate() {
+        m.poke(crate::hud::LOCK_STATE + i as u16, b);
+    }
+    crate::hud::update(&mut m, &agent, &cam);
+    let scene = scene_block(reu);
+    let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
+    Ok((m, st))
+}
+
 const _: () = assert!(LEVELS == 4);

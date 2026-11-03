@@ -280,13 +280,28 @@ def host_agent(reu, tick):
         return out.read_bytes()
 
 
-def host_frame(reu, tick, doubled, lock):
+# The C64 state carried across frames (snapshot::STATE_RAM): the agent, its clock and the gauges; the
+# HUD's lock state.
+STATE_RAM = [(AGENT, 0x28 + 7), (HUD + 4, 4)]
+GAUGES = AGENT + 0x28
+
+
+def snapshot(cpu):
+    """The C64's state at a frame's start, as `snapshot::Snapshot` bytes."""
+    out = bytearray(b'CHSN')
+    for addr, n in STATE_RAM:
+        out += bytes([0]) + addr.to_bytes(4, 'little') + n.to_bytes(2, 'little') + bytes(cpu.mem[addr:addr + n])
+    return bytes(out)
+
+
+def host_frame(reu, state, doubled):
     exe = ROOT / 'target/release/chopper.exe'
     if not exe.exists():
         exe = ROOT / 'target/release/chopper'
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / 'f'
-        cmd = [str(exe), 'frame', '--reu', str(reu), '--tick', str(tick), '--out', str(out), '--lock', lock.hex()]
+        (Path(d) / 'state.bin').write_bytes(state)
+        cmd = [str(exe), 'frame', '--reu', str(reu), '--state', str(Path(d) / 'state.bin'), '--out', str(out)]
         if doubled:
             cmd.append('--doubled')
         subprocess.run(cmd, check=True, capture_output=True)
@@ -319,7 +334,7 @@ def main():
     cpu.push(0xFE)
 
     failures, checked, done = 0, 0, 0
-    lock_before = bytes([0xFF, 0, 0, 0])
+    state_before = None
     steps = 0
     low_sp = SOFT_STACK_END
     pending = None
@@ -349,16 +364,16 @@ def main():
             modes.append(cpu.mem[STATUS + 7] & 1)
         elif k == 0 and cpu.mem[STATUS] == 0xC1:
             done += 1
-            pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3], lock_before)
+            pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3], state_before)
             if done == args.doubled_after:
                 cpu.mem[STATUS + 7] = 1
         elif k == 1 and not pending:
-            # A frame starts: its HUD lock-on carries on from this (the host frame starts from it too).
-            lock_before = bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
+            # A frame starts: the host steps the same frame from this state.
+            state_before = snapshot(cpu)
         elif k == 1 and pending:
-            ((c0, io0, d0), (c1, io1, d1), doubled, (g0, _, _), (g1, _, _), lock) = pending
+            ((c0, io0, d0), (c1, io1, d1), doubled, (g0, _, _), (g1, _, _), state) = pending
             pending = None
-            lock_before = bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
+            state_before = snapshot(cpu)
             checked += 1
             st = cpu.mem[STATUS:STATUS + 23]
             tick = st[2] | st[3] << 8 | st[21] << 16 | st[22] << 24
@@ -369,21 +384,20 @@ def main():
             back = HUD_BUF + cpu.mem[HUD_BACK]
             got += bytes(cpu.mem[back:back + HUD_TABLE]) + b''.join(bytes(cpu.mem[a:a + 64]) for a in HUD_SLOTS) + \
                 bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
-            want = host_frame(args.reu, tick, doubled, lock)
+            # The state after the frame (the next one has not flown yet): the agent, the gauges.
+            got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
+            want = host_frame(args.reu, state, doubled)
             bad = sum(a != b for a, b in zip(got, want))
             dmas = d1 - d0
             print(f'frame {checked}: tick {tick}, {"doubled" if doubled else "full"}: {bad} mismatched bytes; '
                   f'bands {(c1 - c0) / 64000:.2f} ms ({dmas} DMAs), geometry {(g1 - g0) / 64000:.2f} ms, '
                   f'{st[18]} triangles; raster wait {cpu.wait_cycles / 64000:.2f} ms')
             cpu.wait_cycles = 0
-            # The agent (layout::AGENT) is still the frame's: the next one has not flown yet.
-            agent = bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES])
-            want_agent = host_agent(args.reu, tick)
-            if agent != want_agent:
-                print(f'  agent differs from the host at tick {tick}: C64 {agent.hex()} host {want_agent.hex()}')
-                bad += 1
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
+                if i >= 10688:
+                    print(f'  state byte {i - 10688} (agent 0-35, gauges 36-42): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    continue
                 if i >= 10000:
                     print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue

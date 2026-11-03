@@ -2,10 +2,11 @@
 //!
 //! - `chopper bake [OUT] [--elf E]`: the REU image (`dist/chopper.reu`), with the REU overlays and build
 //!   stamp of the C64 build `E` (`dist/chopper.elf`): bake after building the C64 program.
-//! - `chopper frame [--reu R] [--tick N] [--doubled] [--lock HEX] [--out O]`: autopilot frame `tick` as
-//!   the C64 draws it, HUD included (`O.png`, and `O.bin`, what `tools/emu.py` compares: the 8,000
-//!   bitmap bytes, screen RAM and colour RAM, 1,000 bytes each, then the HUD's table, sprite blocks and
-//!   lock state; `--lock` is the lock state before the frame).
+//! - `chopper frame [--reu R] [--tick N | --state S] [--doubled] [--lock HEX] [--out O]`: autopilot frame
+//!   `tick` as the C64 draws it, HUD included, or the frame stepped from snapshot `S` (`snapshot`, the
+//!   C64's state at the frame's start, as `tools/emu.py` captures it). `O.png`, and `O.bin`, what
+//!   `tools/emu.py` compares: the 8,000 bitmap bytes, screen RAM and colour RAM, 1,000 bytes each, the
+//!   HUD's table, sprite blocks and lock state, then the agent and the gauges' frames after the frame.
 //! - `chopper map [--out O] [--level K]`: the ground map (one pixel per texel, 4 pixels per byte decoded).
 //! - `chopper flight [--out DIR] [--every N] [--frames K]`: a strip of autopilot frames as PNGs, with the
 //!   floor's DMA and run counts.
@@ -60,7 +61,13 @@ fn frame(args: &[String]) -> Result<(), String> {
         }
         None => [chopper::hud::NONE, 0, 0, 0],
     };
-    let (m, st) = package::render_from(&reu, tick, doubled, lock);
+    let (m, st) = match arg(args, "--state") {
+        Some(p) => {
+            let snap = chopper::snapshot::Snapshot::parse(&std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?)?;
+            package::render_snapshot(&reu, &snap, doubled)?
+        }
+        None => package::render_from(&reu, tick, doubled, lock),
+    };
     let buf = BUFFERS[0];
     let mut rgb = m.decode(buf, COLORS[0]);
     let back = m.ram[chopper::hud::BACK as usize];
@@ -75,6 +82,11 @@ fn frame(args: &[String]) -> Result<(), String> {
         bin.extend_from_slice(&m.ram[a as usize..a as usize + 64]);
     }
     bin.extend_from_slice(&m.ram[chopper::hud::LOCK_STATE as usize..][..chopper::hud::LOCK_BYTES]);
+    // The state carried to the next frame: the agent, the gauges' frames.
+    let agent = chopper::layout::AGENT as usize;
+    bin.extend_from_slice(&m.ram[agent..agent + chopper::agent::Agent::BYTES]);
+    let gauges = chopper::layout::GAUGES as usize;
+    bin.extend_from_slice(&m.ram[gauges..gauges + chopper::cockpit::gauge::COUNT]);
     std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
         "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",

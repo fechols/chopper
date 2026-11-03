@@ -365,6 +365,29 @@ impl Agent {
         (FloorCam { u: self.u, v: self.v, h: self.h as u16, r: m.m }, self.yaw)
     }
 
+    /// The inverse of [`Agent::to_bytes`].
+    pub fn from_bytes(b: &[u8]) -> Self {
+        let w = |k: usize| u16::from_le_bytes([b[16 + 2 * k], b[17 + 2 * k]]);
+        let d = |k: usize| i32::from_le_bytes([b[k], b[k + 1], b[k + 2], b[k + 3]]);
+        Agent {
+            t: d(0) as u32,
+            u: d(4),
+            v: d(8),
+            h: d(12),
+            yaw: w(0),
+            vf: w(1) as i16,
+            roll: w(2) as i16,
+            pitch: w(3) as i16,
+            climb: w(4) as i16,
+            wu: w(5) as i16,
+            wv: w(6) as i16,
+            seed: w(7),
+            steer: w(8) as i16,
+            action: b[34],
+            grounded: b[35],
+        }
+    }
+
     pub fn to_bytes(&self) -> [u8; Self::BYTES] {
         let mut b = [0u8; Self::BYTES];
         b[0..4].copy_from_slice(&self.t.to_le_bytes());
