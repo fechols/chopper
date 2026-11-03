@@ -23,11 +23,15 @@ pub mod kind {
     pub const GUNSHIP: u8 = 8;
     pub const DEPOT: u8 = 9;
     pub const BUNKER: u8 = 10;
-    pub const TRACER: u8 = 11;
-    pub const MISSILE: u8 = 12;
-    pub const COUNT: u8 = 13;
-    pub const NAMES: [&str; COUNT as usize] =
-        ["truck", "apc", "tank", "aa", "sam", "radar", "gunboat", "missile-boat", "gunship", "depot", "bunker", "tracer", "missile"];
+    pub const CARRIER: u8 = 11;
+    pub const DESTROYER: u8 = 12;
+    pub const TRACER: u8 = 13;
+    pub const MISSILE: u8 = 14;
+    pub const COUNT: u8 = 15;
+    pub const NAMES: [&str; COUNT as usize] = [
+        "truck", "apc", "tank", "aa", "sam", "radar", "gunboat", "missile-boat", "gunship", "depot", "bunker", "carrier", "destroyer",
+        "tracer", "missile",
+    ];
 }
 /// The sides.
 pub const ENEMY: u8 = 0;
@@ -128,6 +132,16 @@ pub fn prepare<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam, objects
 
 /// How far out moving objects are drawn (Q4: 200 texels).
 pub const FAR: i32 = 200 * 16;
+
+/// The frame's moving objects: the war's units near the player (`world_sim::NEAR`), moved on from their
+/// last step, ready to draw.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
+pub fn update<H: Hw + ?Sized>(hw: &mut H, now: u16, cam: &crate::floor::FloorCam) {
+    let mut objects = [Object::default(); crate::world_sim::NEAR_MAX as usize];
+    let n = crate::world_sim::near_objects(hw, now, &mut objects);
+    prepare(hw, cam, &objects[..n]);
+}
 
 /// The demo's loop round the home pad: centre and radius (texels).
 pub const DEMO_CENTRE: (i32, i32) = (1024, 820);

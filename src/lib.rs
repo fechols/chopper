@@ -20,6 +20,7 @@ pub mod layout;
 pub mod floor;
 pub mod poly;
 pub mod sprite;
+pub mod world_sim;
 
 #[cfg(feature = "host")]
 pub mod digital;
@@ -45,6 +46,8 @@ pub mod raster3d;
 pub mod scene;
 #[cfg(feature = "host")]
 pub mod snapshot;
+#[cfg(feature = "host")]
+pub mod war;
 #[cfg(feature = "host")]
 pub mod world;
 

@@ -143,6 +143,8 @@ pub const OVERLAY_HUD: u32 = OVERLAYS + 0x4000;
 pub const OVERLAY_GEOM: u32 = OVERLAYS + 0x6000;
 pub const OVERLAY_ACTORS: u32 = OVERLAYS + 0x8000;
 pub const OVERLAY_DYN: u32 = OVERLAYS + 0xA000;
+pub const OVERLAY_WORLD: u32 = OVERLAYS + 0xC000;
+pub const OVERLAY_WORLD2: u32 = OVERLAYS + 0xE000;
 /// The second window's overlays (`layout::BAND_RAM`, while the band state is spent).
 pub const OVERLAY2_MAX: u32 = 0x0F00;
 /// The largest REU overlay (its window: `layout::WORK` to the multiply tables).

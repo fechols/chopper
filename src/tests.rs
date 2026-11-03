@@ -1033,3 +1033,36 @@ fn moving_objects_are_drawn_where_they_are() {
     crate::png::save_wide(std::path::Path::new("output/m2/close.png"), 160, &rgb).unwrap();
     assert!(st.tris as u32 + st.dropped as u32 > st.geom.tris as u32, "{st:?}");
 }
+
+/// The war runs by itself: after ten minutes both sides have fought (losses on each, reinforcements
+/// arrived), every unit is on the map, and the bookkeeping holds: the living counts and each sector's
+/// counts are exactly the living units in it.
+#[test]
+fn the_war_goes_on_and_keeps_its_books() {
+    use crate::world_sim::{self as ws, ALIVE, COUNT, RECORD, SIDE, rec};
+    let mut m = Machine::new(package());
+    crate::war::run(&mut m, 0, 10 * 3600, 4);
+    let r = crate::war::report(&m.reu);
+    assert!(r.lost[0] > 20 && r.lost[1] > 20, "losses {:?}", r.lost);
+    assert!(r.alive[0] > 20 && r.alive[1] > 10, "alive {:?}", r.alive);
+    let mut alive = [0u16; 2];
+    let mut sectors = vec![[0u8; 2]; 256];
+    for id in 0..COUNT as usize {
+        let at = ws::UNITS as usize + id * RECORD as usize;
+        let u = &m.reu[at..at + RECORD as usize];
+        let (pu, pv) = (u16::from_le_bytes([u[4], u[5]]) >> 4, u16::from_le_bytes([u[6], u[7]]) >> 4);
+        assert!(pu < 2048 && pv < 2048, "unit {id} at ({pu}, {pv})");
+        if u[rec::FLAGS as usize] & ALIVE != 0 {
+            let side = (u[rec::FLAGS as usize] & SIDE) as usize;
+            alive[side] += 1;
+            let s = u[rec::SECTOR as usize] as usize;
+            assert_eq!(s, ((pu >> 7) | (pv >> 7) << 4) as usize, "unit {id}'s sector");
+            sectors[s][side] += 1;
+        }
+    }
+    assert_eq!(alive, r.alive, "the living counts");
+    for (s, c) in sectors.iter().enumerate() {
+        let a = ws::SECTORS as usize + s * ws::SECTOR as usize;
+        assert_eq!([m.reu[a], m.reu[a + 1]], *c, "sector {s}'s counts");
+    }
+}

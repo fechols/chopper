@@ -288,7 +288,9 @@ def host_agent(reu, tick):
 
 # The C64 state carried across frames (snapshot::STATE_RAM): the agent, its clock and the gauges; the
 # HUD's lock state.
-STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7), (HUD + 4, 4)]
+NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
+STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 1), (HUD + 4, 4)]
+WAR, WAR_LEN = 116 << 16, 0x5010    # world_sim::STATE, STATE_LEN: the war in the REU
 GAUGES = AGENT + AGENT_BYTES + 4
 
 
@@ -297,6 +299,7 @@ def snapshot(cpu):
     out = bytearray(b'CHSN')
     for addr, n in STATE_RAM:
         out += bytes([0]) + addr.to_bytes(4, 'little') + n.to_bytes(2, 'little') + bytes(cpu.mem[addr:addr + n])
+    out += bytes([1]) + WAR.to_bytes(4, 'little') + WAR_LEN.to_bytes(2, 'little') + bytes(cpu.reu[WAR:WAR + WAR_LEN])
     return bytes(out)
 
 
@@ -402,6 +405,7 @@ def main():
                 bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
             # The state after the frame (the next one has not flown yet): the agent, the gauges.
             got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
+            got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 1]) + bytes(cpu.reu[WAR:WAR + WAR_LEN])
             want = host_frame(args.reu, state, doubled)
             # (The stick and the take-over in the agent are already the next frame's: the main loop reads
             # them before the set-up.)
@@ -415,8 +419,12 @@ def main():
             cpu.wait_cycles = 0
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
+                if i >= 10688 + 47 + NEAR_LEN + 1:
+                    w = i - 10688 - 48 - NEAR_LEN
+                    print(f'  war byte ${w:04X} (unit {w // 32} byte {w % 32} below $4000): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    continue
                 if i >= 10688:
-                    print(f'  state byte {i - 10688} (agent 0-39, gauges 40-46): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    print(f'  state byte {i - 10688} (agent 0-39, gauges 40-46, near 47-71, phase 72): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10000:
                     print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')

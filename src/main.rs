@@ -87,6 +87,11 @@ fn frame(args: &[String]) -> Result<(), String> {
     bin.extend_from_slice(&m.ram[agent..agent + chopper::agent::Agent::BYTES]);
     let gauges = chopper::layout::GAUGES as usize;
     bin.extend_from_slice(&m.ram[gauges..gauges + chopper::cockpit::gauge::COUNT]);
+    // The war after the frame: the units near, then the page file.
+    let near = chopper::world_sim::NEAR as usize;
+    bin.extend_from_slice(&m.ram[near..near + chopper::world_sim::NEAR_LEN as usize + 1]);
+    let war = chopper::world_sim::STATE as usize;
+    bin.extend_from_slice(&m.reu[war..war + chopper::world_sim::STATE_LEN as usize]);
     std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
         "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
@@ -244,6 +249,28 @@ fn cockpit(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The war on its own: who holds the island, minute by minute.
+fn war(args: &[String]) -> Result<(), String> {
+    let minutes = num(args, "--minutes", 10.0) as u32;
+    let reu = package::bake(&world::generate(SEED));
+    let mut m = chopper::model::Machine::new(&reu);
+    for minute in 0..=minutes {
+        let r = chopper::war::report(&m.reu);
+        println!("minute {minute:3}: enemy {:3} alive, {:3} lost; allies {:3} alive, {:3} lost", r.alive[0], r.lost[0], r.alive[1], r.lost[1]);
+        if minute % 5 == 0 || minute == minutes {
+            // North at the top: E enemy, A allied, * contested.
+            for sy in (0..16).rev() {
+                let row: String = (0..16).map(|sx| [' ', 'E', 'A', '*'][r.control[sy * 16 + sx] as usize]).collect();
+                println!("    |{row}|");
+            }
+        }
+        if minute < minutes {
+            chopper::war::run(&mut m, minute * 3600, 3600, 4);
+        }
+    }
+    Ok(())
+}
+
 /// The rotor sound decoded (`digital::decode`, signed 8-bit), the reference for tools/test_audio.py.
 fn pcm(args: &[String]) -> Result<(), String> {
     let out = PathBuf::from(arg(args, "--out").unwrap_or("output/rotor.pcm".into()));
@@ -267,6 +294,7 @@ fn main() -> Result<(), String> {
         Some("agent") => agent(&args),
         Some("brain") => brain(),
         Some("cockpit") => cockpit(&args),
+        Some("war") => war(&args),
         _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR]".into()),
     }
 }

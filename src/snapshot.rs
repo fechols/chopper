@@ -12,13 +12,14 @@ pub const MAGIC: &[u8; 4] = b"CHSN";
 pub const RAM: u8 = 0;
 pub const REU: u8 = 1;
 
-/// C64 RAM carried across frames: the agent, its clock and the gauges' frames; the HUD's lock state.
+/// C64 RAM carried across frames: the agent, its clock, the gauges' frames and the units near; the HUD's
+/// lock state.
 pub const STATE_RAM: &[(u16, u16)] = &[
-    (layout::AGENT, (layout::GAUGES - layout::AGENT) + crate::cockpit::gauge::COUNT as u16),
+    (layout::AGENT, crate::world_sim::PHASE + 1 - layout::AGENT),
     (crate::hud::LOCK_STATE, crate::hud::LOCK_BYTES as u16),
 ];
-/// REU ranges the game writes as it plays (none yet: the war and the learned weights will be).
-pub const STATE_REU: &[(u32, u32)] = &[];
+/// REU ranges the game writes as it plays: the war.
+pub const STATE_REU: &[(u32, u32)] = &[(crate::world_sim::STATE, crate::world_sim::STATE_LEN)];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {

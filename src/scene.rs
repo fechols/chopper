@@ -389,6 +389,15 @@ fn vehicle(k: u8, mat: Material) -> Mesh {
             m.plate([[-0.08, -0.9, 0.6], [0.08, -0.9, 0.6], [0.08, -2.0, 0.7], [-0.08, -2.0, 0.7]], mat);
             m.quad([[-1.2, -1.2, 1.0], [1.2, -1.2, 1.0], [1.2, 1.2, 1.0], [-1.2, 1.2, 1.0]], [0.0, 0.0, 1.0], Material::Bright);
         }
+        kind::CARRIER => {
+            // A flight deck (a long flat box, its top a pad) and the island to starboard.
+            m.cuboid([-2.0, -7.0, 0.0], [2.0, 7.0, 1.2], mat, Some(Material::Marker));
+            m.add(&pyramid(0.6, 1.4, mat), [1.4, 1.0, 1.2]);
+        }
+        kind::DESTROYER => {
+            m.cuboid([-0.7, -2.5, 0.0], [0.7, 2.5, 0.5], mat, Some(mat));
+            m.add(&pyramid(0.5, 0.8, mat), [0.0, 0.5, 0.5]);
+        }
         kind::DEPOT => m.cone(5, 0.8, &[(1.0, 0.8, mat)], (1.4, mat)),
         kind::BUNKER => m.cone(4, 1.2, &[(0.5, 0.8, mat)], (0.7, mat)),
         kind::TRACER => m.plate([[-0.06, 0.0, 0.0], [0.06, 0.0, 0.0], [0.06, 1.5, 0.0], [-0.06, 1.5, 0.0]], Material::Bright),

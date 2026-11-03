@@ -33,6 +33,8 @@ pub fn bake(world: &World) -> Vec<u8> {
     for (k, b) in crate::hud::art::shapes().iter().enumerate() {
         reu[HUD_SHAPES as usize + k * 64..][..64].copy_from_slice(b);
     }
+    let war = crate::war::bake(world);
+    reu[WORLD as usize..][..war.len()].copy_from_slice(&war);
     let vehicles = crate::scene::vehicle_bank();
     reu[VEHICLES as usize..][..vehicles.len()].copy_from_slice(&vehicles);
     let targets = crate::hud::art::targets(world);
@@ -80,6 +82,8 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".actorstext", OVERLAY_ACTORS, OVERLAY_MAX),
         (".cocktext", OVERLAY_COCKPIT, OVERLAY2_MAX),
         (".dyntext", OVERLAY_DYN, OVERLAY2_MAX),
+        (".worldtext", OVERLAY_WORLD, OVERLAY_MAX),
+        (".world2text", OVERLAY_WORLD2, OVERLAY_MAX),
     ] {
         let code = crate::elf::section(elf, name)?;
         if code.len() as u32 > max {
@@ -173,7 +177,7 @@ pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::
         m.poke(crate::hud::LOCK_STATE + i as u16, b);
     }
     crate::hud::update(&mut m, &agent, &cam);
-    crate::actors::demo(&mut m, agent.t, &cam);
+    crate::actors::update(&mut m, agent.t as u16, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)
@@ -196,7 +200,10 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     }
     let mut agent = crate::agent::Agent::from_bytes(snap.ram_at(layout::AGENT, crate::agent::Agent::BYTES).ok_or("snapshot: no agent")?);
     let clock = u32::from_le_bytes(snap.ram_at(layout::CLOCK, 4).ok_or("snapshot: no clock")?.try_into().unwrap());
-    agent.fly(&mut &m.reu[..], clock);
+    let reu_now = m.reu.clone();
+    agent.fly(&mut &reu_now[..], clock);
+    let (pu, pv) = agent.at();
+    crate::world_sim::step_page(&mut m, agent.t as u16, pu, pv);
     for (i, b) in agent.to_bytes().iter().enumerate() {
         m.poke(layout::AGENT + i as u16, *b);
     }
@@ -213,7 +220,7 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
         m.poke(crate::hud::LOCK_STATE + i as u16, b);
     }
     crate::hud::update(&mut m, &agent, &cam);
-    crate::actors::demo(&mut m, agent.t, &cam);
+    crate::actors::update(&mut m, agent.t as u16, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     Ok((m, st))

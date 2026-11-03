@@ -84,12 +84,15 @@ SECTIONS {
      * - `.text.ai`: agent::Agent::fly and what it calls;
      * - `.text.hud`: hud::build and what it calls;
      * - `.text.geomsetup`: geom::walk_args (the grids' set-up for asm/geom.S geo_walk), before Work::clear;
-     * - `.text.actors`: the frame's moving objects (actors). */
+     * - `.text.actors`: the frame's moving objects (actors);
+     * - `.text.world`, `.text.world2`: the war's move and fight phases, one a frame in turn (world_sim). */
     OVERLAY 0xE000 : AT (0x10000) {
         .aitext { *(.text.ai .text.ai.*) }
         .hudtext { *(.text.hud .text.hud.*) }
         .geomtext { *(.text.geomsetup .text.geomsetup.*) }
         .actorstext { *(.text.actors .text.actors.*) }
+        .worldtext { *(.text.world .text.world.*) }
+        .world2text { *(.text.world2 .text.world2.*) }
     } >window
     /* The second window, over the band state at $A000 (layout::BAND_RAM: spent from the last band to
      * geo_bin), REU overlays too:
@@ -128,6 +131,10 @@ __aitext_size = SIZEOF(.aitext);
 __hudtext_size = SIZEOF(.hudtext);
 __geomtext_size = SIZEOF(.geomtext);
 __actorstext_size = SIZEOF(.actorstext);
+__worldtext_size = SIZEOF(.worldtext);
+__world2text_size = SIZEOF(.world2text);
+ASSERT(SIZEOF(.world2text) <= 0x1100, "the world's fight overlay is larger than its window ($E000-$F0FF)")
+ASSERT(SIZEOF(.worldtext) <= 0x1100, "the world overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.actorstext) <= 0x1100, "the actors overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.geomtext) <= 0x1100, "the geometry set-up overlay is larger than its window ($E000-$F0FF)")
 /* The window: up to the multiply tables (fixed::SQ_NEG_LO). */
