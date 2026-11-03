@@ -259,9 +259,6 @@ pub fn launch<H: Hw + ?Sized>(hw: &mut H, kind: u8, ttl: u8, a: &Agent, target: 
     }
 }
 
-/// The frame's fight, after the war's page and before the HUD: the targets for the HUD, the gun and
-/// missiles, the projectiles moved, the player down or not. Returns whether the player is down (the main
-/// loop then restarts the agent at home).
 /// [`ws::live`] for the combat pass, in its library (the deck's overlay is not in then).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
@@ -269,6 +266,9 @@ fn live(r: &[u8; ws::CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
     ws::live_inline(r, now)
 }
 
+/// The frame's fight, after the war's page and before the HUD: the targets for the HUD, the gun and
+/// missiles, the projectiles moved, the player down or not. Returns whether the player is down (the main
+/// loop then restarts the agent at home).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combat"))]
 pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) -> bool {
