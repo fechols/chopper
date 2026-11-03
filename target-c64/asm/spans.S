@@ -39,8 +39,8 @@ REC      = 12
 ; itself: pointers at SQ + p_lo ($80-$87, umul's) and SQ + p_hi ($88-$8F) set once per point.
 SQLO  = $0400
 SQHI  = $0600
-SQNLO = $F100
-SQNHI = $F300
+SQNLO = $5000
+SQNHI = $5200
 PLA = $80
 PHA = $82
 NLA = $84

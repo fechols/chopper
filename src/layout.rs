@@ -46,11 +46,14 @@ pub const SPRITE_REC: u16 = 0x8D40;
 pub const JOB: u16 = 0x8D70;
 pub const SPRITE_BSTART: u16 = 0x8D80;
 pub const SPRITE_OFFS: u16 = 0x8D90;
-pub const SPRITE_CHUNK: u16 = 0xF500;
+pub const SPRITE_CHUNK: u16 = 0x5400;
 pub const SPRITE_CHUNK_LEN: u16 = 0x0280;
 const _: () = assert!(STAGE as u32 + ROW_STRIDE as u32 <= SPRITE_REC as u32);
 const _: () = assert!(SPRITE_OFFS as u32 + 2 * (COLS as u32 + 1) <= 0x9000);
-const _: () = assert!(SPRITE_CHUNK as u32 + SPRITE_CHUNK_LEN as u32 <= 0xFFFA);
+/// The multiply tables' negative half (`fixed::SQ_NEG_LO`, `SQ_NEG_HI`) and the sprite chunk sit after the
+/// resident program (target-c64/link.ld `tables`), so the main overlay window runs from `WORK` to the
+/// relocated code at `$F800`.
+const _: () = assert!(crate::fixed::SQ_NEG_HI as u32 + 0x200 <= SPRITE_CHUNK as u32 && SPRITE_CHUNK as u32 + SPRITE_CHUNK_LEN as u32 <= 0x5A80);
 
 pub const COLOR_RAM: u16 = 0xD800;
 
@@ -96,7 +99,7 @@ const _: () = assert!(VERTS as u32 + core::mem::size_of::<crate::geom::Verts>() 
 /// `geom::Work`, the frame's triangles and depth buckets; `$01 = $35` keeps `$E000+` RAM.
 pub const WORK: u16 = 0xE000;
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= 0xFFFA);
-const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= crate::fixed::SQ_NEG_LO as u32);
+const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= WORK as u32 + crate::format::OVERLAY_MAX);
 /// `asm/geom.S`'s arguments (`geom::geo_args`), and a row of the object directory being streamed
 /// (`geom::draw`), after the sprite scratch.
 pub const GEO_ARGS: u16 = 0x8E00;

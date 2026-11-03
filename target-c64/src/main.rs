@@ -431,14 +431,15 @@ pub extern "C" fn main() -> i16 {
         // The moving objects (actors overlay, over the HUD's).
         hw::fetch(c, OVERLAY_ACTORS, WORK, actors_size);
         chopper::actors::update(c, &cam);
+        // The floor's rays and the grids' set-up from their overlay (then the window is the frame's
+        // geometry again).
+        hw::fetch(c, OVERLAY_GEOM, WORK, geom_size);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };
         poke16(STATUS + status::SETUP_US, stopwatch_stop());
         // Geometry: cull, transform and sort into the depth buckets, then file by first band.
         stopwatch_start();
-        // The grids' set-up from its overlay, then the window is the frame's geometry again.
-        hw::fetch(c, OVERLAY_GEOM, WORK, geom_size);
         geom::walk_args(c, WALK_ARGS, &View { cam, pop: peek(STATUS + status::POP) });
         work.clear();
         unsafe { geo_walk() };

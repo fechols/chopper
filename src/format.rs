@@ -153,8 +153,8 @@ pub const OVERLAY_FX: u32 = TREES + 0xC000;
 pub const OVERLAY_COMBATLIB: u32 = TREES + 0xE000;
 /// The second window's overlays (`layout::BAND_RAM`, while the band state is spent).
 pub const OVERLAY2_MAX: u32 = 0x0F00;
-/// The largest REU overlay (its window: `layout::WORK` to the multiply tables).
-pub const OVERLAY_MAX: u32 = 0x1100;
+/// The largest REU overlay (its window: `layout::WORK` to the relocated code at `$F800`).
+pub const OVERLAY_MAX: u32 = 0x1800;
 
 /// The cockpit (`cockpit`, baked by `instruments`): the static panel, then every frame of every gauge.
 pub const COCKPIT: u32 = 109 << 16;

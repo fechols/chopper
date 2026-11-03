@@ -7,8 +7,8 @@
 /// geometry scratch), so both lookups are `(pointer),y` with `y = b`.
 pub const SQ_LO: u16 = 0x0400;
 pub const SQ_HI: u16 = 0x0600;
-pub const SQ_NEG_LO: u16 = 0xF100;
-pub const SQ_NEG_HI: u16 = 0xF300;
+pub const SQ_NEG_LO: u16 = 0x5000;
+pub const SQ_NEG_HI: u16 = 0x5200;
 /// Reciprocals `(2^26 − 1) / m` for `m` = 1024..2047, u16 little-endian (2 KiB), after the scene block.
 pub const RECIP: u16 = 0x9000;
 pub const MANTISSA: u16 = 1024;

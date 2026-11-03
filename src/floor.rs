@@ -90,7 +90,9 @@ pub struct Rays {
 pub const ERR: i32 = 2;
 
 impl Rays {
-    /// `cam.h` must be at least 64 (a quarter texel).
+    /// `cam.h` must be at least 64 (a quarter texel). (On the C64 in the geometry set-up's overlay.)
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
     pub fn new(cam: &FloorCam) -> Self {
         let col = |j: usize| [cam.r[0][j], cam.r[1][j], cam.r[2][j]];
         let (right, up, fwd) = (col(0), col(1), col(2));

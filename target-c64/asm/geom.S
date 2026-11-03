@@ -2143,7 +2143,7 @@ dloop:
 
 SPRITE_BSTART = $8D80
 SPRITE_OFFS   = $8D90
-SPRITE_CHUNK  = $F500
+SPRITE_CHUNK  = $5400
 JOB           = $8D70
 
 ; zero page (geo_draw's callees: tri_row uses $A0-$B3, draw_cols_asm $F0-$FF)

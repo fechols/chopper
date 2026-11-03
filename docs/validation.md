@@ -165,7 +165,7 @@ Rust keeps the per-object cull and the rare near-plane clip. The Rust functions 
 `$E000`, `geom::Verts` at `$9400`) that both sides index.
 
 `umul` uses pointer quarter squares: `a·b = f(a+b) - g(b-a+255)`, both lookups `(ptr),y`, with a second
-table at `$F100`. It skips partial products whose high bytes are zero.
+table at `$5000`. It skips partial products whose high bytes are zero.
 
 `tools/branch-audit.py` (from sueme64, extended to numeric labels) runs on every build. It reported no
 wrapped branch in 123, and it catches a planted one.

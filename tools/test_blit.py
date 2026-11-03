@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from native_cpu import Cpu  # noqa: E402
 
-JOB, CHUNK, CHUNK_LEN, STAGE = 0x8D70, 0xF500, 0x280, 0x8C00
+JOB, CHUNK, CHUNK_LEN, STAGE = 0x8D70, 0x5400, 0x280, 0x8C00
 SENTINEL = 0xFFFF
 BITMAP = 0x6000
 

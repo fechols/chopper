@@ -1,12 +1,13 @@
 /* Chopper C64 layout (from ../mode7/target-c64/link.ld, itself cut down from ../talonhd's).
- * - $0801-$5BFF: the resident program, data and BSS.
+ * - $0801-$4FFF: the resident program, data and BSS.
  * - The one frame buffer: screen $5C00, bitmap $6000 (VIC bank 1).
  * - $8000 the scene block, $8C00 the band being built and sprite scratch, $8E00 geometry arguments,
  *   $9000 reciprocals, $9800 vertices, $A000 the band state,
  *   $B800 the ray table, $BF00 the line buffer.
  * - $C000 tiles, runs, ray and walk arguments, kernel arguments, $C800 REU bounce / cell objects, $CA80 the
  *   status block, $CB00 llvm-mos's static frames; the soft stack grows down from $D000.
- * - $E000 triangles, $F100 multiply tables, $F500 the sprite chunk.
+ * - $E000 triangles (and the overlay window to $F7FF), $F800 relocated code.
+ * - $5000 multiply tables (negative half), $5400 the sprite chunk, after the program.
  * - Relocated code (copied there at boot by asm/startup.S, whole pages): $0200-$03FF, $8300-$8BFF,
  *   $9B00-$9FFF, $AF00-$B7FF, $BB00-$BEFF, $F800-$FEFF. Boot-only code (`.text.boot`) and the
  *   relocated code's load images sit in $5C00-$82FF, the frame buffer and the scene area, free until
@@ -20,8 +21,11 @@ __basic_zp_end = 0x0080;
 
 MEMORY {
     /* Ends at the HUD's sprite blocks ($5A80-$5BFF, chopper::hud::SLOT_ADDR). */
-    ram (rw) : ORIGIN = 0x0801, LENGTH = 0x527F
-    /* The HUD's sprite blocks (written each frame): padding in the PRG. */
+    ram (rw) : ORIGIN = 0x0801, LENGTH = 0x47FF
+    /* After the program: the multiply tables' negative half ($5000-$53FF, fixed::SQ_NEG_*), the sprite
+     * chunk ($5400-$567F, layout::SPRITE_CHUNK), spare ($5680-$5A7F); then the HUD's sprite blocks (written
+     * each frame). Padding in the PRG. */
+    tables (r) : ORIGIN = 0x5000, LENGTH = 0x0A80
     hudblocks (r) : ORIGIN = 0x5A80, LENGTH = 0x0180
     /* Code where the VIC never looks, page-aligned and whole pages long (the boot copy moves pages). */
     lowram (rwx) : ORIGIN = 0x0200, LENGTH = 0x0200
@@ -51,7 +55,7 @@ MEMORY {
      * the ELF into the REU (format::OVERLAY_AI, OVERLAY_HUD). */
     reuimage (r) : ORIGIN = 0x10000, LENGTH = 0x20000
     /* The REU overlays' windows: see `.aitext` and `.cocktext`. */
-    window (rx) : ORIGIN = 0xE000, LENGTH = 0x1100
+    window (rx) : ORIGIN = 0xE000, LENGTH = 0x1800
     window2 (rx) : ORIGIN = 0xA000, LENGTH = 0x0F00
 }
 
@@ -143,17 +147,17 @@ __world3text_size = SIZEOF(.world3text);
 __combattext_size = SIZEOF(.combattext);
 __fxtext_size = SIZEOF(.fxtext);
 __combatlibtext_size = SIZEOF(.combatlibtext);
-ASSERT(SIZEOF(.fxtext) <= 0x1100, "the effects overlay is larger than its window ($E000-$F0FF)")
+ASSERT(SIZEOF(.fxtext) <= 0x1800, "the effects overlay is larger than its window ($E000-$F7FF)")
 ASSERT(SIZEOF(.combatlibtext) <= 0x0F00, "the combat library overlay is larger than its window ($A000-$AEFF)")
-ASSERT(SIZEOF(.combattext) <= 0x1100, "the combat overlay is larger than its window ($E000-$F0FF)")
-ASSERT(SIZEOF(.world3text) <= 0x1100, "the world's decide overlay is larger than its window ($E000-$F0FF)")
-ASSERT(SIZEOF(.world2text) <= 0x1100, "the world's fight overlay is larger than its window ($E000-$F0FF)")
-ASSERT(SIZEOF(.worldtext) <= 0x1100, "the world overlay is larger than its window ($E000-$F0FF)")
-ASSERT(SIZEOF(.actorstext) <= 0x1100, "the actors overlay is larger than its window ($E000-$F0FF)")
-ASSERT(SIZEOF(.geomtext) <= 0x1100, "the geometry set-up overlay is larger than its window ($E000-$F0FF)")
-/* The window: up to the multiply tables (fixed::SQ_NEG_LO). */
-ASSERT(SIZEOF(.aitext) <= 0x1100, "the AI overlay is larger than its window ($E000-$F0FF)")
-ASSERT(SIZEOF(.hudtext) <= 0x1100, "the HUD overlay is larger than its window ($E000-$F0FF)")
+ASSERT(SIZEOF(.combattext) <= 0x1800, "the combat overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.world3text) <= 0x1800, "the world's decide overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.world2text) <= 0x1800, "the world's fight overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.worldtext) <= 0x1800, "the world overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.actorstext) <= 0x1800, "the actors overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.geomtext) <= 0x1800, "the geometry set-up overlay is larger than its window ($E000-$F7FF)")
+/* The window: up to the relocated code at $F800 (.hitext). */
+ASSERT(SIZEOF(.aitext) <= 0x1800, "the AI overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.hudtext) <= 0x1800, "the HUD overlay is larger than its window ($E000-$F7FF)")
 __cocktext_size = SIZEOF(.cocktext);
 __dyntext_size = SIZEOF(.dyntext);
 ASSERT(SIZEOF(.cocktext) <= 0x0F00, "the cockpit overlay is larger than its window ($A000-$AEFF)")
@@ -169,6 +173,7 @@ __stack = 0xD000;
 OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))
     FULL(ram)
+    FULL(tables)
     FULL(hudblocks)
     FULL(boot)
     FULL(gap)

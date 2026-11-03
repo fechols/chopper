@@ -31,9 +31,9 @@ def main():
         mem[0x0400 + n] = q & 255
         mem[0x0600 + n] = q >> 8
         g = abs(n - 255) ** 2 >> 2
-        mem[0xF100 + n] = g & 255
-        mem[0xF300 + n] = g >> 8
-    for zp, page in ((0x81, 0x04), (0x83, 0x06), (0x85, 0xF1), (0x87, 0xF3)):
+        mem[0x5000 + n] = g & 255
+        mem[0x5200 + n] = g >> 8
+    for zp, page in ((0x81, 0x04), (0x83, 0x06), (0x85, 0x50), (0x87, 0x52)):
         mem[zp] = page  # m7_umul_init
     entry = symbols(args.elf)['m7_umul16']
     rng = random.Random(3)

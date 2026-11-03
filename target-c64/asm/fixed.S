@@ -13,8 +13,8 @@
 
 SQLO  = $0400
 SQHI  = $0600
-SQNLO = $F100
-SQNHI = $F300
+SQNLO = $5000
+SQNHI = $5200
 
 PLO = $80       ; (2) SQLO + a
 PHI = $82       ; (2) SQHI + a
