@@ -3,6 +3,16 @@
 A helicopter campaign for the 64 MHz C64 Ultimate with a 16 MiB REU, in the spirit of Super Huey's
 mission modes (flight school, rescue, recon, combat), with original missions, enemies and story.
 
+## Principles
+
+- **Looks real:** the instruments, the HUD's symbology, the island, and the helicopter's attitude in the view.
+- **Feels real:** the rotor's start-up with the tach following it, the inertia of the flight model (the bank and pitch lag, speed builds and bleeds off), and the sound.
+- **Plays like an arcade game:**
+  - quick missions, clear objectives;
+  - forgiving damage, generous ammunition;
+  - missiles that lock on by themselves.
+- **Simple, intuitive controls** (Miyamoto): one joystick, two buttons, no keyboard. The helicopter does the fiddly parts (the collective, trim, the landing flare) for you.
+
 ## The island
 
 - **Size:** 2048×2048 texels (about 8 m each) with a radial coastline and a diagonal mountain ridge.
@@ -43,7 +53,7 @@ the enemy's HQ.
 |---|---|---|---|---|
 | 1 | Shakedown | Lift off; fly through a gate over each of pads 1–4; land on the home H. Teaches the HUD's waypoint caret, the gauges and landing. | none | gun |
 | 2 | Medevac | Fly to the field hospital (pad 3); land and hold 10 s while 2 wounded are loaded; return home within 4 minutes. | 2 AA guns beside the route, light flak | gun |
-| 3 | Recon | Overfly 3 marked sites below 200 ft, within 40 texels of each mark. | each site: 1 radar, 2 AA guns | gun, 2 missiles |
+| 3 | Recon | Overfly 3 marked sites, within 40 texels of each mark. | each site: 1 radar, 2 AA guns | gun, 2 missiles |
 | 4 | Hunter | Stop the convoy on the road from pad 2 to pad 4 before it arrives. Every truck must be destroyed. | 4 trucks, 2 APCs, 1 AA vehicle, all moving | gun, 4 missiles |
 | 5 | Sea Lane | Sink the flotilla off the west coast, then hover low over a downed pilot's raft for 5 s. | 3 gunboats, 1 missile boat | gun, 4 missiles |
 | 6 | SAM Belt | Destroy 3 SAM sites in the ridge's valleys; use the mountains to mask from the radars. | each site: 1 radar, 2 SAM launchers, 2 AA guns | gun, 6 missiles |
@@ -89,8 +99,11 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
 
 ## The player
 
-- **Flight:** the joystick is the cyclic. Left and right bank, which turns; forward and back pitch, which sets speed. The collective (climb and descend) is on keys. This is the agent's flight model with the player's controls in place of the decision tree.
-- **Landing:** on a pad's H, slowly, at near-zero climb. A hard landing damages the helicopter.
+- **Flight:** one joystick. This is the agent's flight model with the stick in place of the decision tree's turns and speeds.
+  - Left and right turn; the helicopter banks into the turn by itself.
+  - Forward speeds up, back slows down to a hover.
+  - Altitude looks after itself: it holds a cruise height over the ground and climbs over mountains in its way (the autopilot's hazard probes and climb actions).
+- **Landing:** hover (slow right down) over a pad's H and it settles onto it. Push forward to lift off again. No hard landings.
 - **Weapons:** two buttons, one weapon each.
 
 | Weapon | Button | Load | Behaviour |
@@ -99,7 +112,7 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
 | Missiles | button 2 | 4–8 | fire and forget at the locked target; with no lock, button 2 does nothing |
 
 - **Button 2** is the common 2-button convention: the second button is read on the SID's POT X line (`$D419`). The C64U's joysticks and most modern pads support it. One function reads both buttons, so they can be remapped.
-- **Auto-lock:** the diamond reticle is the missile seeker's field of view, a fixed area around the boresight.
+- **Auto-lock:** one missile and one seeker for every target, in the air or on the ground. The diamond reticle is the seeker's field of view, a fixed area around the boresight.
   - When an enemy in range (250) is inside it, the missile system arms by itself.
   - The diamond moves onto that target and closes in as the lock builds over 1.5 s, then shows `LOCK`.
   - If the target leaves the reticle before then, the lock resets.
