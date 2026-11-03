@@ -168,7 +168,12 @@ pub mod status {
     /// u8: pop-in size, pixels of bounding radius (`geom::Camera::pop`; poke it to tune; 0 = default).
     pub const POP: u16 = 20;
     pub const TICK_HI: u16 = 21;
-    pub const SIZE: u16 = 23;
+    /// u16: of `RENDER_US`, the floor's lines (runs, DMAs, copy), in units of 4 µs.
+    pub const FLOOR_US: u16 = 23;
+    /// u16: of `RENDER_US`, the triangles and sprites (activation and drawing), in units of 4 µs. The
+    /// rest of the render is publishing the bands.
+    pub const DRAW_US: u16 = 25;
+    pub const SIZE: u16 = 27;
 }
 
 /// The attract-mode helicopter (`agent::Agent`, as `Agent::to_bytes`) and the flight's clock (u32: NTSC

@@ -477,6 +477,8 @@ pub extern "C" fn main() -> i16 {
         unsafe { floor_begin() };
         // The bands can take longer than the 16-bit stopwatch: add it up band by band.
         let (mut render, mut last) = (0u32, 0u16);
+        // Of it, the floor's lines and the triangles (the status block's split; the rest is publishing).
+        let (mut floor_t, mut draw_t) = (0u32, 0u32);
         // Line y's ray at byte 0, stepped (exactly) line by line.
         let mut a = rays.a0;
         let step: [i32; 3] = if doubled != 0 { rays.ay.map(|c| c * 2) } else { rays.ay };
@@ -486,6 +488,8 @@ pub extern "C" fn main() -> i16 {
                 floor_begin();
                 geo_activate(band)
             };
+            let lines = stopwatch_read();
+            draw_t += lines.wrapping_sub(last) as u32;
             let mut line = 0u8;
             while line < 8 {
                 args.a = a;
@@ -498,9 +502,12 @@ pub extern "C" fn main() -> i16 {
                 a = [a[0] + step[0], a[1] + step[1], a[2] + step[2]];
                 line += 1 + doubled;
             }
+            let drawn = stopwatch_read();
+            floor_t += drawn.wrapping_sub(lines) as u32;
             if active > 0 {
                 unsafe { geo_draw(band) };
             }
+            draw_t += stopwatch_read().wrapping_sub(drawn) as u32;
             unsafe { band_publish(band) };
             let now = stopwatch_read();
             render += now.wrapping_sub(last) as u32;
@@ -511,6 +518,8 @@ pub extern "C" fn main() -> i16 {
         poke(chopper::hud::READY, 1);
         render += stopwatch_stop().wrapping_sub(last) as u32;
         poke16(STATUS + status::RENDER_US, (render >> 2) as u16);
+        poke16(STATUS + status::FLOOR_US, (floor_t >> 2) as u16);
+        poke16(STATUS + status::DRAW_US, (draw_t >> 2) as u16);
         poke(STATUS + status::TRIS, peek(GEO_ARGS + geo_args::TRIS));
         poke(STATUS + status::OBJECTS, peek(WALK_ARGS + geom::walk::OBJECTS));
         poke16(STATUS + status::TICK, t as u16);
