@@ -262,12 +262,20 @@ fn cockpit(args: &[String]) -> Result<(), String> {
 /// The war on its own: who holds the island, minute by minute.
 fn war(args: &[String]) -> Result<(), String> {
     let minutes = num(args, "--minutes", 10.0) as u32;
-    let reu = package::bake(&world::generate(SEED));
+    let mut reu = package::bake(&world::generate(SEED));
+    // The director's knobs: --knobs ENEMY,ALLIED,PER_PAD,WAVE,WAVE_PER_PAD (strengths in units).
+    if let Some(k) = arg(args, "--knobs") {
+        let v: Vec<u16> = k.split(',').map(|x| x.parse().map_err(|_| format!("--knobs: {x}?"))).collect::<Result<_, _>>()?;
+        let [e, a, p, w, wp] = v[..] else { return Err("--knobs ENEMY,ALLIED,PER_PAD,WAVE,WAVE_PER_PAD".into()) };
+        chopper::war::set_knobs(&mut reu, chopper::world_sim::Knobs { strength: [e, a], per_pad: p, wave: w as u8, wave_per_pad: wp as u8 });
+    }
+    let quiet = args.iter().any(|a| a == "--quiet");
     let mut m = chopper::model::Machine::new(&reu);
     for minute in 0..=minutes {
         let r = chopper::war::report(&m.reu);
-        println!("minute {minute:3}: enemy {:3} alive, {:3} lost; allies {:3} alive, {:3} lost", r.alive[0], r.lost[0], r.alive[1], r.lost[1]);
-        if minute % 5 == 0 || minute == minutes {
+        let pads: String = r.owner.iter().map(|&o| if o == chopper::actors::ENEMY { 'E' } else { 'A' }).collect();
+        println!("minute {minute:3}: enemy {:3} alive, {:3} lost; allies {:3} alive, {:3} lost; pads {pads}", r.alive[0], r.lost[0], r.alive[1], r.lost[1]);
+        if !quiet && (minute % 5 == 0 || minute == minutes) {
             // North at the top: E enemy, A allied, * contested.
             for sy in (0..16).rev() {
                 let row: String = (0..16).map(|sx| [' ', 'E', 'A', '*'][r.control[sy * 16 + sx] as usize]).collect();

@@ -9,6 +9,7 @@
 
 use crate::actors::{ALLIED, ENEMY, kind};
 use crate::world::{PADS, World, texel};
+const _: () = assert!(PADS.len() == ws::PADS as usize);
 use crate::world_sim::{self as ws, ALIVE, COUNT, LOOP, PING_PONG, RECORD, rec, stats};
 #[allow(unused_imports)]
 use LOOP as _;
@@ -19,10 +20,14 @@ pub mod route {
     pub const SUPPLY: u8 = 0;
     /// Enemy road: west outpost to HQ.
     pub const ENEMY_ROAD: u8 = 1;
-    /// Enemy reinforcements: the beachhead to HQ, the west outpost and on to the front.
+    /// Enemy reinforcements: the beachhead to HQ, the west outpost and on toward the allies' pads, as far
+    /// as the front (`world_sim::front`).
     pub const BEACHHEAD: u8 = 2;
-    /// Allied reinforcements: home, the east outpost, toward the west outpost.
+    /// Allied reinforcements: home, the east outpost, toward the west outpost, HQ and the beachhead, as far
+    /// as the front.
     pub const FRONT: u8 = 3;
+    const _: () = assert!(crate::world_sim::FRONT_ROUTE[crate::actors::ENEMY as usize] == BEACHHEAD);
+    const _: () = assert!(crate::world_sim::FRONT_ROUTE[crate::actors::ALLIED as usize] == FRONT);
     /// Enemy boats off the west coast.
     pub const WEST_SEA: u8 = 4;
     /// The carrier group's station offshore, south-east (back and forth).
@@ -72,8 +77,9 @@ pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
     vec![
         (vec![pad(0), pad(1), pad(3)], PING_PONG),
         (vec![pad(2), pad(4)], PING_PONG),
-        (vec![beach, pad(4), pad(2), (1000, 980)], PING_PONG),
-        (vec![pad(0), pad(1), (1000, 980), pad(2)], PING_PONG),
+        // The front roads (`world_sim::FRONT_ROUTE`), each side's from its rear to the other's.
+        (vec![beach, pad(4), pad(2), (1000, 980), pad(1), pad(0)], PING_PONG),
+        (vec![pad(0), pad(1), (1000, 980), pad(2), pad(4), beach], PING_PONG),
         (west.to_vec(), PING_PONG),
         (carrier.to_vec(), PING_PONG),
         (vec![pad(4), pad(2), (1100, 1200), beach], LOOP),
@@ -115,7 +121,7 @@ pub fn bake(w: &World) -> Vec<u8> {
     // Enemy: the column from the beachhead, garrisons, SAM sites, boats, gunships.
     for k in 0..24u8 {
         let kd = [kind::TRUCK, kind::APC, kind::TANK, kind::TRUCK, kind::AA, kind::TANK][k as usize % 6];
-        push(&mut units, kd, ENEMY, route::BEACHHEAD, (0, 0), k * 10, 0, true, false);
+        push(&mut units, kd, ENEMY, route::BEACHHEAD, (0, 0), k * 6, 0, true, false);
     }
     for (p, n) in [(2usize, 0u8), (4, 1)] {
         let (u, v) = pad(p);
@@ -149,7 +155,7 @@ pub fn bake(w: &World) -> Vec<u8> {
         push(&mut units, if k % 4 == 3 { kind::APC } else { kind::TRUCK }, ALLIED, route::SUPPLY, (0, 0), k * 30, 0, true, false);
     }
     for k in 0..8u8 {
-        push(&mut units, if k % 2 == 0 { kind::TANK } else { kind::APC }, ALLIED, route::FRONT, (0, 0), 140 + k * 12, 0, true, false);
+        push(&mut units, if k % 2 == 0 { kind::TANK } else { kind::APC }, ALLIED, route::FRONT, (0, 0), 60 + k * 6, 0, true, false);
     }
     push(&mut units, kind::CARRIER, ALLIED, route::CARRIER, (0, 0), 0, 0, true, false);
     push(&mut units, kind::DESTROYER, ALLIED, route::CARRIER, (0, 0), 20, 0, true, false);
@@ -161,7 +167,7 @@ pub fn bake(w: &World) -> Vec<u8> {
     let mut k = 0u8;
     while units.len() < COUNT as usize {
         let side = k & 1;
-        let kd = [kind::TRUCK, kind::APC, kind::TANK, kind::AA][(k as usize >> 1) % 4];
+        let kd = [kind::APC, kind::TANK, kind::AA, kind::TANK][(k as usize >> 1) % 4];
         let r = if side == ENEMY { route::BEACHHEAD } else { route::FRONT };
         push(&mut units, kd, side, r, (0, 0), 0, 0, false, false);
         k = k.wrapping_add(1);
@@ -202,10 +208,12 @@ pub fn bake(w: &World) -> Vec<u8> {
     let mut first = 0u8;
     for (k, (pts, mode)) in rs.iter().enumerate() {
         let at = (ws::ROUTES - ws::STATE) as usize + k * ws::ROUTE_ENTRY as usize;
-        out[at..at + 4].copy_from_slice(&[first, pts.len() as u8, *mode, 0]);
+        out[at..at + 4].copy_from_slice(&[first, pts.len() as u8, *mode, pts.len() as u8]);
         for (j, &(u, v)) in pts.iter().enumerate() {
             let w = (ws::WAYPOINTS - ws::STATE) as usize + (first as usize + j) * 4;
-            out[w..w + 2].copy_from_slice(&(u.clamp(0, 2047) as u16).to_le_bytes());
+            // A pad's waypoint carries the pad.
+            let tag = PADS.iter().position(|p| (p.u as i32, p.v as i32) == (u, v)).map_or(0, |p| (p as u16 + 1) << ws::PAD_SHIFT);
+            out[w..w + 2].copy_from_slice(&(u.clamp(0, 2047) as u16 | tag).to_le_bytes());
             out[w + 2..w + 4].copy_from_slice(&(v.clamp(0, 2047) as u16).to_le_bytes());
         }
         first += pts.len() as u8;
@@ -214,13 +222,28 @@ pub fn bake(w: &World) -> Vec<u8> {
     for side in 0..2 {
         out[h + ws::head::ALIVE as usize + 2 * side..][..2].copy_from_slice(&alive[side].to_le_bytes());
     }
+    out[h + ws::head::OWNER as usize..][..PADS.len()].copy_from_slice(&OWNERS);
+    out[h + ws::head::KNOBS as usize..][..5].copy_from_slice(&ws::Knobs::DEFAULT.to_bytes());
+    // The front roads as far as the first pad the other side holds.
+    for side in 0..2 {
+        let at = (ws::ROUTES - ws::STATE) as usize + ws::FRONT_ROUTE[side] as usize * ws::ROUTE_ENTRY as usize;
+        let pts = &rs[ws::FRONT_ROUTE[side] as usize].0;
+        let reach = pts.iter().position(|&q| PADS.iter().position(|p| (p.u as i32, p.v as i32) == q).is_some_and(|p| OWNERS[p] != side as u8));
+        out[at + 1] = reach.map_or(pts.len(), |k| k + 1) as u8;
+    }
     out
 }
+
+/// Who holds each pad at the start: home, the east outpost and the field hospital the allies; the west
+/// outpost and the north (HQ) the enemy.
+pub const OWNERS: [u8; 5] = [ALLIED, ALLIED, ENEMY, ALLIED, ENEMY];
 
 /// What the war looks like: units alive and lost per side, and who holds each sector.
 pub struct Report {
     pub alive: [u16; 2],
     pub lost: [u16; 2],
+    /// Each pad's owner.
+    pub owner: [u8; 5],
     /// Per sector: 0 empty, 1 enemy, 2 allied, 3 contested.
     pub control: [u8; 256],
 }
@@ -236,8 +259,14 @@ pub fn report(reu: &[u8]) -> Report {
     Report {
         alive: [w(h + ws::head::ALIVE as usize), w(h + ws::head::ALIVE as usize + 2)],
         lost: [w(h + ws::head::LOST as usize), w(h + ws::head::LOST as usize + 2)],
+        owner: core::array::from_fn(|p| reu[h + ws::head::OWNER as usize + p]),
         control,
     }
+}
+
+/// Set the director's knobs in a baked war (`reu`, the whole REU image).
+pub fn set_knobs(reu: &mut [u8], k: ws::Knobs) {
+    reu[ws::HEADER as usize + ws::head::KNOBS as usize..][..5].copy_from_slice(&k.to_bytes());
 }
 
 /// Run the war for `ticks` with no player near, a page every `per_frame` ticks (as the C64 at about 15

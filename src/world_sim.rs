@@ -87,8 +87,9 @@ pub mod sec {
     pub const REP: u16 = 2;
 }
 
-/// Routes: [`ROUTE_COUNT`] entries of (first waypoint u8, waypoints u8, mode u8, spare), then waypoints
-/// (u, v texels, u16 each).
+/// Routes: [`ROUTE_COUNT`] entries of (first waypoint u8, waypoints in use u8, mode u8, waypoints u8),
+/// then waypoints (u, v texels, u16 each; u's top bits a pad, `PAD_SHIFT`). A front road's waypoints in use
+/// are the director's (the front); the others use all.
 pub const ROUTE_COUNT: u16 = 16;
 pub const ROUTE_ENTRY: u16 = 4;
 pub const WAYPOINTS: u32 = ROUTES + ROUTE_COUNT as u32 * ROUTE_ENTRY as u32;
@@ -97,15 +98,34 @@ pub const PING_PONG: u8 = 0;
 pub const LOOP: u8 = 1;
 
 /// The header: next page (u16), the wave clock (u16 ticks), per side: wave budget (u8 × 2), alive (u16 ×
-/// 2), units lost (u16 × 2).
+/// 2), units lost (u16 × 2); then each pad's owner (`world::PADS`, a side).
 pub mod head {
     pub const CURSOR: u16 = 0;
     pub const WAVE: u16 = 2;
     pub const BUDGET: u16 = 4;
     pub const ALIVE: u16 = 6;
     pub const LOST: u16 = 10;
+    pub const OWNER: u16 = 16;
+    /// The director's knobs (`Knobs`, baked; a mission may set them): strength (u8 × 2, in pairs of
+    /// units), strength per pad the other side holds (pairs), wave, wave per pad.
+    pub const KNOBS: u16 = 21;
+    /// Per pad: the director's passes in a row the other side has held it (`HOLD_PASSES` takes it).
+    pub const PRESSURE: u16 = 26;
 }
-pub const HEADER_LEN: u16 = 16;
+pub const HEADER_LEN: u16 = 32;
+/// The pads (`world::PADS`; `war` checks the count).
+pub const PADS: u16 = 5;
+const _: () = assert!(head::OWNER + PADS <= HEADER_LEN);
+
+/// The front: each side's road to the enemy (`FRONT_ROUTE`) runs through pads (a waypoint's pad, plus
+/// one, in its u's top bits: `PAD_SHIFT`). The director ends each road at the first pad the other side
+/// holds; a pad whose sector holds enough of the other side changes
+/// hands (`CAPTURE` or more, and more than twice the owner's, for `HOLD_PASSES` passes in a row). Reinforcements on a front road arrive at
+/// its last pad before the front (the defender's short supply line). So the front walks, both ways.
+pub const FRONT_ROUTE: [u8; 2] = [2, 3];
+pub const PAD_SHIFT: u16 = 12;
+pub const CAPTURE: u8 = 2;
+pub const HOLD_PASSES: u8 = 3;
 
 /// Records a page (`COUNT` is a whole number of pages).
 pub const PAGE: u16 = 48;
@@ -353,11 +373,33 @@ pub fn fight_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
     hw.poke(PHASE, MOVE);
 }
 
-/// The director, once round the whole page file: every `WAVE_TICKS`, each side behind its strength gets
-/// a wave (budget) of reinforcements, spent as dead slots of its side come round.
+/// The director, once round the whole page file: every `WAVE_TICKS`, the front moves (`front`), then
+/// each side behind its strength gets a wave (budget) of reinforcements, spent as dead slots of its side
+/// come round. Strength and waves grow with the pads the other side holds: a side pushed back fights
+/// nearer its depots (so the front swings both ways rather than one side being wiped out).
 pub const WAVE_TICKS: u16 = 60 * 60;
-pub const STRENGTH: [u16; 2] = [180, 150];
-pub const WAVE: u8 = 12;
+
+/// The director's knobs, as in the header (`head::KNOBS`).
+#[derive(Clone, Copy, Debug)]
+pub struct Knobs {
+    /// Each side's strength (units) with no pads lost.
+    pub strength: [u16; 2],
+    /// More strength for each pad the other side holds.
+    pub per_pad: u16,
+    /// A wave's units, and more for each pad the other side holds.
+    pub wave: u8,
+    pub wave_per_pad: u8,
+}
+
+impl Knobs {
+    /// Tuned with `chopper war --knobs` so the front swings both ways over an hour, every few minutes to a
+    /// quarter of an hour, and home holds (`the_front_swings_both_ways`).
+    pub const DEFAULT: Self = Self { strength: [100, 110], per_pad: 24, wave: 12, wave_per_pad: 4 };
+
+    pub fn to_bytes(self) -> [u8; 5] {
+        [(self.strength[0] / 2) as u8, (self.strength[1] / 2) as u8, (self.per_pad / 2) as u8, self.wave, self.wave_per_pad]
+    }
+}
 
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
@@ -367,12 +409,72 @@ fn director<H: Hw + ?Sized>(hw: &mut H, now: u16) {
         return;
     }
     reu_put16(hw, HEADER + head::WAVE as u32, now);
+    front(hw);
+    // The owners and the knobs, one read.
+    let mut h = [0u8; (HEADER_LEN - head::OWNER) as usize];
+    hw::read_into(hw, HEADER + head::OWNER as u32, crate::layout::BOUNCE, &mut h);
+    let k = (head::KNOBS - head::OWNER) as usize;
     for side in 0..2u32 {
+        let theirs = h[..PADS as usize].iter().filter(|&&o| o as u32 != side).count() as u8;
+        let strength = (h[k + side as usize] as u16 + h[k + 2] as u16 * theirs as u16) * 2;
         let alive = reu_get16(hw, HEADER + head::ALIVE as u32 + 2 * side);
-        if alive < STRENGTH[side as usize] {
-            reu_put(hw, HEADER + head::BUDGET as u32 + side, WAVE);
+        if alive < strength {
+            reu_put(hw, HEADER + head::BUDGET as u32 + side, h[k + 3] + h[k + 4] * theirs);
         }
     }
+}
+
+/// The front: pads change hands, then each side's road reaches to the first pad the other side holds.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
+fn front<H: Hw + ?Sized>(hw: &mut H) {
+    // The owners (and knobs, between), and the pressure on each pad.
+    let mut h = [0u8; (head::PRESSURE + PADS - head::OWNER) as usize];
+    hw::read_into(hw, HEADER + head::OWNER as u32, crate::layout::BOUNCE, &mut h);
+    let (owner, pressure) = h.split_at_mut((head::PRESSURE - head::OWNER) as usize);
+    for side in 0..2 {
+        let entry = ROUTES + FRONT_ROUTE[side] as u32 * ROUTE_ENTRY as u32;
+        let mut e = [0u8; ROUTE_ENTRY as usize];
+        hw::read_into(hw, entry, crate::layout::BOUNCE, &mut e);
+        let (first, all) = (e[0], e[3]);
+        let mut reach = all;
+        for k in 0..all {
+            let mut wp = [0u8; 4];
+            hw::read_into(hw, WAYPOINTS + (first + k) as u32 * 4, crate::layout::BOUNCE, &mut wp);
+            let (u, v) = (u16::from_le_bytes([wp[0], wp[1]]), u16::from_le_bytes([wp[2], wp[3]]));
+            let pad = (u >> PAD_SHIFT) as usize;
+            if pad == 0 || pad > PADS as usize {
+                continue;
+            }
+            let p = pad - 1;
+            // Taken? (Each side's road visits the pads it fights over; once a side, once is enough.)
+            if side == 0 {
+                let sector = (((u & 0x7FF) >> 7) | ((v >> 7) << 4)) as u8;
+                let mut counts = [0u8; 2];
+                hw::read_into(hw, sector_at(sector) + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
+                let o = owner[p] as usize & 1;
+                if counts[1 - o] >= CAPTURE && counts[1 - o] > 2 * counts[o] {
+                    pressure[p] += 1;
+                    if pressure[p] >= HOLD_PASSES {
+                        owner[p] = 1 - o as u8;
+                        pressure[p] = 0;
+                    }
+                } else {
+                    pressure[p] = 0;
+                }
+            }
+            if owner[p] != side as u8 {
+                reach = k + 1;
+                break;
+            }
+        }
+        hw.poke(crate::layout::BOUNCE, reach);
+        hw::stash(hw, crate::layout::BOUNCE, entry + 1, 1);
+    }
+    for (k, &b) in h.iter().enumerate() {
+        hw.poke(crate::layout::BOUNCE + k as u16, b);
+    }
+    hw::stash(hw, crate::layout::BOUNCE, HEADER + head::OWNER as u32, h.len() as u16);
 }
 
 /// A unit's sector's record in the REU.
@@ -414,7 +516,7 @@ fn route<H: Hw + ?Sized>(hw: &mut H, r: u8) -> (u8, u8, u8) {
 fn waypoint<H: Hw + ?Sized>(hw: &mut H, k: u8) -> (i16, i16) {
     let mut w = [0u8; 4];
     hw::read_into(hw, WAYPOINTS + k as u32 * 4, crate::layout::BOUNCE, &mut w);
-    (u16::from_le_bytes([w[0], w[1]]) as i16, u16::from_le_bytes([w[2], w[3]]) as i16)
+    ((u16::from_le_bytes([w[0], w[1]]) & ((1 << PAD_SHIFT) - 1)) as i16, u16::from_le_bytes([w[2], w[3]]) as i16)
 }
 
 /// One unit's move: respawn if dead and due; else along its route; its sector kept; listed if near.
@@ -437,11 +539,13 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             return;
         }
         reu_put(hw, budget, b - 1);
-        let (start, _, _) = route(hw, route_no);
-        let (u, v) = waypoint(hw, start);
+        // At the route's start; on its side's front road, the last waypoint before the front.
+        let (start, len, _) = route(hw, route_no);
+        let k = if route_no == FRONT_ROUTE[side as usize] { len.saturating_sub(2) } else { 0 };
+        let (u, v) = waypoint(hw, start + k);
         wr(hw, r + rec::U, (u as u16) << 4);
         wr(hw, r + rec::V, (v as u16) << 4);
-        hw.poke(r + rec::LEG, 0);
+        hw.poke(r + rec::LEG, k);
         hw.poke(r + rec::HP, stats::HP[kind]);
         hw.poke(r + rec::FLAGS, (flags | ALIVE) & !NEAR_FLAG);
         hw.poke(r + rec::ACTION, act::MOVE);

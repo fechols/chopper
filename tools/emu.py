@@ -292,7 +292,7 @@ NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
 COMBAT, COMBAT_LEN = 0x8E84, 6 * 12 + 12    # combat::STATE, STATE_LEN: projectiles, the player's fight
 FX, FX_LEN = 0xB760, 8 * 10                 # combat::FX: the effects playing
 STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 1), (HUD + 4, 4), (COMBAT, COMBAT_LEN), (FX, FX_LEN)]
-WAR, WAR_LEN = 116 << 16, 0x5010    # world_sim::STATE, STATE_LEN: the war in the REU
+WAR, WAR_LEN = 116 << 16, 0x5020    # world_sim::STATE, STATE_LEN: the war in the REU
 BRAINS, BRAINS_LEN = 117 << 16, 0x0A00  # world_sim::BRAINS, BRAINS_LEN: the units' learned trees
 GAUGES = AGENT + AGENT_BYTES + 4
 

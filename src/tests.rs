@@ -1068,6 +1068,28 @@ fn the_war_goes_on_and_keeps_its_books() {
     }
 }
 
+/// The front: over two hours, pads change hands both ways (each side takes one), home never falls, and
+/// neither side is wiped out.
+#[test]
+fn the_front_swings_both_ways() {
+    use crate::actors::{ALLIED, ENEMY};
+    let mut m = Machine::new(package());
+    let (mut taken, mut prev) = ([0u32; 2], crate::war::report(&m.reu).owner);
+    for minute in 0..120 {
+        crate::war::run(&mut m, minute * 3600, 3600, 4);
+        let r = crate::war::report(&m.reu);
+        for (p, (&a, &b)) in prev.iter().zip(&r.owner).enumerate() {
+            if a != b {
+                taken[b as usize] += 1;
+            }
+            assert!(p != 0 || b == ALLIED, "home fell at minute {minute}");
+        }
+        assert!(r.alive[ENEMY as usize] > 0 && r.alive[ALLIED as usize] > 0, "a side wiped out at minute {minute}");
+        prev = r.owner;
+    }
+    assert!(taken[0] >= 2 && taken[1] >= 2, "pads taken (enemy, allies): {taken:?}");
+}
+
 /// The units' brain: the baked tree reproduces the planner's decision in every situation; attacking when
 /// healthy and even is a learned choice against retreating; with no foes a mobile unit advances.
 #[test]
