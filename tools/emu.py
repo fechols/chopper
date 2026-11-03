@@ -194,6 +194,8 @@ class C64(Cpu):
             return
         if address >= 0xFFFA and self.mem[STATUS] == 0xC1:
             raise KernelError(f'write ${value:02X} to the vector at ${address:04X} from PC ${self.pc:04X}')
+        if GUARD and self.mem[STATUS] == 0xC1 and any(a <= address < b for a, b in GUARD):
+            raise KernelError(f'write ${value:02X} to guarded ${address:04X} from PC ${self.pc:04X}')
         self.mem[address] = value
 
     def poll_irq(self):
@@ -252,6 +254,8 @@ class C64(Cpu):
             else:
                 if c64 >= 0xFFFA and self.mem[STATUS] == 0xC1:
                     raise KernelError(f'DMA into the vector at ${c64:04X} (REU ${addr:06X}), PC ${self.pc:04X}')
+                if GUARD and self.mem[STATUS] == 0xC1 and any(a <= c64 < b for a, b in GUARD):
+                    raise KernelError(f'DMA into guarded ${c64:04X} (REU ${addr:06X}), PC ${self.pc:04X}')
                 self.mem[c64] = v
             if not r[0xA] & 0x80:
                 c64 = (c64 + 1) & 0xFFFF
@@ -261,6 +265,10 @@ class C64(Cpu):
         r[4], r[5], r[6] = addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF
         r[7], r[8] = 1, 0
         self.dmas += 1
+
+
+# EMU_GUARD=start-end,...: hex ranges no write may touch once the main loop runs (relocated code).
+GUARD = [tuple(int(x, 16) for x in r.split('-')) for r in os.environ.get('EMU_GUARD', '').split(',') if r]
 
 
 def wsl(path):
@@ -333,6 +341,7 @@ def main():
     ap.add_argument('--reu', default='dist/chopper.reu')
     ap.add_argument('--frames', type=int, default=4)
     ap.add_argument('--doubled-after', type=int, default=2, help='switch MODE to doubled after this many frames')
+    ap.add_argument('--poke', default='', help='with --start: HEX=HEX,... RAM bytes poked as the main loop starts')
     ap.add_argument('--start', type=int, help='start the flight at this tick: poke the host agent and clock')
     ap.add_argument('--input', default='', help='the stick by frame: "FRAME:BITS,..." (agent::input bits: up 1, '
                     'down 2, left 4, right 8, fire 16, fire2 32), each from that frame on')
@@ -368,6 +377,8 @@ def main():
             # The main loop is about to start: the agent and its clock at the start tick.
             cpu.mem[AGENT:AGENT + len(start)] = start
             cpu.mem[AGENT + len(start):AGENT + len(start) + 4] = (args.start + args.leap).to_bytes(4, 'little')
+            for a, v in (p.split('=') for p in args.poke.split(',') if p):
+                cpu.mem[int(a, 16)] = int(v, 16)
             start = None
         n_watch = len(cpu.watch)
         cpu.poll_irq()

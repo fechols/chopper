@@ -398,10 +398,16 @@ fn roll(s: u8) -> u8 {
     x ^ x << 4
 }
 
-/// The heading (256 a turn, clockwise from north as the agent's) of a direction, to about 6°.
+/// The heading (256 a turn, clockwise from north as the agent's) of a direction, to about 6°. (In the
+/// move phase's overlay; other overlays have their own copy of [`heading_inline`]: `combat::heading`.)
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
 pub fn heading(dx: i16, dy: i16) -> u8 {
+    heading_inline(dx, dy)
+}
+
+#[inline(always)]
+pub fn heading_inline(dx: i16, dy: i16) -> u8 {
     let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
     // The angle from the nearer axis, in 32nds of a quarter turn, from the ratio (0..=32 over an octant).
     let (lo, hi) = if ax < ay { (ax, ay) } else { (ay, ax) };

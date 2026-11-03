@@ -275,6 +275,15 @@ pub fn launch<H: Hw + ?Sized>(hw: &mut H, kind: u8, ttl: u8, a: &Agent, target: 
     }
 }
 
+/// [`ws::heading`] for the effects pass (the missiles homing), in its overlay: the war's copy is in the
+/// move phase's, at the same addresses as this one (calling it ran this overlay's code from the middle:
+/// the first missile in flight on the C64U wrote projectiles over the HUD's interrupt code).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.fx"))]
+fn heading(dx: i16, dy: i16) -> u8 {
+    ws::heading_inline(dx, dy)
+}
+
 /// [`ws::live`] for the combat pass, in its library (the deck's overlay is not in then).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
@@ -607,7 +616,7 @@ pub fn fx<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) {
             let (tu, tv, th) = (u16::from_le_bytes([t[4], t[5]]) as i16, u16::from_le_bytes([t[6], t[7]]) as i16, (t[8] as i16) << 4);
             let (dx, dy, dh) = ((tu >> 4) - (u >> 4), (tv >> 4) - (v >> 4), th - h);
             // Turn toward it: 8 a tick at most; climb toward its height.
-            let want = crate::world_sim::heading(dx, dy);
+            let want = heading(dx, dy);
             let d = want.wrapping_sub(yaw) as i8;
             yaw = yaw.wrapping_add(d.clamp(-8, 8) as u8);
             climb = (dh >> 4).clamp(-8, 8);
