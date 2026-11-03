@@ -98,6 +98,7 @@ pub const SPRITE: u8 = 0x80;
 pub const POP: u8 = 4;
 
 /// Depth (Q4) per texel of bounding radius at which an object shrinks to `pop` pixels: `80·16 / pop`.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
 pub fn pop_scale(pop: u8) -> i16 {
     let p = if pop == 0 { POP } else { pop };
     (1280 / p as u16) as i16
@@ -121,6 +122,7 @@ pub struct Look {
 }
 
 impl Look {
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
     pub fn new(view: &View) -> Self {
         let r = &view.cam.r;
         Look {
@@ -618,6 +620,7 @@ pub struct GridIn {
 impl GridIn {
     /// The grid of `grid`² cells of `cell_q` (Q4, a power of two) whose directory is at `dir`, within
     /// `reach` cells of the camera's; `pad`: how far (Q4) beyond its cell an object can reach.
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
     pub fn new(look: &Look, dir: u32, grid: usize, cell_q: i32, reach: i32, pad: i32, sh: u8) -> Self {
         // Q8 texels → cells.
         let k = cell_q.trailing_zeros();
@@ -646,6 +649,7 @@ impl GridIn {
 }
 
 /// The frame's grids: the big one (mountains), then the fine one.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
 pub fn grids(look: &Look) -> [GridIn; 2] {
     use crate::format::{BIG_DIR, OBJ_DIR};
     [
@@ -756,6 +760,7 @@ pub mod walk {
 }
 
 /// Write `geo_walk`'s arguments for `view` at `at`.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
 pub fn walk_args<H: Hw + ?Sized>(hw: &mut H, at: u16, view: &View) {
     let look = Look::new(view);
     let mut p = at;

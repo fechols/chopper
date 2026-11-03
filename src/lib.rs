@@ -13,6 +13,7 @@ pub mod cost;
 pub mod fixed;
 pub mod format;
 pub mod geom;
+pub mod hud;
 pub mod hw;
 pub mod layout;
 pub mod floor;
@@ -21,6 +22,8 @@ pub mod sprite;
 
 #[cfg(feature = "host")]
 pub mod digital;
+#[cfg(feature = "host")]
+pub mod elf;
 #[cfg(feature = "host")]
 pub mod encode;
 #[cfg(feature = "host")]

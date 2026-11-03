@@ -12,8 +12,9 @@
 //! | 90-95 | sprites |
 //! | 96-106 | the rotor sound, DLT5 (`digital`) |
 //! | 107 | the AI: decision trees, hazard map (`brain`, `goap`) |
-//! | 108 | code overlays, stashed at boot (`OVERLAYS`) |
+//! | 108 | code overlays: the AI's and the HUD's baked from the C64 ELF, the cockpit's stashed at boot (`OVERLAYS`) |
 //! | 109-114 | the cockpit: static panel, every gauge frame (`cockpit`, `instruments`) |
+//! | 115 | the HUD: sprite shapes, demo targets (`hud`) |
 //! | `$BFFF60`-`$D9C0FF` | not in the image: the rotor sound decoded to 8-bit PCM at boot |
 
 /// 16 MiB REU (C64 Ultimate).
@@ -48,6 +49,9 @@ pub const H_SEG_GROUPS: u32 = 28;
 pub const H_SEG_LONG: u32 = 30;
 pub const H_STREAM: u32 = 32;
 pub const H_GROUPS: u32 = 36;
+/// u32: the C64 build the REU overlays came from (its `CHOPPER_BUILD`; 0 when baked without one). The PRG
+/// waits for an image with its own.
+pub const H_BUILD: u32 = 40;
 
 /// The object directory (`geom::scene::DIR_ENTRY` per cell: the grid's `GRID²`, then the big grid's
 /// `BIG_GRID²`), and the object records (`geom::scene::OBJECT`, sorted by cell), streamed per visible
@@ -128,18 +132,29 @@ pub const HAZARD_SHIFT: u32 = 5;
 const _: () = assert!(AUDIO_DLT + AUDIO_MAX <= AI_TREES && HAZARD + (HAZARD_CELLS as u32).pow(2) <= AI_TREES + 0x10000);
 const _: () = assert!((HAZARD_CELLS as u32) << HAZARD_SHIFT == crate::floor::MAP_TEXELS as u32);
 
-/// Code overlays (`overlay`): stashed here at boot from the PRG, fetched into their window when needed.
-/// Outside the image.
+/// Code overlays, fetched into their windows each frame. The AI's, the HUD's and the geometry set-up's are
+/// baked into the image
+/// from the C64 build's ELF (`chopper bake --elf`, `elf`); the cockpit's is in the PRG, stashed here at
+/// boot.
 pub const OVERLAYS: u32 = 108 << 16;
-/// The cockpit's overlay (`cockpit`), after the AI's.
-pub const OVERLAY_COCKPIT: u32 = OVERLAYS + 0x1000;
+pub const OVERLAY_AI: u32 = OVERLAYS;
+pub const OVERLAY_COCKPIT: u32 = OVERLAYS + 0x2000;
+pub const OVERLAY_HUD: u32 = OVERLAYS + 0x4000;
+pub const OVERLAY_GEOM: u32 = OVERLAYS + 0x6000;
+/// The largest REU overlay (its window: `layout::WORK` to the multiply tables).
+pub const OVERLAY_MAX: u32 = 0x1100;
 
 /// The cockpit (`cockpit`, baked by `instruments`): the static panel, then every frame of every gauge.
 pub const COCKPIT: u32 = 109 << 16;
 const _: () = assert!(OVERLAYS + 0x10000 <= COCKPIT);
 
+/// The HUD (`hud`): its sprite shapes (64 bytes each), then the demo targets.
+pub const HUD_SHAPES: u32 = 115 << 16;
+pub const HUD_TARGETS: u32 = HUD_SHAPES + 0x8000;
+const _: () = assert!(crate::cockpit::END <= HUD_SHAPES && (crate::hud::shape::COUNT as u32) << 6 <= HUD_TARGETS - HUD_SHAPES);
+
 /// The image ends here: upload only this much.
-pub const IMAGE_END: u32 = (crate::cockpit::END + 0xFFFF) & !0xFFFF;
+pub const IMAGE_END: u32 = HUD_SHAPES + 0x10000;
 const _: () = assert!(IMAGE_END <= AUDIO_PCM - HAAS);
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);

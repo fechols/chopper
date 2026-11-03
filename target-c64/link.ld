@@ -10,8 +10,8 @@
  * - Relocated code (copied there at boot by asm/startup.S, whole pages): $0200-$03FF, $8300-$8BFF,
  *   $9B00-$9FFF, $AF00-$B7FF, $BB00-$BEFF, $F800-$FEFF. Boot-only code (`.text.boot`) and the
  *   relocated code's load images sit in $5C00-$82FF, the frame buffer and the scene area, free until
- *   the boot is done. The AI overlay (`.text.ai`) runs at $E000 and loads at $8C00 (see `ai`); the cockpit overlay
- *   (`.text.cockpit`) runs and loads at $A000 (see `cockpit`). asm/audio.S runs once at boot from $C000 (loaded there with the PRG, after
+ *   the boot is done. The REU overlays (`.text.ai`, `.text.hud`) run at $E000 and are not in the PRG
+ *   (see `reuimage`); the cockpit overlay (`.text.cockpit`) runs and loads at $A000 (see `cockpit`). asm/audio.S runs once at boot from $C000 (loaded there with the PRG, after
  *   padding over $8300-$BFFF that the relocation then overwrites).
  * Zero page: the compiler's $02-$7F, fixed.S's $80-$9B, the kernels' $A0-$FF.
  * $01 = $35 (RAM everywhere except I/O); no ROM routines are used. */
@@ -19,10 +19,13 @@ __basic_zp_start = 0x0002;
 __basic_zp_end = 0x0080;
 
 MEMORY {
-    ram (rw) : ORIGIN = 0x0801, LENGTH = 0x53FF
+    /* Ends at the HUD's sprite blocks ($5A80-$5BFF, chopper::hud::SLOT_ADDR). */
+    ram (rw) : ORIGIN = 0x0801, LENGTH = 0x527F
+    /* The HUD's sprite blocks (written each frame): padding in the PRG. */
+    hudblocks (r) : ORIGIN = 0x5A80, LENGTH = 0x0180
     /* Code where the VIC never looks, page-aligned and whole pages long (the boot copy moves pages). */
     lowram (rwx) : ORIGIN = 0x0200, LENGTH = 0x0200
-    spanram (rwx) : ORIGIN = 0x8300, LENGTH = 0x0900   /* after the scene block (format::SCENE_MAX) */
+    spanram (rwx) : ORIGIN = 0x8300, LENGTH = 0x0800   /* after the scene block (format::SCENE_MAX); then the HUD page $8B00 */
     vicrom (rwx) : ORIGIN = 0x9B00, LENGTH = 0x0500    /* after the vertices; the VIC sees ROM there */
     /* llvm-mos's static stack (`.noinit`, the fixed frames of non-recursive functions): after the status
      * block, below the soft stack ($CD80-$CFFF: tools/emu.py checks how much of it a run touches).
@@ -35,8 +38,7 @@ MEMORY {
     boot (rx) : ORIGIN = 0x5C00, LENGTH = 0x2700
     /* Loaded with the PRG, never used: the relocated code is copied over it at boot. */
     gap (r) : ORIGIN = 0x8300, LENGTH = 0x0900
-    /* The AI overlay's load image, between relocated pages: stashed to the REU early in the boot (before
-     * fixed::init_tables writes the reciprocals at $9000). */
+    /* Free in the PRG (was the AI overlay's load image), between relocated pages. */
     aiload (r) : ORIGIN = 0x8C00, LENGTH = 0x0F00
     gap2 (r) : ORIGIN = 0x9B00, LENGTH = 0x0500
     /* The cockpit overlay (`.text.cockpit`: cockpit::update and the static panel), loaded in place with
@@ -47,11 +49,11 @@ MEMORY {
     /* asm/audio.S, run once at boot, loaded in place: the floor's tiles and runs live here afterwards
      * (layout::TILES, SPANS, below RAYS). */
     audio (rx) : ORIGIN = 0xC000, LENGTH = 0x0640
-    /* The AI overlay (`.text.ai`: agent::Agent::step and what it calls), stashed to the REU at boot
-     * (format::OVERLAYS) and fetched each frame over the frame's spent geometry (layout::WORK: the
-     * triangles, depth-bucket heads and links and the clip list, all rewritten before they are read;
-     * Work::clear refills the heads after the agent has run). */
-    ai (rwx) : ORIGIN = 0xE000, LENGTH = 0x0F00
+    /* REU overlays' load images: never in the PRG. `chopper bake --elf` copies each overlay's bytes from
+     * the ELF into the REU (format::OVERLAY_AI, OVERLAY_HUD). */
+    reuimage (r) : ORIGIN = 0x10000, LENGTH = 0x10000
+    /* The REU overlays' window: see `.aitext`. */
+    window (rx) : ORIGIN = 0xE000, LENGTH = 0x1100
 }
 
 /* Matched before commodore.ld's catch-all .text (first match wins). */
@@ -66,7 +68,7 @@ SECTIONS {
         *(.text.span_line .rodata.span_tables .text.geo_bin .text.band_publish .text.bt_build .text._ZN7chopper2hw5fetch*)
     } >spanram AT>boot
     .victext : {
-        *(.text.floor_draw .text.geo_helpers .text.turbo_probe)
+        *(.text.floor_draw .text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable)
     } >vicrom AT>boot
     .bandtext : {
         *(.text.geo_walk .text.geo_xform)
@@ -77,9 +79,17 @@ SECTIONS {
     .hitext : {
         *(.text.draw_cols_asm .rodata.copy_entry .rodata.line_tables .text.sprite_band .text.geo_draw .text.poly_row .rodata.poly_tables)
     } >hiram AT>boot
-    .aitext : {
-        *(.text.ai .text.ai.*)
-    } >ai AT>aiload
+    /* The REU overlays, taking turns in one window over the frame's spent geometry (layout::WORK: the
+     * triangles, depth-bucket heads and links and the clip list, all rewritten before they are read;
+     * Work::clear refills the heads once they have run), each fetched in the frame's set-up:
+     * - `.text.ai`: agent::Agent::fly and what it calls;
+     * - `.text.hud`: hud::build and what it calls;
+     * - `.text.geomsetup`: geom::walk_args (the grids' set-up for asm/geom.S geo_walk), before Work::clear. */
+    OVERLAY 0xE000 : AT (0x10000) {
+        .aitext { *(.text.ai .text.ai.*) }
+        .hudtext { *(.text.hud .text.hud.*) }
+        .geomtext { *(.text.geomsetup .text.geomsetup.*) }
+    } >window
     .cocktext : {
         *(.text.cockpit .text.cockpit.*)
     } >cockpit
@@ -108,8 +118,13 @@ __bandtext2_pages = (SIZEOF(.bandtext2) + 255) / 256;
 __hitext_start = ADDR(.hitext);
 __hitext_load_start = LOADADDR(.hitext);
 __hitext_pages = (SIZEOF(.hitext) + 255) / 256;
-__aitext_load_start = LOADADDR(.aitext);
 __aitext_size = SIZEOF(.aitext);
+__hudtext_size = SIZEOF(.hudtext);
+__geomtext_size = SIZEOF(.geomtext);
+ASSERT(SIZEOF(.geomtext) <= 0x1100, "the geometry set-up overlay is larger than its window ($E000-$F0FF)")
+/* The window: up to the multiply tables (fixed::SQ_NEG_LO). */
+ASSERT(SIZEOF(.aitext) <= 0x1100, "the AI overlay is larger than its window ($E000-$F0FF)")
+ASSERT(SIZEOF(.hudtext) <= 0x1100, "the HUD overlay is larger than its window ($E000-$F0FF)")
 __cocktext_start = ADDR(.cocktext);
 __cocktext_size = SIZEOF(.cocktext);
 
@@ -123,6 +138,7 @@ __stack = 0xD000;
 OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))
     FULL(ram)
+    FULL(hudblocks)
     FULL(boot)
     FULL(gap)
     FULL(aiload)

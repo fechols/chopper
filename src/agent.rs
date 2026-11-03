@@ -211,7 +211,7 @@ impl Agent {
 
     /// Position, texels.
     #[inline(always)]
-    fn at(&self) -> (i16, i16) {
+    pub fn at(&self) -> (i16, i16) {
         ((self.u >> 8) as i16, (self.v >> 8) as i16)
     }
 

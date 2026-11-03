@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run the MODE 7 PRG in a 6502 interpreter with just enough C64 around it: a REU (1764 registers,
 fixed-address control, length left at 1, 512 KiB wrap) over the baked image, the raster counter, CIA
-timers counting at 1/64 of the CPU clock (64 MHz turbo), colour RAM. No video, no IRQs.
+timers counting at 1/64 of the CPU clock (64 MHz turbo), colour RAM, and the VIC's raster interrupt
+(the HUD's multiplexer, `asm/hud.S`). No video.
 
 Every frame it shows (a `$DD00` bank flip) is checked byte for byte against the host renderer
 (`target/release/chopper frame`), and the floor's 6502 cycles and I/O writes are reported. Pattern:
@@ -21,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from native_cpu import Cpu, KernelError  # noqa: E402
+from native_cpu import B, I, U, Cpu, KernelError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = 0xCA80
@@ -30,6 +31,9 @@ AGENT_BYTES = 36
 SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
 SCREEN = 0x5C00     # layout::BUFFERS[0].screen
+HUD = 0x8B00        # hud::PAGE: READY, FRONT, NEXT, BACK, the lock state (4), the tables from +$10
+HUD_BACK, HUD_LOCK, HUD_BUF, HUD_TABLE = HUD + 3, HUD + 4, HUD + 0x10, 4 * 27
+HUD_SLOTS = [0x5A80, 0x5AC0, 0x5B00, 0x5B40, 0x5B80, 0x5BC0, 0x7F40, 0x7F80, 0x7FC0]
 TURBO = 64          # CPU cycles per Phi2 tick
 LINE_CYCLES = 65 * TURBO
 LINES = 263
@@ -127,6 +131,8 @@ class C64(Cpu):
         self.watch = []   # (cycles, io_writes, dmas) at each CIA 1 stopwatch start/stop
         self.wait_cycles = 0
         self.last_d012 = None
+        self.raster = 0
+        self.irqs = 0
 
     def t(self):
         return self.cycles // TURBO
@@ -164,6 +170,9 @@ class C64(Cpu):
                 if address == 0xDD00:
                     self.io[0xD00] = value
                 return
+            if address == 0xD019:
+                self.io[0x019] &= ~value & 0xFF   # acknowledge
+                return
             if 0xDF00 <= address < 0xDF10:
                 self.regs[address & 0xF] = value
                 if 0xDF04 <= address <= 0xDF06:
@@ -177,6 +186,25 @@ class C64(Cpu):
                 self.check_vic()
             return
         self.mem[address] = value
+
+    def poll_irq(self):
+        """The raster interrupt: latch it when the beam reaches the compare line, take it when enabled and
+        the I flag is clear."""
+        line = (self.cycles // LINE_CYCLES) % LINES
+        if line != self.raster:
+            compare = self.io[0x012] | (self.io[0x011] & 0x80) << 1
+            # (Every line the beam passed since the last poll: a DMA can stall the CPU over a line.)
+            if (compare - self.raster) % LINES <= (line - self.raster) % LINES and compare != self.raster:
+                self.io[0x019] |= 1
+            self.raster = line
+        if self.io[0x019] & self.io[0x01A] & 1 and not self.p & I:
+            self.push(self.pc >> 8)
+            self.push(self.pc & 0xFF)
+            self.push((self.p | U) & ~B)
+            self.p |= I
+            self.pc = self.mem[0xFFFE] | self.mem[0xFFFF] << 8
+            self.cycles += 7
+            self.irqs += 1
 
     def check_vic(self):
         # In VIC banks 0 and 2 the VIC sees the character ROM at $1000-$1FFF of the bank, not RAM: a screen
@@ -248,13 +276,13 @@ def host_agent(reu, tick):
         return out.read_bytes()
 
 
-def host_frame(reu, tick, doubled):
+def host_frame(reu, tick, doubled, lock):
     exe = ROOT / 'target/release/chopper.exe'
     if not exe.exists():
         exe = ROOT / 'target/release/chopper'
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / 'f'
-        cmd = [str(exe), 'frame', '--reu', str(reu), '--tick', str(tick), '--out', str(out)]
+        cmd = [str(exe), 'frame', '--reu', str(reu), '--tick', str(tick), '--out', str(out), '--lock', lock.hex()]
         if doubled:
             cmd.append('--doubled')
         subprocess.run(cmd, check=True, capture_output=True)
@@ -287,6 +315,7 @@ def main():
     cpu.push(0xFE)
 
     failures, checked, done = 0, 0, 0
+    lock_before = bytes([0xFF, 0, 0, 0])
     steps = 0
     low_sp = SOFT_STACK_END
     pending = None
@@ -301,6 +330,7 @@ def main():
             cpu.mem[AGENT + len(start):AGENT + len(start) + 4] = (args.start + args.leap).to_bytes(4, 'little')
             start = None
         n_watch = len(cpu.watch)
+        cpu.poll_irq()
         cpu.step()
         # The soft stack pointer (__rc0/__rc1) at each JSR, once it is set up (not mid-update).
         if cpu.mem[cpu.pc] == 0x20 and cpu.mem[3] >= 0xC0:
@@ -315,18 +345,27 @@ def main():
             modes.append(cpu.mem[STATUS + 7] & 1)
         elif k == 0 and cpu.mem[STATUS] == 0xC1:
             done += 1
-            pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3])
+            pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3], lock_before)
             if done == args.doubled_after:
                 cpu.mem[STATUS + 7] = 1
+        elif k == 1 and not pending:
+            # A frame starts: its HUD lock-on carries on from this (the host frame starts from it too).
+            lock_before = bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
         elif k == 1 and pending:
-            ((c0, io0, d0), (c1, io1, d1), doubled, (g0, _, _), (g1, _, _)) = pending
+            ((c0, io0, d0), (c1, io1, d1), doubled, (g0, _, _), (g1, _, _), lock) = pending
             pending = None
+            lock_before = bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
             checked += 1
             st = cpu.mem[STATUS:STATUS + 23]
             tick = st[2] | st[3] << 8 | st[21] << 16 | st[22] << 24
             # The bitmap, then screen RAM and colour RAM (the cockpit's cells have their own colours).
-            got = bytes(cpu.mem[BUFFERS[0]:BUFFERS[0] + 8000]) + bytes(cpu.mem[SCREEN:SCREEN + 1000]) +                 bytes(c & 15 for c in cpu.io[0x800:0xBE8])
-            want = host_frame(args.reu, tick, doubled)
+            got = bytes(cpu.mem[BUFFERS[0]:BUFFERS[0] + 8000]) + bytes(cpu.mem[SCREEN:SCREEN + 1000]) + \
+                bytes(c & 15 for c in cpu.io[0x800:0xBE8])
+            # The HUD: the table the frame wrote, the sprite blocks, the lock state after it.
+            back = HUD_BUF + cpu.mem[HUD_BACK]
+            got += bytes(cpu.mem[back:back + HUD_TABLE]) + b''.join(bytes(cpu.mem[a:a + 64]) for a in HUD_SLOTS) + \
+                bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
+            want = host_frame(args.reu, tick, doubled, lock)
             bad = sum(a != b for a, b in zip(got, want))
             dmas = d1 - d0
             print(f'frame {checked}: tick {tick}, {"doubled" if doubled else "full"}: {bad} mismatched bytes; '
@@ -341,6 +380,9 @@ def main():
                 bad += 1
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
+                if i >= 10000:
+                    print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    continue
                 if i >= 8000:
                     what = 'screen RAM' if i < 9000 else 'colour RAM'
                     cell = (i - 8000) % 1000
@@ -355,7 +397,7 @@ def main():
         raise SystemExit('the soft stack reached the static frames')
     if failures:
         raise SystemExit(f'{failures} frames differ from the host')
-    print(f'{checked} frames match the host')
+    print(f'{checked} frames match the host ({cpu.irqs} raster IRQs)')
 
 
 if __name__ == '__main__':

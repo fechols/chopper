@@ -19,7 +19,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, HEADER, MAGIC, OVERLAY_COCKPIT, OVERLAYS, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_GEOM, OVERLAY_HUD, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -57,12 +57,32 @@ unsafe extern "C" {
     fn geo_draw(band: u8);
     /// `asm/floor.S`: CIA 2 ticks for 20,480 cycles.
     fn turbo_probe() -> u16;
+    /// `asm/hud.S`: the HUD's raster IRQ (`chopper::hud`), and `cli`.
+    fn hud_irq();
+    fn hud_irq_enable();
+}
+
+/// This build's stamp (target-c64/build.rs): `chopper bake --elf` copies it into the image's header
+/// with the REU overlays, and the boot waits for an image that has it.
+#[unsafe(no_mangle)]
+#[used]
+pub static CHOPPER_BUILD: u32 = stamp(env!("CHOPPER_BUILD"));
+
+const fn stamp(s: &str) -> u32 {
+    let b = s.as_bytes();
+    let (mut v, mut i) = (0u32, 0);
+    while i < b.len() {
+        v = v.wrapping_mul(10).wrapping_add((b[i] - b'0') as u32);
+        i += 1;
+    }
+    v
 }
 
 unsafe extern "C" {
-    /// target-c64/link.ld: the AI overlay (`.text.ai`, run at `WORK`) and where the PRG loads it.
-    static __aitext_load_start: u8;
+    /// target-c64/link.ld: the REU overlays' sizes (`.text.ai`, `.text.hud`, run at `WORK`).
     static __aitext_size: u8;
+    static __hudtext_size: u8;
+    static __geomtext_size: u8;
     /// The cockpit overlay (`.text.cockpit`, run and loaded at `$A000`).
     static __cocktext_start: u8;
     static __cocktext_size: u8;
@@ -81,8 +101,8 @@ impl chopper::brain::Reu for Senses<'_> {
     }
 }
 
-fn ai_overlay() -> (u16, u16) {
-    (&raw const __aitext_load_start as u16, &raw const __aitext_size as u16)
+fn overlay_sizes() -> (u16, u16, u16) {
+    (&raw const __aitext_size as u16, &raw const __hudtext_size as u16, &raw const __geomtext_size as u16)
 }
 
 /// NTSC: 263 lines of 65 cycles.
@@ -217,9 +237,11 @@ fn wait_turbo() -> u16 {
 #[inline(always)]
 fn wait_image(c: &mut C64) {
     let mut header = [0u8; 10];
+    let mut build = [0u8; 4];
     loop {
         hw::read_into(c, HEADER, BOUNCE, &mut header);
-        if &header[..8] == MAGIC && u16::from_le_bytes([header[8], header[9]]) == PACKAGE_VERSION {
+        hw::read_into(c, HEADER + H_BUILD, BOUNCE, &mut build);
+        if &header[..8] == MAGIC && u16::from_le_bytes([header[8], header[9]]) == PACKAGE_VERSION && u32::from_le_bytes(build) == unsafe { read_volatile(&raw const CHOPPER_BUILD) } {
             return;
         }
         poke(0xD020, peek(0xD020).wrapping_add(1));
@@ -239,7 +261,6 @@ fn video_init(c: &mut C64) {
     let (at, size) = cockpit_overlay();
     hw::fetch(c, OVERLAY_COCKPIT, at, size);
     cockpit::panel(c);
-    poke(0xD015, 0);
     poke(0xD020, 0);
     poke(0xD021, COLORS[0]);
     poke(0xDD02, peek(0xDD02) | 3);
@@ -258,9 +279,7 @@ fn boot(c: &mut C64) -> u16 {
     let probes = wait_turbo();
     hw::init(c);
     wait_image(c);
-    // The AI overlay's code to the REU, before asm/audio.S reuses the load images' RAM.
-    let (load, size) = ai_overlay();
-    hw::stash(c, load, OVERLAYS, size);
+    // The cockpit overlay's code to the REU, before asm/audio.S reuses the load images' RAM.
     let (load, size) = cockpit_overlay();
     hw::stash(c, load, OVERLAY_COCKPIT, size);
     // The frame clock starts with the sound, so the flight's time is the sound's (`agent`): CIA 2 timer
@@ -284,6 +303,24 @@ fn boot(c: &mut C64) -> u16 {
             poke(TILES + level as u16 * 256 + i as u16, floor::tile_bank(level, i & 15, i >> 4));
         }
     }
+    // The HUD: hires sprites in light green in front of the view, multiplexed by asm/hud.S from an
+    // empty table until the first frame's is ready.
+    poke(0xD015, 0);
+    poke(0xD017, 0);
+    poke(0xD01B, 0);
+    poke(0xD01C, 0);
+    poke(0xD01D, 0);
+    for k in 0..8 {
+        poke(0xD027 + k, chopper::hud::COLOUR);
+    }
+    chopper::hud::init(c);
+    let vector = hud_irq as usize as u16;
+    poke16(0xFFFE, vector);
+    poke(0xD012, chopper::hud::TOP_LINE);
+    poke(0xD011, peek(0xD011) & 0x7F);
+    poke(0xD019, 0xFF);
+    poke(0xD01A, 0x01);
+    unsafe { hud_irq_enable() };
     probes
 }
 
@@ -315,7 +352,7 @@ pub extern "C" fn main() -> i16 {
     let agent = unsafe { &mut *(AGENT as *mut Agent) };
     *agent = Agent::new();
     unsafe { write_volatile(CLOCK as *mut u32, seen as u32) };
-    let (_, overlay) = ai_overlay();
+    let (ai_size, hud_size, geom_size) = overlay_sizes();
     let (cockpit_at, cockpit_size) = cockpit_overlay();
     let gauges = unsafe { &mut *(GAUGES as *mut [u8; cockpit::gauge::COUNT]) };
     *gauges = [0xFF; cockpit::gauge::COUNT];
@@ -339,21 +376,29 @@ pub extern "C" fn main() -> i16 {
         // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry, the bands.
         stopwatch_start();
         // The agent catches up with the clock, from its overlay over the (spent) triangles at WORK.
-        hw::fetch(c, OVERLAYS, WORK, overlay);
+        hw::fetch(c, OVERLAY_AI, WORK, ai_size);
         agent.fly(&mut Senses(c), clock);
         let (cam, _yaw) = agent.camera();
         let t = agent.t;
         // The gauges whose readings changed, from their overlay over the (spent) band state.
         hw::fetch(c, OVERLAY_COCKPIT, cockpit_at, cockpit_size);
         cockpit::update(c, agent, gauges);
+        // The HUD: the targets read (cockpit overlay), the sprites placed (HUD overlay, over the AI's), the
+        // shapes and the IRQ's table written (cockpit overlay).
+        chopper::hud::prepare(c);
+        hw::fetch(c, OVERLAY_HUD, WORK, hud_size);
+        chopper::hud::build(c, agent, &cam);
+        chopper::hud::finish(c);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };
         poke16(STATUS + status::SETUP_US, stopwatch_stop());
         // Geometry: cull, transform and sort into the depth buckets, then file by first band.
         stopwatch_start();
-        work.clear();
+        // The grids' set-up from its overlay, then the window is the frame's geometry again.
+        hw::fetch(c, OVERLAY_GEOM, WORK, geom_size);
         geom::walk_args(c, WALK_ARGS, &View { cam, pop: peek(STATUS + status::POP) });
+        work.clear();
         unsafe {
             geo_walk();
             geo_bin();
@@ -395,6 +440,8 @@ pub extern "C" fn main() -> i16 {
             last = now;
         }
         unsafe { floor_end() };
+        // The frame is on screen: its HUD table goes up at the next top-border IRQ.
+        poke(chopper::hud::READY, 1);
         render += stopwatch_stop().wrapping_sub(last) as u32;
         poke16(STATUS + status::RENDER_US, (render >> 2) as u16);
         poke(STATUS + status::TRIS, peek(GEO_ARGS + geo_args::TRIS));

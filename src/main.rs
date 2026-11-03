@@ -1,9 +1,11 @@
 //! Host tools:
 //!
-//! - `chopper bake [OUT]`: the REU image (`dist/chopper.reu`).
-//! - `chopper frame [--reu R] [--tick N] [--doubled] [--out O]`: autopilot frame `tick` as the C64 draws
-//!   it (`O.png`, and `O.bin`, what `tools/emu.py` compares: the 8,000 bitmap bytes, then screen RAM
-//!   and colour RAM, 1,000 bytes each).
+//! - `chopper bake [OUT] [--elf E]`: the REU image (`dist/chopper.reu`), with the REU overlays and build
+//!   stamp of the C64 build `E` (`dist/chopper.elf`): bake after building the C64 program.
+//! - `chopper frame [--reu R] [--tick N] [--doubled] [--lock HEX] [--out O]`: autopilot frame `tick` as
+//!   the C64 draws it, HUD included (`O.png`, and `O.bin`, what `tools/emu.py` compares: the 8,000
+//!   bitmap bytes, screen RAM and colour RAM, 1,000 bytes each, then the HUD's table, sprite blocks and
+//!   lock state; `--lock` is the lock state before the frame).
 //! - `chopper map [--out O] [--level K]`: the ground map (one pixel per texel, 4 pixels per byte decoded).
 //! - `chopper flight [--out DIR] [--every N] [--frames K]`: a strip of autopilot frames as PNGs, with the
 //!   floor's DMA and run counts.
@@ -31,8 +33,13 @@ fn num(args: &[String], name: &str, default: f32) -> f32 {
 }
 
 fn bake(args: &[String]) -> Result<(), String> {
-    let out = PathBuf::from(args.get(1).cloned().unwrap_or("dist/chopper.reu".into()));
-    let image = package::bake(&world::generate(SEED));
+    let out = PathBuf::from(args.get(1).filter(|a| !a.starts_with("--")).cloned().unwrap_or("dist/chopper.reu".into()));
+    let mut image = package::bake(&world::generate(SEED));
+    let elf = arg(args, "--elf").unwrap_or("dist/chopper.elf".into());
+    match std::fs::read(&elf) {
+        Ok(e) => package::install_overlays(&mut image, &e).map_err(|err| format!("{elf}: {err}"))?,
+        Err(_) => eprintln!("{elf}: not found: the image has no REU overlays (build the C64 program first)"),
+    }
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -46,12 +53,28 @@ fn frame(args: &[String]) -> Result<(), String> {
     let tick = num(args, "--tick", 0.0) as u32;
     let doubled = args.iter().any(|a| a == "--doubled");
     let out = PathBuf::from(arg(args, "--out").unwrap_or("output/frame".into()));
-    let (m, st) = package::render(&reu, tick, doubled);
+    let lock = match arg(args, "--lock") {
+        Some(h) => {
+            let b: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0)).collect();
+            [b[0], b[1], b[2], b[3]]
+        }
+        None => [chopper::hud::NONE, 0, 0, 0],
+    };
+    let (m, st) = package::render_from(&reu, tick, doubled, lock);
     let buf = BUFFERS[0];
-    png::save_wide(&out.with_extension("png"), 160, &m.decode(buf, COLORS[0]))?;
+    let mut rgb = m.decode(buf, COLORS[0]);
+    let back = m.ram[chopper::hud::BACK as usize];
+    chopper::hud::composite(&m, back, &mut rgb);
+    png::save_wide(&out.with_extension("png"), 160, &rgb)?;
     let mut bin = m.ram[buf.bitmap as usize..buf.bitmap as usize + 8000].to_vec();
     bin.extend_from_slice(&m.ram[buf.screen as usize..buf.screen as usize + 1000]);
     bin.extend(m.color_ram[..1000].iter().map(|c| c & 15));
+    // The HUD: the table written, every sprite block, the lock state after the frame.
+    bin.extend_from_slice(&m.ram[(chopper::hud::BUF + back as u16) as usize..][..chopper::hud::TABLE]);
+    for a in chopper::hud::SLOT_ADDR {
+        bin.extend_from_slice(&m.ram[a as usize..a as usize + 64]);
+    }
+    bin.extend_from_slice(&m.ram[chopper::hud::LOCK_STATE as usize..][..chopper::hud::LOCK_BYTES]);
     std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
         "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
@@ -102,7 +125,9 @@ fn flight(args: &[String]) -> Result<(), String> {
         for doubled in [false, true] {
             let (m, st) = package::render(&reu, tick, doubled);
             let name = format!("t{tick:05}{}", if doubled { "d" } else { "" });
-            png::save_wide(&dir.join(format!("{name}.png")), 160, &m.decode(BUFFERS[0], COLORS[0]))?;
+            let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
+            chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
+            png::save_wide(&dir.join(format!("{name}.png")), 160, &rgb)?;
             println!("{name}: {} DMAs, {} I/O writes, {} runs ({} ground)", st.dmas, st.io_writes, st.spans, st.ground_spans);
         }
     }

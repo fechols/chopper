@@ -136,6 +136,25 @@ view (talonhd's raster-IRQ multiplexer, extended to free X/Y positions with a so
 | Lock-on diamond | the seeker reticle around the boresight; when a target enters it, the missiles arm and the diamond moves onto the target, closes in while the lock builds, then shows `LOCK` |
 | Launch cue | `MSL` flashing when a SAM is in the air toward you |
 
+## Code overlays and scheduling
+
+The C64 has little room for code beside the frame buffer and the renderer, so most game logic lives in
+**REU overlays**:
+- **Where the code comes from:** `chopper bake --elf` copies each overlay's code from the C64 build's ELF into the REU, with the build's stamp. The PRG only starts with an image baked from its own build.
+- **Where it runs:** each overlay is DMA'd into a window over memory that is spent at that point in the frame. The main window is `$E000-$F0FF`, over the previous frame's triangles, during the set-up.
+- **Shared helpers stay resident:** the projection and HUD placement maths.
+
+Two kinds of overlay:
+
+| Kind | When | What |
+|---|---|---|
+| Every frame | in order, each frame's set-up | work the frame's picture depends on: the flight's catch-up (the camera), the cockpit gauges, placing the HUD's markers, the grids' set-up for the view |
+| Round-robin | one per frame, in turn | work that can be a frame or two stale. Enemies: **sense** (line of sight, radar, ranges), **decide** (each role's decision tree), **act** (aim, fire, spawn). Missions: objectives and waves. HUD: choosing the lock-on target. |
+
+- **Why round-robin:** only one slow overlay loads per frame, so both the REU DMA and the CPU cost of the game logic are spread over frames. This is talonhd's scheme for its AI phases.
+- **Overlay size:** each is at most 4 KB (its window).
+- **Timing:** their results carry a tick stamp, so the every-frame code can extrapolate.
+
 ## Mission data (in the REU)
 
 - **Briefing:** text, in screen codes.

@@ -30,6 +30,11 @@ pub fn bake(world: &World) -> Vec<u8> {
     let brain = crate::goap::compile();
     reu[AI_TREES as usize..][..brain.len()].copy_from_slice(&brain);
     crate::instruments::install(&mut reu, &crate::instruments::bake());
+    for (k, b) in crate::hud::art::shapes().iter().enumerate() {
+        reu[HUD_SHAPES as usize + k * 64..][..64].copy_from_slice(b);
+    }
+    let targets = crate::hud::art::targets(world);
+    reu[HUD_TARGETS as usize..][..targets.len()].copy_from_slice(&targets);
     let hazard = crate::goap::hazard_map(world);
     reu[HAZARD as usize..][..hazard.len()].copy_from_slice(&hazard);
     let dlt = crate::digital::ROTOR;
@@ -61,6 +66,21 @@ pub fn setup(m: &mut Machine, buf: Buffer) {
     m.fill(layout::COLOR_RAM, layout::CELLS, COLORS[3]);
     m.fill(buf.bitmap, VIEW_BANDS * layout::ROW_STRIDE, floor::SKY_BYTE);
     crate::cockpit::panel(m);
+}
+
+/// Copy the C64 build's REU overlays and its build stamp into an image (`chopper bake --elf`): the PRG
+/// only runs with an image baked from its own ELF.
+pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
+    for (name, at) in [(".aitext", OVERLAY_AI), (".hudtext", OVERLAY_HUD), (".geomtext", OVERLAY_GEOM)] {
+        let code = crate::elf::section(elf, name)?;
+        if code.len() as u32 > OVERLAY_MAX {
+            return Err(format!("{name}: {} bytes, more than its window", code.len()));
+        }
+        reu[at as usize..][..code.len()].copy_from_slice(code);
+    }
+    let stamp = crate::elf::symbol(elf, "CHOPPER_BUILD", 4)?;
+    reu[(HEADER + H_BUILD) as usize..][..4].copy_from_slice(stamp);
+    Ok(())
 }
 
 /// What the host's floor did (for the frame report).
@@ -123,12 +143,24 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
 
 /// Frame `tick` of the autopilot flight in buffer 0 of a fresh model of `reu`.
 pub fn render(reu: &[u8], tick: u32, doubled: bool) -> (Machine, FloorStats) {
+    render_from(reu, tick, doubled, [crate::hud::NONE, 0, 0, 0])
+}
+
+/// [`render`], the HUD's lock-on carried on from `lock` (`hud::LOCK_STATE` before the frame: the lock
+/// builds over the frames shown, so the C64's state before a frame is what this frame's follows from).
+pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::LOCK_BYTES]) -> (Machine, FloorStats) {
+    use crate::hw::Hw;
     let mut m = Machine::new(reu);
     setup(&mut m, BUFFERS[0]);
     let agent = crate::agent::at(reu, tick);
     // The gauges: all drawn (the C64 redraws only those that changed, to the same bytes).
     crate::cockpit::update(&mut m, &agent, &mut [0xFF; crate::cockpit::gauge::COUNT]);
     let (cam, _yaw) = agent.camera();
+    crate::hud::init(&mut m);
+    for (i, &b) in lock.iter().enumerate() {
+        m.poke(crate::hud::LOCK_STATE + i as u16, b);
+    }
+    crate::hud::update(&mut m, &agent, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)

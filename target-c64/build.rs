@@ -5,7 +5,7 @@ fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let compiler = env::var("MOS_CLANG").unwrap_or_else(|_| "mos-c64-clang".into());
-    for name in ["startup", "reu", "floor", "poly", "tri", "fixed", "geom", "spans", "blit", "audio"] {
+    for name in ["startup", "reu", "floor", "poly", "tri", "fixed", "geom", "spans", "blit", "audio", "hud"] {
         let source = root.join(format!("asm/{name}.S"));
         println!("cargo:rerun-if-changed={}", source.display());
         let object = out.join(format!("{name}.o"));
@@ -29,6 +29,13 @@ fn main() {
     let status = Command::new("python3").arg(&audit).args(&sources).status().expect("cannot run python3");
     assert!(status.success(), "branch audit failed");
     println!("cargo:rerun-if-changed=link.ld");
+    // A new build stamp whenever any source changes: `chopper bake --elf` copies it into the image with
+    // the REU overlays, and the PRG waits for an image with its own.
+    for dir in ["src", "../src"] {
+        println!("cargo:rerun-if-changed={}", root.join(dir).display());
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u32 | 1;
+    println!("cargo:rustc-env=CHOPPER_BUILD={stamp}");
     println!("cargo:rerun-if-env-changed=MOS_CLANG");
     // Pass -T to clang directly (not via -Wl) so it replaces the default script.
     println!("cargo:rustc-link-arg=-T");

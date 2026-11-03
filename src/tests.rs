@@ -820,3 +820,147 @@ fn the_attitude_gauge_banks_with_the_view() {
         assert_eq!(r > l, tilt > 0.0, "tick {}: roll {}: view horizon left {l} right {r}, gauge tilt {tilt}", a.t, a.roll);
     }
 }
+
+/// The packed HUD rows keep the multiplexer's timing (TALON HD's): at most 8 sprites a row, each row's
+/// IRQ at least 2 lines after the last, a channel reprogrammed only once its sprite has ended (`SPAN`)
+/// and its new sprite starting `LEAD` lines after the IRQ, every sprite inside the view.
+#[test]
+fn the_hud_rows_keep_the_multiplexer_timing() {
+    use crate::hud::{LEAD, MAX, ROW, ROWS, SPAN, Sprite, TABLE, TOP_LINE, Y_MAX, pack, row};
+    let mut rng = Rng(0x48_5544);
+    for _ in 0..2000 {
+        let n = 1 + rng.below(MAX as u32) as usize;
+        let mut list: Vec<Sprite> = (0..n).map(|k| Sprite { x: rng.below(344) as u16, y: 30 + rng.below(140) as u8, ptr: k as u8 }).collect();
+        let mut table = [0u8; TABLE];
+        let shown = pack(&mut list, &mut table) as usize;
+        assert!(shown <= n);
+        let rows: Vec<&[u8]> = table.chunks(ROW).take_while(|r| r[row::LINE] != 0).collect();
+        assert!(!rows.is_empty() && rows.len() <= ROWS && rows[0][row::LINE] == TOP_LINE);
+        let mut seen = std::collections::HashSet::new();
+        for (r, t) in rows.iter().enumerate() {
+            let line = t[row::LINE];
+            for c in 0..8 {
+                if t[row::EN] >> c & 1 == 0 {
+                    continue;
+                }
+                let (y, ptr) = (t[row::Y + c], t[row::PTR + c]);
+                assert!(y <= Y_MAX, "row {r} channel {c}: Y {y}");
+                let new = r == 0 || rows[r - 1][row::EN] >> c & 1 == 0 || rows[r - 1][row::Y + c] != y || rows[r - 1][row::PTR + c] != ptr;
+                if new {
+                    assert!(y >= line + LEAD, "row {r} (IRQ {line}) channel {c}: Y {y}");
+                    if r > 0 && rows[r - 1][row::EN] >> c & 1 != 0 {
+                        assert!(rows[r - 1][row::Y + c] + SPAN <= line, "row {r}: channel {c} reprogrammed while its sprite shows");
+                    }
+                    seen.insert(ptr);
+                }
+            }
+            if r > 0 {
+                assert!(line >= rows[r - 1][row::LINE] + 2);
+            }
+        }
+        assert_eq!(seen.len(), shown, "each shown sprite in one row");
+    }
+}
+
+/// The HUD's projection (16-bit, quarter texels) lands within a pixel or so of the 3D view's
+/// (`geom::project`).
+#[test]
+fn the_hud_projects_where_the_view_draws() {
+    use crate::geom::{Look, View, project};
+    use crate::hud::{Eye, NEAR, screen, to_camera};
+    let mut rng = Rng(0x0e1e_0001);
+    let mut checked = 0;
+    for _ in 0..500 {
+        let cam = camera_at(1024.0, 1024.0, 4.0 + rng.below(40) as f64, rng.next() as u16, rng.below(40) as i32 - 30, rng.below(61) as i32 - 30);
+        let (pu, pv, ph) = (900 + rng.below(250) as i16, 900 + rng.below(250) as i16, rng.below(30) as i16);
+        let c = to_camera(&Eye::new(&cam), [pu << 2, ph << 2, pv << 2]);
+        if c[2] < NEAR * 8 {
+            continue;
+        }
+        let (x, y) = screen(c);
+        let look = Look::new(&View { cam, pop: 0 });
+        let g = look.to_camera([(pu as i32 * 16 - (cam.u >> 4)) as i16, (ph as i32 * 16 - (cam.h as i32 >> 4)) as i16, (pv as i32 * 16 - (cam.v >> 4)) as i16]);
+        let (sx, sy) = project(g[0] as i16, g[1] as i16, g[2] as i16);
+        let (ex, ey) = (sx as f64 / 8.0, sy as f64 / 16.0);
+        // (Where it matters: on the view, and a little beyond its edges.)
+        if !(-40.0..360.0).contains(&ex) || !(-40.0..180.0).contains(&ey) {
+            continue;
+        }
+        // Two lines / 2.5 hires pixels: quarter texels and truncated rotations here, the reciprocal table
+        // and Q4 there, magnified for points near the camera.
+        assert!((x as f64 - ex).abs() <= 2.5 && (y as f64 - ey).abs() <= 2.0, "{cam:?} ({pu},{pv},{ph}): HUD ({x},{y}) view ({ex:.1},{ey:.1})");
+        checked += 1;
+    }
+    assert!(checked > 100, "{checked}");
+}
+
+/// A HUD on a model with one target at (1024, 900), 3 texels up: the frame's sprites and the lock state
+/// after `frames` frames 8 ticks apart, the camera at (1024, 800), 10 texels up, turned `yaw` (binary
+/// angle; 0 north) and level, the waypoint at (1024, 1200).
+fn hud_run(yaw: u16, frames: u32) -> (Machine, Vec<crate::hud::Sprite>) {
+    use crate::hud::*;
+    let mut reu = package().clone();
+    let t = crate::format::HUD_TARGETS as usize;
+    reu[t..t + 6].copy_from_slice(&[1, 0, 4, 132, 3, 3]);
+    let mut m = Machine::new(&reu);
+    init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.wu, a.wv) = (1024 << 8, 800 << 8, 10 << 8, 1024, 1200);
+    let cam = camera_at(1024.0, 800.0, 10.0, yaw, 0, 0);
+    for f in 0..frames {
+        a.t = 100 + 8 * f;
+        m.ram[READY as usize] = 0;
+        update(&mut m, &a, &cam);
+    }
+    let n = m.ram[S_COUNT as usize] as usize;
+    let list = (0..n)
+        .map(|i| {
+            let at = S_LIST as usize + 4 * i;
+            Sprite { x: m.ram[at] as u16 | (m.ram[at + 1] as u16) << 8, y: m.ram[at + 2], ptr: m.ram[at + 3] }
+        })
+        .collect();
+    (m, list)
+}
+
+/// The seeker locks on by itself: a target held in the diamond reticle locks after `LOCK_TICKS`, the
+/// diamond on it and `LOCK` under it; a target outside the reticle gets a box but no lock.
+#[test]
+fn the_seeker_locks_onto_a_target_in_the_reticle() {
+    use crate::hud::*;
+    let (m, list) = hud_run(0, 20);
+    assert_eq!((m.ram[LOCK_STATE as usize], m.ram[LOCK_STATE as usize + 1]), (0, LOCK_TICKS));
+    assert_eq!(m.ram[(S_SHAPES + slot::DIAMOND as u16) as usize], shape::LOCKED);
+    assert!(list.iter().any(|s| s.ptr == pointer(slot::LOCK)), "LOCK shown");
+    assert!(list.iter().any(|s| s.ptr == pointer(slot::BOX)), "the target boxed");
+    // Part way: still closing in.
+    let (m, _) = hud_run(0, 6);
+    let ticks = m.ram[LOCK_STATE as usize + 1];
+    assert!(ticks > 0 && ticks < LOCK_TICKS, "{ticks}");
+    assert_ne!(m.ram[(S_SHAPES + slot::DIAMOND as u16) as usize], shape::LOCKED);
+    // Turned 20° away: boxed, not locked; the diamond waits at the boresight.
+    let (m, list) = hud_run(20 * 182, 20);
+    assert_eq!(m.ram[LOCK_STATE as usize], NONE);
+    assert!(list.iter().any(|s| s.ptr == pointer(slot::BOX)));
+    assert_eq!(m.ram[(S_SHAPES + slot::DIAMOND as u16) as usize], shape::DIAMOND);
+}
+
+/// The waypoint caret sits on the waypoint when it is in view; when it is behind or off to a side, an
+/// arrow at the view's edge points toward it.
+#[test]
+fn the_waypoint_caret_tracks_the_waypoint() {
+    use crate::hud::*;
+    // Ahead (north): the caret, near the view's centre column.
+    let (m, list) = hud_run(0, 1);
+    assert_eq!(m.ram[(S_SHAPES + slot::CARET as u16) as usize], shape::CARET);
+    let caret = list.iter().find(|s| s.ptr == pointer(slot::CARET)).unwrap();
+    assert!((caret.x as i32 + 12 - 24 - 160).abs() <= 2, "caret at x {}", caret.x);
+    // Facing (just off) south: behind, the arrow at the left or right edge.
+    let (m, list) = hud_run(0x8000 + 182, 1);
+    let s = m.ram[(S_SHAPES + slot::CARET as u16) as usize];
+    assert!(s == shape::ARROW + 2 || s == shape::ARROW + 6, "shape {s}");
+    let arrow = list.iter().find(|s| s.ptr == pointer(slot::CARET)).unwrap();
+    assert!(arrow.x < 60 || arrow.x > 280, "arrow at x {}", arrow.x);
+    // Facing east: the waypoint (north) is to the left.
+    let (m, _) = hud_run(0x4000, 1);
+    assert_eq!(m.ram[(S_SHAPES + slot::CARET as u16) as usize], shape::ARROW + 6);
+}
