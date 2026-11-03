@@ -173,6 +173,9 @@ const _: () = {
 };
 pub const NEAR_LEN: u16 = 1 + 2 * NEAR_MAX as u16;
 pub const PHASE: u16 = NEAR + NEAR_LEN;
+/// u8: whose turn this frame is, the war's page (0) or the gauges' update (1): they take turns, so each
+/// frame pays for one (and the war keeps its pace in time as the frame rate rises).
+pub const TURN: u16 = PHASE + 1;
 pub const MOVE: u8 = 0;
 pub const DECIDE: u8 = 1;
 pub const FIGHT: u8 = 2;

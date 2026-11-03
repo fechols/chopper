@@ -55,7 +55,7 @@ DATA = [
     (0xC800, 0xC910, 'BOUNCE'),
     (0xC910, 0xCA70, 'CELL_RAM (set-up: combat::OBJLIST)'),
     (0xCA80, 0xCA9B, 'STATUS'),
-    (0xCAA0, 0xCAEE, 'AGENT, CLOCK, GAUGES, NEAR, PHASE'),
+    (0xCAA0, 0xCAEF, 'AGENT, CLOCK, GAUGES, NEAR, PHASE, TURN'),
     (0xCB00, 0xCD80, 'llvm-mos static frames (.noinit region)'),
     (0xCD80, 0xD000, 'soft stack'),
     (0xD000, 0xE000, 'I/O (RAM beneath: free)'),

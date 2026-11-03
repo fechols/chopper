@@ -12,10 +12,10 @@ pub const MAGIC: &[u8; 4] = b"CHSN";
 pub const RAM: u8 = 0;
 pub const REU: u8 = 1;
 
-/// C64 RAM carried across frames: the agent, its clock, the gauges' frames and the units near; the HUD's
-/// lock state.
+/// C64 RAM carried across frames: the agent, its clock, the gauges' frames, the units near, the war's
+/// phase and turn; the HUD's lock state.
 pub const STATE_RAM: &[(u16, u16)] = &[
-    (layout::AGENT, crate::world_sim::PHASE + 1 - layout::AGENT),
+    (layout::AGENT, crate::world_sim::TURN + 1 - layout::AGENT),
     (crate::hud::LOCK_STATE, crate::hud::LOCK_BYTES as u16),
     (crate::combat::STATE, crate::combat::STATE_LEN),
     (crate::combat::FX, crate::combat::FX_MAX as u16 * crate::combat::FX_ENTRY),

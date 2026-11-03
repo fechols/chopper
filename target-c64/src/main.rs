@@ -384,6 +384,7 @@ pub extern "C" fn main() -> i16 {
     *gauges = [0xFF; cockpit::gauge::COUNT];
     poke(chopper::world_sim::NEAR, 0);
     poke(chopper::world_sim::PHASE, chopper::world_sim::MOVE);
+    poke(chopper::world_sim::TURN, 0);
     chopper::combat::init(c);
 
     c.fill(STATUS, status::SIZE, 0);
@@ -420,16 +421,21 @@ pub extern "C" fn main() -> i16 {
         agent.fly(&mut Senses(c), clock);
         let (cam, _yaw) = agent.camera();
         let t = agent.t;
-        // The war: a page of units, its move, decide or fight phase (each its own overlay, over the AI's).
-        let (ovl, size) = match peek(chopper::world_sim::PHASE) {
-            chopper::world_sim::MOVE => (OVERLAY_WORLD, unsafe { &raw const __worldtext_size } as u16),
-            chopper::world_sim::DECIDE => (OVERLAY_WORLD3, unsafe { &raw const __world3text_size } as u16),
-            chopper::world_sim::DIRECT => (OVERLAY_WORLD4, unsafe { &raw const __world4text_size } as u16),
-            _ => (OVERLAY_WORLD2, unsafe { &raw const __world2text_size } as u16),
-        };
-        hw::fetch(c, ovl, WORK, size);
-        let (pu, pv) = agent.at();
-        chopper::world_sim::step_page(c, t as u16, pu, pv);
+        // The war and the gauges take turns (`world_sim::TURN`).
+        let turn = peek(chopper::world_sim::TURN);
+        poke(chopper::world_sim::TURN, turn ^ 1);
+        if turn == 0 {
+            // The war: a page of units, its move, decide or fight phase (each its own overlay, over the AI's).
+            let (ovl, size) = match peek(chopper::world_sim::PHASE) {
+                chopper::world_sim::MOVE => (OVERLAY_WORLD, unsafe { &raw const __worldtext_size } as u16),
+                chopper::world_sim::DECIDE => (OVERLAY_WORLD3, unsafe { &raw const __world3text_size } as u16),
+                chopper::world_sim::DIRECT => (OVERLAY_WORLD4, unsafe { &raw const __world4text_size } as u16),
+                _ => (OVERLAY_WORLD2, unsafe { &raw const __world2text_size } as u16),
+            };
+            hw::fetch(c, ovl, WORK, size);
+            let (pu, pv) = agent.at();
+            chopper::world_sim::step_page(c, t as u16, pu, pv);
+        }
         // The player's fight (combat overlay, its library over the spent band state): down, the autopilot
         // takes over again at home. Then the effects pass (its own overlay).
         hw::fetch(c, OVERLAY_COMBATLIB, chopper::layout::BAND_RAM, unsafe { &raw const __combatlibtext_size } as u16);
@@ -443,7 +449,9 @@ pub extern "C" fn main() -> i16 {
         poke(0xD020, if peek(chopper::combat::PLAYER + chopper::combat::player::FLASH) != 0 { 2 } else { 0 });
         // The gauges whose readings changed, from their overlay over the (spent) band state.
         hw::fetch(c, OVERLAY_COCKPIT, cockpit_at, cockpit_size);
-        cockpit::update(c, agent, gauges);
+        if turn != 0 {
+            cockpit::update(c, agent, gauges);
+        }
         // The HUD: the targets read (cockpit overlay), the sprites placed (HUD overlay, over the AI's), the
         // shapes and the IRQ's table written (cockpit overlay).
         chopper::hud::prepare(c);

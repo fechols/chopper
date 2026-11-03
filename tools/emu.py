@@ -287,12 +287,12 @@ def host_agent(reu, tick):
         return out.read_bytes()
 
 
-# The C64 state carried across frames (snapshot::STATE_RAM): the agent, its clock and the gauges; the
-# HUD's lock state.
+# The C64 state carried across frames (snapshot::STATE_RAM): the agent, its clock, the gauges, the units
+# near, the war's phase and turn (world_sim::TURN); the HUD's lock state.
 NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
 COMBAT, COMBAT_LEN = 0x8E84, 6 * 12 + 12    # combat::STATE, STATE_LEN: projectiles, the player's fight
 FX, FX_LEN = 0xB760, 8 * 10                 # combat::FX: the effects playing
-STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 1), (HUD + 4, 4), (COMBAT, COMBAT_LEN), (FX, FX_LEN)]
+STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 2), (HUD + 4, 4), (COMBAT, COMBAT_LEN), (FX, FX_LEN)]
 WAR, WAR_LEN = 116 << 16, 0x5022    # world_sim::STATE, STATE_LEN: the war in the REU
 BRAINS, BRAINS_LEN = 117 << 16, 0x0A00  # world_sim::BRAINS, BRAINS_LEN: the units' learned trees
 GAUGES = AGENT + AGENT_BYTES + 4
@@ -410,7 +410,7 @@ def main():
                 bytes(cpu.mem[HUD_LOCK:HUD_LOCK + LOCK_BYTES])
             # The state after the frame (the next one has not flown yet): the agent, the gauges.
             got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
-            got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 1]) + bytes(cpu.reu[WAR:WAR + WAR_LEN]) + \
+            got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 2]) + bytes(cpu.reu[WAR:WAR + WAR_LEN]) + \
                 bytes(cpu.reu[BRAINS:BRAINS + BRAINS_LEN]) + bytes(cpu.mem[COMBAT:COMBAT + COMBAT_LEN]) + \
                 bytes(cpu.mem[FX:FX + FX_LEN])
             want = host_frame(args.reu, state, doubled)
@@ -428,12 +428,12 @@ def main():
             cpu.wait_cycles = 0
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
-                if i >= 10688 + AGENT_BYTES + 7 + NEAR_LEN + 1:
-                    w = i - 10688 - AGENT_BYTES - 8 - NEAR_LEN
+                if i >= 10688 + AGENT_BYTES + 7 + NEAR_LEN + 2:
+                    w = i - 10688 - AGENT_BYTES - 9 - NEAR_LEN
                     print(f'  war byte ${w:04X} (unit {w // 32} byte {w % 32} below $4000): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10688:
-                    print(f'  state byte {i - 10688} (agent 0-47, gauges 48-54, near 55-79, phase 80): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    print(f'  state byte {i - 10688} (agent 0-47, gauges 48-54, near 55-79, phase 80, turn 81): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10000:
                     print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')

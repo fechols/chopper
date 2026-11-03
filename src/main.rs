@@ -92,7 +92,7 @@ fn frame(args: &[String]) -> Result<(), String> {
     bin.extend_from_slice(&m.ram[gauges..gauges + chopper::cockpit::gauge::COUNT]);
     // The war after the frame: the units near, then the page file.
     let near = chopper::world_sim::NEAR as usize;
-    bin.extend_from_slice(&m.ram[near..near + chopper::world_sim::NEAR_LEN as usize + 1]);
+    bin.extend_from_slice(&m.ram[near..=chopper::world_sim::TURN as usize]);
     let war = chopper::world_sim::STATE as usize;
     bin.extend_from_slice(&m.reu[war..war + chopper::world_sim::STATE_LEN as usize]);
     let brains = chopper::world_sim::BRAINS as usize;

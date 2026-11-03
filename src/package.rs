@@ -214,7 +214,12 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     let reu_now = m.reu.clone();
     agent.fly(&mut &reu_now[..], clock);
     let (pu, pv) = agent.at();
-    crate::world_sim::step_page(&mut m, agent.t as u16, pu, pv);
+    // The war and the gauges take turns (`world_sim::TURN`).
+    let turn = m.peek(crate::world_sim::TURN);
+    m.poke(crate::world_sim::TURN, turn ^ 1);
+    if turn == 0 {
+        crate::world_sim::step_page(&mut m, agent.t as u16, pu, pv);
+    }
     let (cam0, _) = agent.camera();
     if crate::combat::update(&mut m, &agent, &cam0) {
         agent.reset();
@@ -223,12 +228,19 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     for (i, b) in agent.to_bytes().iter().enumerate() {
         m.poke(layout::AGENT + i as u16, *b);
     }
-    // The gauges: all drawn (the C64 redraws only those that changed, to the same bytes).
-    for (i, b) in agent.to_bytes().iter().enumerate() {
-        m.poke(layout::AGENT + i as u16, *b);
-    }
+    // The gauges: all drawn (the C64 redraws only those that changed, to the same bytes): on the war's
+    // turn, as they were.
     let mut gauges = [0xFF; crate::cockpit::gauge::COUNT];
-    crate::cockpit::update(&mut m, &agent, &mut gauges);
+    if turn == 0 {
+        for (g, k) in gauges.iter_mut().enumerate() {
+            *k = m.peek(layout::GAUGES + g as u16);
+            if *k != 0xFF {
+                crate::cockpit::draw(&mut m, g, *k);
+            }
+        }
+    } else {
+        crate::cockpit::update(&mut m, &agent, &mut gauges);
+    }
     for (i, &g) in gauges.iter().enumerate() {
         m.poke(layout::GAUGES + i as u16, g);
     }
