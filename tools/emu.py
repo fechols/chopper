@@ -29,6 +29,7 @@ AGENT = 0xCAA0      # layout::AGENT (agent::Agent::BYTES), then CLOCK
 AGENT_BYTES = 36
 SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
+SCREEN = 0x5C00     # layout::BUFFERS[0].screen
 TURBO = 64          # CPU cycles per Phi2 tick
 LINE_CYCLES = 65 * TURBO
 LINES = 263
@@ -323,7 +324,8 @@ def main():
             checked += 1
             st = cpu.mem[STATUS:STATUS + 23]
             tick = st[2] | st[3] << 8 | st[21] << 16 | st[22] << 24
-            got = bytes(cpu.mem[BUFFERS[0]:BUFFERS[0] + 8000])
+            # The bitmap, then screen RAM and colour RAM (the cockpit's cells have their own colours).
+            got = bytes(cpu.mem[BUFFERS[0]:BUFFERS[0] + 8000]) + bytes(cpu.mem[SCREEN:SCREEN + 1000]) +                 bytes(c & 15 for c in cpu.io[0x800:0xBE8])
             want = host_frame(args.reu, tick, doubled)
             bad = sum(a != b for a, b in zip(got, want))
             dmas = d1 - d0
@@ -338,7 +340,12 @@ def main():
                 print(f'  agent differs from the host at tick {tick}: C64 {agent.hex()} host {want_agent.hex()}')
                 bad += 1
             failures += bad != 0
-            for i in [i for i in range(8000) if got[i] != want[i]][:8]:
+            for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
+                if i >= 8000:
+                    what = 'screen RAM' if i < 9000 else 'colour RAM'
+                    cell = (i - 8000) % 1000
+                    print(f'  {what} cell row {cell // 40} column {cell % 40}: C64 ${got[i]:02X} host ${want[i]:02X}')
+                    continue
                 row, col, line = i // 320, (i % 320) // 8, i % 8
                 print(f'  byte {i}: cell row {row} column {col} line {line} (y {row * 8 + line}): '
                       f'C64 ${got[i]:02X} host ${want[i]:02X}')

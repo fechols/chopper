@@ -2,7 +2,8 @@
 //!
 //! - `chopper bake [OUT]`: the REU image (`dist/chopper.reu`).
 //! - `chopper frame [--reu R] [--tick N] [--doubled] [--out O]`: autopilot frame `tick` as the C64 draws
-//!   it (`O.png`, and `O.bin`, the 8,000 bitmap bytes `tools/emu.py` compares).
+//!   it (`O.png`, and `O.bin`, what `tools/emu.py` compares: the 8,000 bitmap bytes, then screen RAM
+//!   and colour RAM, 1,000 bytes each).
 //! - `chopper map [--out O] [--level K]`: the ground map (one pixel per texel, 4 pixels per byte decoded).
 //! - `chopper flight [--out DIR] [--every N] [--frames K]`: a strip of autopilot frames as PNGs, with the
 //!   floor's DMA and run counts.
@@ -10,6 +11,8 @@
 //!   ticks (`agent::Agent::to_bytes`, what `tools/emu.py --start` pokes), or every `N`th tick traced.
 //! - `chopper brain`: the GOAP operators' plans and the baked tree's size.
 //! - `chopper pcm [--out O]`: the rotor sound decoded.
+//! - `chopper cockpit [--out DIR]`: contact sheets of every gauge's frames, the panel, and the tach's
+//!   spool curve measured from the sound.
 
 use chopper::format::COLORS;
 use chopper::layout::BUFFERS;
@@ -46,8 +49,10 @@ fn frame(args: &[String]) -> Result<(), String> {
     let (m, st) = package::render(&reu, tick, doubled);
     let buf = BUFFERS[0];
     png::save_wide(&out.with_extension("png"), 160, &m.decode(buf, COLORS[0]))?;
-    let bitmap = &m.ram[buf.bitmap as usize..buf.bitmap as usize + 8000];
-    std::fs::write(out.with_extension("bin"), bitmap).map_err(|e| e.to_string())?;
+    let mut bin = m.ram[buf.bitmap as usize..buf.bitmap as usize + 8000].to_vec();
+    bin.extend_from_slice(&m.ram[buf.screen as usize..buf.screen as usize + 1000]);
+    bin.extend(m.color_ram[..1000].iter().map(|c| c & 15));
+    std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
         "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
         if doubled { "doubled" } else { "full" },
@@ -158,6 +163,50 @@ fn brain() -> Result<(), String> {
     Ok(())
 }
 
+/// Every gauge frame as a contact sheet (drawn through `cockpit::draw` on a model, as the C64 does), and
+/// the panel with the gauges at rest.
+fn cockpit(args: &[String]) -> Result<(), String> {
+    use chopper::cockpit::{self, FRAMES, ROW, TALL, WIDE, gauge};
+    let dir = PathBuf::from(arg(args, "--out").unwrap_or("output/cockpit".into()));
+    let reu = package::bake(&world::generate(SEED));
+    let mut m = chopper::model::Machine::new(&reu);
+    package::setup(&mut m, BUFFERS[0]);
+    let spool = chopper::instruments::spool();
+    for (k, p) in spool.iter().enumerate() {
+        if k % 8 == 0 || k + 1 == spool.len() {
+            println!("tach frame {k:2}: {:5.1} s, rotor {p:5.1}%", ((k as u32) << cockpit::TACH_SHIFT) as f32 / 60.0);
+        }
+    }
+    for g in 0..gauge::COUNT {
+        let (w, h) = (WIDE[g] as usize * 4, TALL as usize * 8);
+        let per_row = 16usize;
+        let n = FRAMES[g] as usize;
+        let rows = n.div_ceil(per_row);
+        let sw = per_row * (w + 2);
+        let mut sheet = vec![[40u8, 40, 40]; sw * rows * (h + 2)];
+        for k in 0..n {
+            cockpit::draw(&mut m, g, k as u8);
+            let px = m.decode(BUFFERS[0], COLORS[0]);
+            let (ox, oy) = ((k % per_row) * (w + 2), (k / per_row) * (h + 2));
+            for y in 0..h {
+                for x in 0..w {
+                    sheet[(oy + y) * sw + ox + x] = px[(ROW as usize * 8 + y) * 160 + cockpit::COL[g] as usize * 4 + x];
+                }
+            }
+        }
+        let path = dir.join(format!("{}.png", gauge::NAMES[g].to_lowercase()));
+        png::save_wide(&path, sw, &sheet)?;
+        println!("{}: {n} frames", path.display());
+    }
+    let mut m = chopper::model::Machine::new(&reu);
+    package::setup(&mut m, BUFFERS[0]);
+    let a = chopper::agent::at(&reu, chopper::agent::LIFT + 3000);
+    cockpit::update(&mut m, &a, &mut [0xFF; gauge::COUNT]);
+    let px = m.decode(BUFFERS[0], COLORS[0]);
+    png::save_wide(&dir.join("panel.png"), 160, &px[cockpit::PANEL_ROW as usize * 8 * 160..])?;
+    Ok(())
+}
+
 /// The rotor sound decoded (`digital::decode`, signed 8-bit), the reference for tools/test_audio.py.
 fn pcm(args: &[String]) -> Result<(), String> {
     let out = PathBuf::from(arg(args, "--out").unwrap_or("output/rotor.pcm".into()));
@@ -180,6 +229,7 @@ fn main() -> Result<(), String> {
         Some("pcm") => pcm(&args),
         Some("agent") => agent(&args),
         Some("brain") => brain(),
-        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain".into()),
+        Some("cockpit") => cockpit(&args),
+        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR]".into()),
     }
 }

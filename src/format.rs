@@ -11,6 +11,9 @@
 //! | 87 / 88 / 89 | objects by grid cell / per-angle visibility lists / the scene block (`geom`, `scene`) |
 //! | 90-95 | sprites |
 //! | 96-106 | the rotor sound, DLT5 (`digital`) |
+//! | 107 | the AI: decision trees, hazard map (`brain`, `goap`) |
+//! | 108 | code overlays, stashed at boot (`OVERLAYS`) |
+//! | 109-114 | the cockpit: static panel, every gauge frame (`cockpit`, `instruments`) |
 //! | `$BFFF60`-`$D9C0FF` | not in the image: the rotor sound decoded to 8-bit PCM at boot |
 
 /// 16 MiB REU (C64 Ultimate).
@@ -26,7 +29,7 @@ pub const SEA_BANK: u8 = 85;
 
 /// Package version: the PRG refuses an image whose header carries another one (a PRG and REU from
 /// different builds). Bump it whenever this layout changes.
-pub const PACKAGE_VERSION: u16 = 2;
+pub const PACKAGE_VERSION: u16 = 3;
 
 /// Header: magic[8], version u16.
 pub const HEADER_BANK: u8 = 86;
@@ -129,8 +132,13 @@ const _: () = assert!((HAZARD_CELLS as u32) << HAZARD_SHIFT == crate::floor::MAP
 /// Outside the image.
 pub const OVERLAYS: u32 = 108 << 16;
 
+/// The cockpit (`cockpit`, baked by `instruments`): the static panel, then every frame of every gauge.
+pub const COCKPIT: u32 = 109 << 16;
+const _: () = assert!(OVERLAYS + 0x10000 <= COCKPIT);
+
 /// The image ends here: upload only this much.
-pub const IMAGE_END: u32 = AI_TREES + 0x10000;
+pub const IMAGE_END: u32 = (crate::cockpit::END + 0xFFFF) & !0xFFFF;
+const _: () = assert!(IMAGE_END <= AUDIO_PCM - HAAS);
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);
 

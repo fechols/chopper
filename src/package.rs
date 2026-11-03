@@ -29,6 +29,7 @@ pub fn bake(world: &World) -> Vec<u8> {
     reu[h + H_VERSION as usize..][..2].copy_from_slice(&PACKAGE_VERSION.to_le_bytes());
     let brain = crate::goap::compile();
     reu[AI_TREES as usize..][..brain.len()].copy_from_slice(&brain);
+    crate::instruments::install(&mut reu, &crate::instruments::bake());
     let hazard = crate::goap::hazard_map(world);
     reu[HAZARD as usize..][..hazard.len()].copy_from_slice(&hazard);
     let dlt = crate::digital::ROTOR;
@@ -51,26 +52,15 @@ pub fn bake(world: &World) -> Vec<u8> {
     reu
 }
 
-/// The cockpit panel's bytes (bands `VIEW_BANDS..25`), the same on both sides: brown with a light-blue
-/// rim along its top.
-pub fn panel_byte(band: u16, line: u16) -> u8 {
-    if band == VIEW_BANDS && line < 2 { 0x55 } else { 0xAA }
-}
-
-/// The C64's screen set-up on a model: colours, the panel, the view cleared to sky.
+/// The C64's screen set-up on a model: colours, the view cleared to sky, the cockpit's static panel
+/// (`cockpit::panel`, from the REU).
 pub fn setup(m: &mut Machine, buf: Buffer) {
     use crate::hw::Hw;
     m.poke(0xD021, COLORS[0]);
     m.fill(buf.screen, layout::CELLS, COLORS[1] << 4 | COLORS[2]);
     m.fill(layout::COLOR_RAM, layout::CELLS, COLORS[3]);
     m.fill(buf.bitmap, VIEW_BANDS * layout::ROW_STRIDE, floor::SKY_BYTE);
-    for band in VIEW_BANDS..layout::ROWS {
-        for col in 0..layout::COLS {
-            for line in 0..8 {
-                m.poke(buf.bitmap + band * layout::ROW_STRIDE + col * 8 + line, panel_byte(band, line));
-            }
-        }
-    }
+    crate::cockpit::panel(m);
 }
 
 /// What the host's floor did (for the frame report).
@@ -135,7 +125,10 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
 pub fn render(reu: &[u8], tick: u32, doubled: bool) -> (Machine, FloorStats) {
     let mut m = Machine::new(reu);
     setup(&mut m, BUFFERS[0]);
-    let (cam, _yaw) = crate::agent::at(reu, tick).camera();
+    let agent = crate::agent::at(reu, tick);
+    // The gauges: all drawn (the C64 redraws only those that changed, to the same bytes).
+    crate::cockpit::update(&mut m, &agent, &mut [0xFF; crate::cockpit::gauge::COUNT]);
+    let (cam, _yaw) = agent.camera();
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)

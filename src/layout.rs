@@ -167,5 +167,7 @@ pub mod status {
 /// `tools/emu.py --start` can poke them.
 pub const AGENT: u16 = 0xCAA0;
 pub const CLOCK: u16 = AGENT + crate::agent::Agent::BYTES as u16;
-const _: () = assert!(STATUS + status::SIZE <= AGENT && CLOCK + 4 <= 0xCB00);
+/// The frame each gauge shows (`cockpit::update`; `$FF`: none yet).
+pub const GAUGES: u16 = CLOCK + 4;
+const _: () = assert!(STATUS + status::SIZE <= AGENT && GAUGES as u32 + crate::cockpit::gauge::COUNT as u32 <= 0xCB00);
 const _: () = assert!(core::mem::size_of::<crate::agent::Agent>() == crate::agent::Agent::BYTES);

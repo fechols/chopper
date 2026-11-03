@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod brain;
 pub mod camera;
+pub mod cockpit;
 pub mod cost;
 pub mod fixed;
 pub mod format;
@@ -24,6 +25,8 @@ pub mod digital;
 pub mod encode;
 #[cfg(feature = "host")]
 pub mod goap;
+#[cfg(feature = "host")]
+pub mod instruments;
 #[cfg(feature = "host")]
 pub mod model;
 #[cfg(feature = "host")]

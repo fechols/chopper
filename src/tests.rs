@@ -737,3 +737,86 @@ fn the_flight_banks_smoothly() {
     );
     assert!(deg(max_rate) * 60.0 < 25.0 && deg(peak) <= 30.5);
 }
+
+#[test]
+fn the_gauges_read_the_flight() {
+    use crate::cockpit::{FRAMES, TACH_FRAMES, gauge::*, lamp, readings};
+    let mut seen = vec![[false; 256]; COUNT];
+    let mut tach = 0;
+    for a in flight() {
+        let mut r = [0u8; COUNT];
+        readings(a, &mut r);
+        for g in 0..COUNT {
+            assert!((r[g] as u16) < FRAMES[g], "tick {}: {} reads frame {} of {}", a.t, NAMES[g], r[g], FRAMES[g]);
+            seen[g][r[g] as usize] = true;
+        }
+        if a.t < crate::agent::LIFT {
+            // On the pad: still, level, the rotor lamp on, the tach winding up with the sound.
+            assert_eq!((r[ASI], r[VSI], r[ATT], r[ALT]), (0, 20, 12 * crate::cockpit::ATT_PITCHES as u8 + 8, 0), "tick {}", a.t);
+            assert_eq!(r[WARN], lamp::RPM, "tick {}", a.t);
+            assert!(r[RPM] >= tach && r[RPM] < TACH_FRAMES as u8 - 1);
+            tach = r[RPM];
+        } else {
+            assert_eq!(r[RPM], TACH_FRAMES as u8 - 1, "tick {}: the rotor is at 100% from the lift", a.t);
+            assert_eq!(r[WARN] & lamp::RPM, 0);
+        }
+    }
+    for g in [ASI, ATT, ALT, HDG, VSI] {
+        let n = seen[g].iter().filter(|&&s| s).count();
+        assert!(n >= 8, "{} shows only {n} readings in the flight", NAMES[g]);
+    }
+}
+
+#[test]
+fn the_tach_follows_the_rotor_sound() {
+    use crate::instruments::{BEAT_FROM, blade_beat, spool};
+    let pcm = crate::digital::decode(crate::digital::ROTOR);
+    let full = blade_beat(&pcm, crate::digital::ROTOR_LOOP_START as f32);
+    assert!((9.5..11.5).contains(&full), "governed blade beat {full} Hz");
+    let early = blade_beat(&pcm, BEAT_FROM * 16_000.0);
+    assert!((0.4..0.7).contains(&(early / full)), "blade beat at {BEAT_FROM} s: {early} Hz of {full}");
+    let s = spool();
+    assert_eq!(s.len(), crate::cockpit::TACH_FRAMES as usize);
+    assert_eq!((s[0], *s.last().unwrap()), (0.0, 100.0));
+    assert!(s.windows(2).all(|w| w[0] <= w[1]), "the rotor only speeds up: {s:?}");
+}
+
+#[test]
+fn the_gauge_frames_are_baked_and_move() {
+    use crate::cockpit::{BASE, END, FRAMES, FRAME_STRIDE_SHIFT, TALL, WIDE, gauge::*};
+    assert!(END <= crate::format::IMAGE_END);
+    let reu = package();
+    let frame = |g: usize, k: u16| {
+        let at = BASE[g] as usize + ((k as usize) << FRAME_STRIDE_SHIFT);
+        &reu[at..at + WIDE[g] as usize * 8 * TALL as usize]
+    };
+    for g in [ASI, ALT, WARN, HDG, VSI] {
+        for k in 1..FRAMES[g] {
+            assert_ne!(frame(g, k - 1), frame(g, k), "{} frames {} and {} look the same", NAMES[g], k - 1, k);
+        }
+    }
+    for g in 0..COUNT {
+        assert!(frame(g, FRAMES[g] - 1).iter().any(|&b| b != 0), "{} not baked", NAMES[g]);
+    }
+}
+
+/// The view's horizon drops toward the side the helicopter banks to, and so does the attitude gauge's.
+#[test]
+fn the_attitude_gauge_banks_with_the_view() {
+    use crate::cockpit::{ATT_PITCHES, gauge, readings};
+    let reu = package();
+    let f = flight();
+    for want_right in [true, false] {
+        let a = f.iter().filter(|a| a.grounded == 0).max_by_key(|a| if want_right { a.roll } else { -a.roll }).unwrap();
+        let (m, _) = crate::package::render(reu, a.t, false);
+        // First line below the sky in a left and a right byte column.
+        let horizon = |col: u16| (0..VIEW_LINES).find(|&y| m.ram[(BUFFERS[0].bitmap + crate::layout::line_offset(y) + col * 8) as usize] != floor::SKY_BYTE).unwrap();
+        let (l, r) = (horizon(4), horizon(35));
+        let mut k = [0u8; gauge::COUNT];
+        readings(a, &mut k);
+        let (tilt, _) = crate::instruments::attitude(k[gauge::ATT] as u16);
+        assert!(k[gauge::ATT] as u16 / ATT_PITCHES != 12, "tick {}: roll {} reads level", a.t, a.roll);
+        // Tilt clockwise: the right side lower (larger y).
+        assert_eq!(r > l, tilt > 0.0, "tick {}: roll {}: view horizon left {l} right {r}, gauge tilt {tilt}", a.t, a.roll);
+    }
+}
