@@ -449,12 +449,16 @@ pub(crate) mod trace {
     thread_local! {
         pub static FIRST: Cell<u16> = const { Cell::new(0) };
         pub static LOG: RefCell<Vec<(u16, u8)>> = const { RefCell::new(Vec::new()) };
+        /// Logged only while on (for the test that reads it): other war tests do not grow it.
+        pub static ON: Cell<bool> = const { Cell::new(false) };
     }
     pub fn log(slot: u16, e: u8) {
         log_id(FIRST.get() + slot, e);
     }
     pub fn log_id(id: u16, e: u8) {
-        LOG.with_borrow_mut(|l| l.push((id, e)));
+        if ON.get() {
+            LOG.with_borrow_mut(|l| l.push((id, e)));
+        }
     }
 }
 

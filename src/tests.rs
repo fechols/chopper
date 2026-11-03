@@ -1266,11 +1266,13 @@ fn retreats_do_not_see_saw() {
     use crate::world_sim::{self as ws, carrier, trace};
     let mut m = Machine::new(package());
     trace::LOG.with_borrow_mut(|l| l.clear());
+    trace::ON.set(true);
     for t in (0..10 * 3600u32).step_by(8) {
         let d = carrier(&mut &m.reu[..], t as u16).unwrap();
         ws::step_page(&mut m, t as u16, (d.u >> 4) as i16, (d.v >> 4) as i16);
     }
-    let log = trace::LOG.with_borrow(|l| l.clone());
+    trace::ON.set(false);
+    let log = trace::LOG.with_borrow_mut(std::mem::take);
     let mut armed = vec![true; ws::COUNT as usize];
     let (mut again, mut reversals) = (0, 0);
     for (id, e) in log {

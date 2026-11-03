@@ -404,7 +404,8 @@ fn wrecks(args: &[String]) -> Result<(), String> {
     a.pitch = num(args, "--pitch", -2000.0) as i16;
     // A row ahead: (kind, alive) pairs, ids 200 on.
     let row = [(kind::TANK, false), (kind::TANK, true), (kind::APC, false), (kind::TRUCK, false), (kind::AA, false), (kind::GUNSHIP, false)];
-    for age in [1u32, 12, 35] {
+    // (The last a little short of the wrecks' lifetime, whatever it is.)
+    for age in [1u32, 12, ws::WRECK_TICKS as u32 / 60 - 2] {
         let died = (t0 - age * 60) as u16;
         let mut units = Vec::new();
         for (j, &(k, alive)) in row.iter().enumerate() {
