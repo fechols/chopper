@@ -264,18 +264,19 @@ fn alt(k: u16, x: f32, y: f32, mx: i32, my: i32) -> u8 {
 
 /// The caution lamps: RPM (red), LOW ALT (amber), AP (green), dark when off.
 fn warn(k: u16, x: f32, y: f32, mx: i32, my: i32) -> u8 {
-    let lamps = [(cockpit::lamp::RPM, "RPM", RED), (cockpit::lamp::LOW_ALT, "ALT", YELLOW), (cockpit::lamp::AP, "AP", GREEN)];
+    let lamps = [(cockpit::lamp::RPM, "RPM", RED), (cockpit::lamp::LOW_ALT, "ALT", YELLOW), (cockpit::lamp::AP, "AP", GREEN), (cockpit::lamp::SEA, "SEA", RED)];
+    // Each lamp in a cell row of its own (rows 1-4 of 6): its colours never share a cell with the next.
     for (i, (bit, name, lit)) in lamps.into_iter().enumerate() {
-        let top = 16.0 * i as f32;
-        if !(top..top + 16.0).contains(&y) {
+        let top = 8.0 * (i + 1) as f32;
+        if !(top..top + 8.0).contains(&y) {
             continue;
         }
-        let on = k as u8 & bit != 0;
-        let (lx0, lx1, ly0, ly1) = (3.0, 29.0, top + 3.0, top + 13.0);
+        let on = cockpit::lamp::lit(k as u8) & bit != 0;
+        let (lx0, lx1, ly0, ly1) = (3.0, 29.0, top + 1.0, top + 8.0);
         if !(lx0..lx1).contains(&x) || !(ly0..ly1).contains(&y) {
             return DGREY;
         }
-        if text(name, 16.0, top + 8.0, mx, my) {
+        if text(name, 16.0, top + 4.5, mx, my) {
             return if on { BLACK } else { DGREY };
         }
         return if on { lit } else { BLACK };

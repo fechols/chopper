@@ -27,6 +27,11 @@ pub const LIFT: u32 = 80 * 60;
 pub const EYE: i32 = 128;
 /// The home pad (`world::PADS[0]`), texels.
 pub const HOME: (i32, i32) = (1024, 760);
+/// The soft boundary at sea, texels beyond the map's edge: the caution lamp (`cockpit::lamp::SEA`) past
+/// `SEA_WARN`; past `SEA_LIMIT` the autopilot takes over the player's helicopter and turns it for home
+/// (its turn carries it about 200 texels further: positions stay well inside 16 bits).
+pub const SEA_WARN: i16 = 150;
+pub const SEA_LIMIT: i16 = 300;
 /// Cruise altitude, texels (over the 6-texel tower; mountains are 22-34).
 pub const CRUISE: i16 = 16;
 /// Off the pad (`grounded` clears) at this height, 8.8: over the tower before moving.
@@ -314,6 +319,14 @@ impl Agent {
         ((self.u >> 8) as i16, (self.v >> 8) as i16)
     }
 
+    /// How far beyond the map's edge (texels; 0 over the map).
+    #[inline(always)]
+    pub fn off_map(&self) -> i16 {
+        const FAR: i16 = crate::floor::MAP_TEXELS as i16 - 1;
+        let (u, v) = self.at();
+        (-u).max(u - FAR).max(-v).max(v - FAR).max(0)
+    }
+
     /// The obstacle top `d` texels along `angle` (texels).
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
@@ -442,6 +455,12 @@ impl Agent {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     fn step_with<R: Reu + ?Sized>(&mut self, reu: &mut R, rec: &[u8; CARRIER_RECORD]) {
+        // Too far out to sea: the autopilot takes over, for home (every tick: the fire button hands the
+        // player the controls every frame, and beyond the limit it must not).
+        if self.mode == MODE_PLAYER && self.off_map() > SEA_LIMIT {
+            self.mode = MODE_AUTO;
+            (self.wu, self.wv, self.throttle) = (HOME.0 as i16, HOME.1 as i16, 0);
+        }
         if self.t % THINK == 0 {
             self.think(reu);
         }

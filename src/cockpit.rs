@@ -35,7 +35,7 @@ pub const TALL: u16 = 6;
 pub const COL: [u8; gauge::COUNT] = [0, 6, 12, 18, 22, 28, 34];
 pub const WIDE: [u8; gauge::COUNT] = [6, 6, 6, 4, 6, 6, 6];
 /// Frames baked per gauge (`readings` returns `0..FRAMES[g]`).
-pub const FRAMES: [u16; gauge::COUNT] = [64, ATT_ROLLS * ATT_PITCHES, 3 * 64, 8, TACH_FRAMES, 128, 41];
+pub const FRAMES: [u16; gauge::COUNT] = [64, ATT_ROLLS * ATT_PITCHES, 3 * 64, 9, TACH_FRAMES, 128, 41];
 /// Attitude frames: roll index × `ATT_PITCHES` + pitch index.
 pub const ATT_ROLLS: u16 = 25;
 pub const ATT_PITCHES: u16 = 10;
@@ -54,6 +54,14 @@ pub mod lamp {
     pub const LOW_ALT: u8 = 2;
     /// The autopilot flying (off the pad).
     pub const AP: u8 = 4;
+    /// Far out to sea (`agent::SEA_WARN` beyond the map): turn back, or the autopilot will. One frame of
+    /// its own, 8 (the cockpit's REU banks have room for one more): out there the rotor is up and the
+    /// helicopter airborne, so it shows with AP lit, and in place of the low-altitude lamp.
+    pub const SEA: u8 = 8;
+    /// The lamps lit in frame `k`.
+    pub const fn lit(k: u8) -> u8 {
+        if k == SEA { SEA | AP } else { k }
+    }
 }
 /// Altitude (8.8 texels over the pad's eye height) the low-altitude lamp comes on below.
 pub const LOW_ALT: i32 = 6 * 256;
@@ -143,6 +151,9 @@ pub fn readings(a: &Agent, out: &mut [u8; gauge::COUNT]) {
         if alt < LOW_ALT {
             lamps |= lamp::LOW_ALT;
         }
+    }
+    if a.off_map() > crate::agent::SEA_WARN {
+        lamps = lamp::SEA;
     }
     out[WARN] = lamps;
     // The dual tach follows the start-up sound to 100% at the lift.

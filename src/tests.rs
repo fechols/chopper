@@ -982,9 +982,12 @@ fn the_player_flies_with_one_stick() {
     let mut reu: &[u8] = package();
     let mut a = Agent::new();
     a.mode = MODE_PLAYER;
+    // (Fire held, as a player would: `main.rs` hands the player the controls each frame, except past the
+    // sea limit, where a random stick may wander.)
     let run = |a: &mut Agent, reu: &mut &[u8], stick: u8, ticks: u32| {
         a.input = stick;
         for _ in 0..ticks {
+            a.mode = MODE_PLAYER;
             a.step(reu);
         }
     };
@@ -1238,6 +1241,54 @@ fn the_deck_carries_the_helicopter_until_it_lifts_off() {
     }
     assert_eq!((a.deck, a.grounded), (0, 0));
     assert!(a.h > crate::agent::EYE + DECK_TOP + (8 << 8), "only {} up", a.h >> 8);
+}
+
+/// The soft boundary at sea: flying straight out east with the fire button held, the SEA lamp lights
+/// first; past the limit the autopilot takes over (fire can't take it back out there) and, the button
+/// let go, flies home over the island.
+#[test]
+fn the_sea_lamp_warns_and_the_autopilot_turns_back() {
+    use crate::agent::{Agent, CRUISE, EYE, HOME, LIFT, MODE_AUTO, MODE_PLAYER, SEA_LIMIT, THROTTLE_MAX, input};
+    use crate::cockpit::{gauge, lamp, readings};
+    let reu = package();
+    let mut a = Agent::new();
+    (a.t, a.u, a.v, a.h, a.yaw, a.grounded) = (LIFT + 100, 1900 << 8, 1024 << 8, EYE + ((CRUISE as i32) << 8), 0x4000, 0);
+    (a.mode, a.throttle, a.vf) = (MODE_PLAYER, THROTTLE_MAX, 8192);
+    let lamp_on = |a: &Agent| {
+        let mut k = [0u8; gauge::COUNT];
+        readings(a, &mut k);
+        k[gauge::WARN] & lamp::SEA != 0
+    };
+    assert!(!lamp_on(&a), "the lamp over the map");
+    let (mut warned, mut taken, mut far, mut held) = (false, false, 0i16, 0u32);
+    // The stick forward and fire held (`main.rs`: fire hands the player the controls every frame), until
+    // ten seconds after the takeover.
+    while held < 600 {
+        a.input = input::UP | input::FIRE;
+        a.mode = MODE_PLAYER;
+        let t = a.t + 4;
+        a.fly(&mut &reu[..], t);
+        warned |= lamp_on(&a) && !taken;
+        if a.mode == MODE_AUTO {
+            assert!(warned, "taken over without the lamp first");
+            assert_eq!((a.wu, a.wv), (HOME.0 as i16, HOME.1 as i16), "for home");
+            taken = true;
+        }
+        held += 4 * taken as u32;
+        far = far.max(a.off_map());
+        assert!(a.t < LIFT + 100 + 60 * 60, "never taken over: {} texels out", a.off_map());
+    }
+    // (The autopilot's turn, at most 20° of bank, carries it about 200 texels further.)
+    assert!(far <= SEA_LIMIT + 240, "{far} texels out to sea");
+    // Fire let go: home over the island within 90 s.
+    a.input = 0;
+    let back = a.t + 90 * 60;
+    while a.off_map() > 0 {
+        let t = a.t + 4;
+        a.fly(&mut &reu[..], t);
+        assert!(a.t < back, "still {} texels out", a.off_map());
+    }
+    assert!(!lamp_on(&a));
 }
 
 /// A hit that takes the damage to `DOWN` downs the player even landed at a base (where it is repaired a
