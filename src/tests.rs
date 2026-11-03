@@ -1284,6 +1284,38 @@ fn retreats_do_not_see_saw() {
     assert_eq!(again, 0, "{again} of {reversals} turns back came with foes near all along since the last");
 }
 
+/// A respawned unit faces its way, not the way it faced when it fell: off the carrier's deck, the deck's
+/// heading (it turns off it on its arc); elsewhere, its first leg.
+#[test]
+fn respawns_face_their_way() {
+    use crate::world_sim::{self as ws, ALIVE, CARRIER_AIR, COUNT, RECORD, carrier, rec};
+    let mut m = Machine::new(package());
+    let at = |id: u16| ws::UNITS as usize + id as usize * RECORD as usize;
+    let mut was: Vec<bool> = (0..COUNT).map(|id| m.reu[at(id) + rec::FLAGS as usize] & ALIVE != 0).collect();
+    let (mut air, mut ground) = (0, 0);
+    for t in (0..30 * 3600u32).step_by(8) {
+        let d = carrier(&mut &m.reu[..], t as u16).unwrap();
+        ws::step_page(&mut m, t as u16, (d.u >> 4) as i16, (d.v >> 4) as i16);
+        for id in 0..COUNT {
+            let r = &m.reu[at(id)..][..RECORD as usize];
+            let alive = r[rec::FLAGS as usize] & ALIVE != 0;
+            if alive && !was[id as usize] && r[rec::ROUTE as usize] != 0xFF {
+                let yaw = u16::from_le_bytes([r[rec::YAW_FINE as usize], r[rec::YAW as usize]]);
+                if r[rec::ROUTE as usize] == CARRIER_AIR {
+                    let deck = carrier(&mut &m.reu[..], t as u16).unwrap();
+                    assert_eq!(yaw, deck.yaw, "unit {id} off the deck at {t}");
+                    air += 1;
+                } else {
+                    assert_eq!(yaw, (r[rec::COURSE as usize] as u16) << 8, "unit {id} respawned at {t}");
+                    ground += 1;
+                }
+            }
+            was[id as usize] = alive;
+        }
+    }
+    assert!(air > 0 && ground > 0, "respawns off the deck {air}, elsewhere {ground}");
+}
+
 /// Every moving unit turns on an arc at its kind's rate (`stats::TURN`), never snapping round: on long
 /// laps of the war (15 ticks a frame), each tick its heading turns by at most its rate and it moves by at
 /// most its speed. The carrier, on its station, turns at its waypoints too.

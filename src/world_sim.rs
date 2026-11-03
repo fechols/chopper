@@ -741,6 +741,63 @@ fn waypoint<H: Hw + ?Sized>(hw: &mut H, k: u8) -> (i16, i16) {
     ((u16::from_le_bytes([w[0], w[1]]) & ((1 << PAD_SHIFT) - 1)) as i16, u16::from_le_bytes([w[2], w[3]]) as i16)
 }
 
+/// A unit launched off the carrier's deck, wherever it is (when afloat): placed there (1/16 texel),
+/// facing the deck's way. (In the deck's overlay, in with the move phase's: room.)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+fn launch<H: Hw + ?Sized>(hw: &mut H, r: u16, now: u16) -> Option<(u16, u16)> {
+    let id = reu_get16(hw, HEADER + head::CARRIER as u32);
+    let mut c = [0u8; CARRIER_RECORD];
+    hw::read_into(hw, UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut c);
+    let d = deck_of(&c, now)?;
+    hw.poke(r + rec::YAW, (d.yaw >> 8) as u8);
+    hw.poke(r + rec::YAW_FINE, d.yaw as u8);
+    Some((d.u, d.v))
+}
+
+/// A dead unit's slot respawned as a reinforcement, if its side has one due and it has a route: at its
+/// route's start (see below), alive and moving. Returns whether it is to face its first leg (`move_unit`
+/// aims it), not already facing the carrier's deck's way.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
+fn respawn<H: Hw + ?Sized>(hw: &mut H, r: u16, _id: u16, kind: usize, flags: u8, route_no: u8, now: u16) -> Option<bool> {
+    let side = flags & SIDE;
+    let budget = HEADER + head::BUDGET as u32 + side as u32;
+    let b = reu_get(hw, budget);
+    if b == 0 || route_no == 0xFF {
+        return None;
+    }
+    wr(hw, r + rec::LAST, now);
+    reu_put(hw, budget, b - 1);
+    // At the route's start; on its side's front road, the waypoint before the last before the front
+    // (it marches up: reinforcements arriving inside the fight for a pad would make it untakeable).
+    let (start, len, _) = route(hw, route_no);
+    let k = if route_no == FRONT_ROUTE[side as usize] { len.saturating_sub(3) } else { 0 };
+    let (u, v) = waypoint(hw, start + k);
+    let (mut u, mut v) = ((u as u16) << 4, (v as u16) << 4);
+    let mut aim = true;
+    if route_no == CARRIER_AIR {
+        // (Facing the deck's way, it turns off it for its first leg.)
+        if let Some(at) = launch(hw, r, now) {
+            ((u, v), aim) = (at, false);
+        }
+    }
+    wr(hw, r + rec::U, u);
+    wr(hw, r + rec::V, v);
+    hw.poke(r + rec::LEG, k);
+    hw.poke(r + rec::HP, stats::HP[kind]);
+    let flags = (flags | ALIVE) & !(NEAR_FLAG | TURNED);
+    #[cfg(test)]
+    trace::log_id(_id, trace::CLEAR);
+    hw.poke(r + rec::FLAGS, flags);
+    hw.poke(r + rec::ACTION, act::MOVE);
+    let sector = sector_of(hw, r);
+    hw.poke(r + rec::SECTOR, sector);
+    census(hw, sector, side, true);
+    living(hw, side, true);
+    Some(aim)
+}
+
 /// One unit's move: respawn if dead and due; else along its route; its sector kept; listed if near.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
@@ -752,6 +809,8 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     let kind = hw.peek(r + rec::KIND) as usize % crate::actors::kind::COUNT as usize;
     let mut last = rd(hw, r + rec::LAST);
     let route_no = hw.peek(r + rec::ROUTE);
+    // Just respawned: faces its first leg (below), not wherever it faced when it fell.
+    let mut aim = false;
     if flags & ALIVE == 0 {
         // A wreck for `WRECK_TICKS` (listed near the player, then gone); then a free slot, respawned if its
         // side has reinforcements due.
@@ -761,43 +820,9 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         if fresh {
             return;
         }
-        let budget = HEADER + head::BUDGET as u32 + side as u32;
-        let b = reu_get(hw, budget);
-        if b == 0 || route_no == 0xFF {
-            return;
-        }
-        wr(hw, r + rec::LAST, now);
-        reu_put(hw, budget, b - 1);
-        // At the route's start; on its side's front road, the waypoint before the last before the front
-        // (it marches up: reinforcements arriving inside the fight for a pad would make it untakeable).
-        let (start, len, _) = route(hw, route_no);
-        let k = if route_no == FRONT_ROUTE[side as usize] { len.saturating_sub(3) } else { 0 };
-        let (u, v) = waypoint(hw, start + k);
-        let (mut u, mut v) = ((u as u16) << 4, (v as u16) << 4);
-        if route_no == CARRIER_AIR {
-            // Off the carrier's deck, wherever it is (when afloat).
-            let id = reu_get16(hw, HEADER + head::CARRIER as u32);
-            let mut c = [0u8; CARRIER_RECORD];
-            hw::read_into(hw, UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut c);
-            if let Some(d) = deck_of(&c, now) {
-                (u, v) = (d.u, d.v);
-            }
-        }
-        wr(hw, r + rec::U, u);
-        wr(hw, r + rec::V, v);
-        hw.poke(r + rec::LEG, k);
-        hw.poke(r + rec::HP, stats::HP[kind]);
-        flags = (flags | ALIVE) & !(NEAR_FLAG | TURNED);
-        #[cfg(test)]
-        trace::log_id(id, trace::CLEAR);
-        hw.poke(r + rec::FLAGS, flags);
-        hw.poke(r + rec::ACTION, act::MOVE);
-        let sector = sector_of(hw, r);
-        hw.poke(r + rec::SECTOR, sector);
-        census(hw, sector, side, true);
-        living(hw, side, true);
-        // On to its first heading (no step yet).
-        last = now;
+        // A reinforcement due? Respawned (`respawn`), on to its first heading (no step yet).
+        let Some(aimed) = respawn(hw, r, id, kind, flags, route_no, now) else { return };
+        (flags, aim, last) = ((flags | ALIVE) & !(NEAR_FLAG | TURNED), aimed, now);
     }
     let dt = now.wrapping_sub(last).min(CATCH_UP);
     // Its record's head as `live` reads it (since its last step, or since now if it just respawned).
@@ -866,6 +891,10 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         }
         hw.poke(r + rec::LEG, leg);
         hw.poke(r + rec::COURSE, yaw);
+        if aim {
+            hw.poke(r + rec::YAW, yaw);
+            hw.poke(r + rec::YAW_FINE, 0);
+        }
         let sector = sector_of(hw, r);
         let old = hw.peek(r + rec::SECTOR);
         if sector != old {
