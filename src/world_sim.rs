@@ -271,6 +271,29 @@ pub fn live_inline(r: &[u8; CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
     (u, v, yaw)
 }
 
+/// How near its waypoint a unit counts as there (texels): its turning circle's width (2R, R the radius
+/// in `live`), so a waypoint it could not turn onto (inside its circle) is never left to circle round, and
+/// 1/8 more for [`dist`] reading long.
+#[inline(always)]
+pub(crate) fn reach(kind: usize) -> u16 {
+    ((stats::SPEED[kind] as u16 * 46) >> stats::TURN[kind]) + 1
+}
+
+/// A distance (texels), estimated: the longer side and half the shorter, at most 1/8 long.
+#[inline(always)]
+pub(crate) fn dist(dx: i16, dy: i16) -> u16 {
+    let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
+    ax.max(ay) + (ax.min(ay) >> 1)
+}
+
+/// Whether a unit is done with its waypoint `dist` away at `bearing`: within `reach` (it turns for the
+/// next one there), or passed (within this `step`, 1/16 texel, and behind its `heading` now, as it is
+/// heading mid-turn). One holding still keeps its waypoint.
+#[inline(always)]
+pub(crate) fn done_with(dist: u16, reach: u16, step: u16, bearing: u8, heading: u8, holding: bool) -> bool {
+    !holding && (dist <= reach || (dist <= (step >> 4) + 1 && (bearing.wrapping_sub(heading) as i8).unsigned_abs() > 64))
+}
+
 /// The carrier's deck now: its centre (1/16 texel) and heading.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deck {
@@ -750,8 +773,8 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     if speed > 0 && route_no != 0xFF {
         // On as it has been seen since its last move, turning on its arc (`live`, the same sum), then a
         // new course for its waypoint: what is drawn never jumps when a unit turns.
-        let old = head[rec::COURSE as usize];
-        let step = if hw.peek(r + rec::ACTION) == act::HOLD { 0 } else { speed as u16 * dt };
+        let holding = hw.peek(r + rec::ACTION) == act::HOLD;
+        let step = if holding { 0 } else { speed as u16 * dt };
         // (Kept on the map: a step past a waypoint by its edge stops there.)
         let (u, v, heading_now) = live(&head, now);
         hw.poke(r + rec::YAW, (heading_now >> 8) as u8);
@@ -771,18 +794,14 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         let len = len.max(1);
         let span = if mode == LOOP { len } else { (2 * len).saturating_sub(2).max(1) };
         let mut yaw = 0;
-        // Its waypoint; reached (within its turning circle's width: it turns for the next one there), or
-        // just passed (behind it now), the next one.
-        let reach = ((speed as u16 * 40) >> stats::TURN[kind]) + 1;
+        // Its waypoint; done with (`done_with`), the next one.
+        let reach = reach(kind);
         for pass in 0..2 {
             let k = if mode == LOOP || leg < len { leg % len } else { (2 * len - 2).wrapping_sub(leg) % len };
             let (tu, tv) = waypoint(hw, start + k);
             let (dx, dy) = (tu - (u >> 4) as i16, tv - (v >> 4) as i16);
-            let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
-            let dist = ax.max(ay) + (ax.min(ay) >> 1);
             yaw = heading(dx, dy);
-            let passed = dist <= (step >> 4) + 1 && (yaw.wrapping_sub(old) as i8).unsigned_abs() > 64;
-            if pass == 1 || !(dist <= reach || passed) {
+            if pass == 1 || !done_with(dist(dx, dy), reach, step, yaw, (heading_now >> 8) as u8, holding) {
                 break;
             }
             leg = leg.wrapping_add(1);

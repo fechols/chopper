@@ -1273,6 +1273,48 @@ fn units_turn_on_arcs() {
     assert!(turned > 1000, "hardly any turning: {turned}");
 }
 
+/// A waypoint inside a unit's turning circle (one it could not turn onto) counts as reached, for every
+/// moving kind and wherever round the circle, however [`ws::dist`] estimates it: no unit circles a
+/// waypoint for ever.
+#[test]
+fn slow_turners_take_waypoints_abeam() {
+    use crate::world_sim::{self as ws, stats};
+    for kind in 0..stats::TURN.len() {
+        let speed = stats::SPEED[kind] as u16;
+        if speed == 0 {
+            continue;
+        }
+        // The radius as `live` turns it (1/16 texel), in texels.
+        let rad = ((speed * 326) >> stats::TURN[kind]) as f64 / 16.0;
+        let reach = ws::reach(kind);
+        for a in 0..256 {
+            for side in [-1.0, 1.0] {
+                // A point inside the circle centred abeam (either side) of a unit heading north at the origin.
+                let t = a as f64 * std::f64::consts::TAU / 256.0;
+                let (x, y) = (side * rad + 0.98 * rad * t.cos(), 0.98 * rad * t.sin());
+                let d = ws::dist(x.round() as i16, y.round() as i16);
+                assert!(d <= reach, "kind {kind}: a waypoint inside its circle at ({x:.1}, {y:.1}) is {d} away, past {reach}");
+            }
+        }
+    }
+}
+
+/// Done with a waypoint: one holding still keeps it, however near; one passed counts by the way it is
+/// heading now (mid-turn), not the course it is turning to.
+#[test]
+fn waypoints_done_with() {
+    use crate::world_sim::done_with;
+    // Holding beside it.
+    assert!(!done_with(0, 5, 0, 0, 0, true));
+    assert!(done_with(0, 5, 0, 0, 0, false));
+    // Just behind it (bearing 128 off its heading), within a step: passed.
+    assert!(done_with(8, 5, 160, 128, 0, false));
+    // Just ahead of it: not passed (on to it).
+    assert!(!done_with(8, 5, 160, 0, 0, false));
+    // Out of the step's reach: not passed, behind or not.
+    assert!(!done_with(30, 5, 160, 128, 0, false));
+}
+
 /// A turn takes as long to the left as to the right, and its heading is kept whole across steps (the
 /// record's `YAW_FINE`): no step lands it back.
 #[test]
