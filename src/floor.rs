@@ -49,6 +49,30 @@ pub const HAZE_ODD: u8 = 0x11;
 pub fn haze_byte(line: u8, doubled: bool) -> u8 {
     if (line >> doubled as u8) & 1 == 0 { HAZE_BYTE } else { HAZE_ODD }
 }
+/// In AUTO (`layout::status::mode`), the lines this frame's floor is drawn in, from the last frame's
+/// times in the status block: line-doubled after a heavy frame, full after a light one, as it was
+/// between. (On the C64 in the geometry set-up's overlay, before the rays.)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
+pub fn pick_lines<H: Hw + ?Sized>(hw: &mut H) {
+    use crate::layout::{STATUS, status, status::mode};
+    let m = hw.peek(STATUS + status::MODE);
+    if m & mode::AUTO == 0 {
+        return;
+    }
+    let rd = |hw: &mut H, a: u16| hw.peek(STATUS + a) as u16 | (hw.peek(STATUS + a + 1) as u16) << 8;
+    // (In 4 µs units: the render is kept in them already.)
+    let took = (rd(hw, status::SETUP_US) >> 2) + (rd(hw, status::GEOM_US) >> 2) + rd(hw, status::RENDER_US);
+    let lines = if took > mode::HEAVY {
+        mode::DOUBLED
+    } else if took < mode::LIGHT {
+        0
+    } else {
+        m & mode::DOUBLED
+    };
+    hw.poke(STATUS + status::MODE, mode::AUTO | lines);
+}
+
 /// Ground beyond this many texels (along the ray, roughly) is drawn as haze.
 pub const HAZE_TEXELS: i32 = 320;
 /// The steepest step a run may read from a level, 8.8 texels per byte (above it, the next level).

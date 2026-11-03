@@ -388,6 +388,8 @@ pub extern "C" fn main() -> i16 {
 
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);
+    // The floor picks full or line-doubled lines by itself (`floor::pick_lines`) until the host sets one.
+    poke(STATUS + status::MODE, status::mode::AUTO);
     poke(STATUS + status::MAGIC, STATUS_MAGIC);
 
     let mut frames = 0u16;
@@ -454,6 +456,7 @@ pub extern "C" fn main() -> i16 {
         // The floor's rays and the grids' set-up from their overlay (then the window is the frame's
         // geometry again).
         hw::fetch(c, OVERLAY_GEOM, WORK, geom_size);
+        floor::pick_lines(c);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };

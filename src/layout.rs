@@ -150,8 +150,17 @@ pub mod status {
     pub const RENDER_US: u16 = 4;
     /// u8: set by the host to freeze the flight's clock (0 = run).
     pub const HOLD: u16 = 6;
-    /// u8: 0 full, 1 line-doubled (fire on joystick 2 toggles it).
+    /// u8: the floor's lines ([`mode`]): bit 0 line-doubled (the mode the frame is drawn in), bit 1
+    /// AUTO (the C64 sets bit 0 itself from the frame time; the boot default). The host writes 0 or 1.
     pub const MODE: u16 = 7;
+    pub mod mode {
+        pub const DOUBLED: u8 = 1;
+        pub const AUTO: u8 = 2;
+        /// AUTO goes line-doubled after a frame (set-up + geometry + bands) longer than this, and back
+        /// to full after one shorter than `LIGHT` (the gap keeps it from flickering), in units of 4 µs.
+        pub const HEAVY: u16 = 55_000 / 4;
+        pub const LIGHT: u16 = 40_000 / 4;
+    }
     /// u16: frames drawn since boot.
     pub const FRAMES: u16 = 8;
     /// u8: frames drawn in the last 60 NTSC frames (about a second).

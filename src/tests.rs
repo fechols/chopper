@@ -2152,3 +2152,27 @@ fn units_on_screen_stay_listed() {
     let (dropped, capped) = near_churn(600);
     assert_eq!((dropped, capped), (0, 0), "units on screen dropped from the near list; frames at the actors' cap");
 }
+
+#[test]
+fn the_floor_doubles_its_lines_on_heavy_frames() {
+    use crate::hw::Hw;
+    use crate::layout::{STATUS, status, status::mode};
+    let mut m = Machine::new(&[]);
+    // A frame of set-up, geometry and render (µs, µs, 4 µs units): the mode it leaves for the next.
+    let mut after = |m: &mut Machine, was: u8, (s, g, r): (u16, u16, u32)| {
+        for (a, v) in [(status::SETUP_US, s), (status::GEOM_US, g), (status::RENDER_US, (r / 4) as u16)] {
+            m.poke(STATUS + a, v as u8);
+            m.poke(STATUS + a + 1, (v >> 8) as u8);
+        }
+        m.poke(STATUS + status::MODE, was);
+        floor::pick_lines(m);
+        m.peek(STATUS + status::MODE)
+    };
+    let (auto, dbl) = (mode::AUTO, mode::AUTO | mode::DOUBLED);
+    assert_eq!(after(&mut m, auto, (25_000, 20_000, 70_000)), dbl, "a heavy frame doubles the lines");
+    assert_eq!(after(&mut m, dbl, (15_000, 8_000, 25_000)), dbl, "between the marks it stays doubled");
+    assert_eq!(after(&mut m, auto, (15_000, 8_000, 25_000)), auto, "and stays full");
+    assert_eq!(after(&mut m, dbl, (10_000, 5_000, 20_000)), auto, "a light frame goes back to full");
+    assert_eq!(after(&mut m, mode::DOUBLED, (1, 1, 4)), mode::DOUBLED, "a mode the host set is kept");
+    assert_eq!(after(&mut m, 0, (30_000, 30_000, 60_000)), 0, "full, set by the host, too");
+}
