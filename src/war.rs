@@ -88,12 +88,15 @@ pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
         }
         Err(at(last + 70.0))
     };
-    // (Where the coast runs out to the edge on a bearing, the nearest bearing with sea room.)
+    // (Where the coast runs out to the edge on a bearing, the nearest bearing with sea room; with none,
+    // the bearing's own point pulled inside the room.)
     let offshore = |deg: f32| {
-        [0.0, 5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0, 25.0, -25.0, 30.0, -30.0]
-            .iter()
-            .find_map(|d| along(deg + d).ok())
-            .unwrap_or_else(|| along(deg).unwrap_or_else(|p| p))
+        along(deg).unwrap_or_else(|(u, v)| {
+            [5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0, 25.0, -25.0, 30.0, -30.0]
+                .iter()
+                .find_map(|d| along(deg + d).ok())
+                .unwrap_or((u.clamp(SEA_ROOM, 2047 - SEA_ROOM), v.clamp(SEA_ROOM, 2047 - SEA_ROOM)))
+        })
     };
     // The enemy flotilla raids from the west coast round the south; the carrier group's station overlaps
     // the end of it, so the fleets meet.
