@@ -5,6 +5,13 @@
 //! random waypoints over the island, climbing over or turning round the mountains its probes see in the
 //! baked hazard map (`format::HAZARD`).
 //!
+//! The tree only chooses what to do; a tiny helicopter flight model does the flying. Each action sets
+//! targets for the controls: cyclic (a bank angle, a pitch attitude) and collective (a climb rate).
+//! The attitude follows its targets through a lag and a rate limit, as a rotor disc would. The bank
+//! turns the helicopter (yaw rate ∝ bank), and the pitch tilts the rotor's thrust: nose down
+//! accelerates against drag, so each pitch settles at its own speed. Turns toward the waypoint bank in
+//! proportion to the heading error. Nothing jumps: the camera shows the attitude itself.
+//!
 //! On the C64 the code runs from the AI overlay (`.text.ai`, DMA'd to `layout::WORK` each frame).
 
 use crate::brain::{self, Reu};
@@ -24,17 +31,26 @@ pub const CRUISE: i16 = 16;
 pub const LIFTED: i32 = 10 * 256;
 /// Ticks between decisions.
 pub const THINK: u32 = 8;
-/// Cruise speed (8.8 texels a tick).
-const SPEED: i16 = 128;
-/// Each action's targets, indexed by `action`: speed (8.8 texels a tick), turn rate (binary angle a
+/// One degree in binary angle units.
+const DEG: i16 = 182;
+/// The controls' targets per action (indexed by `action`): bank (binary angle; 0 for the turns, whose
+/// bank comes from the heading error), pitch attitude (nose down negative: −11° cruises at 0.5 texel a
 /// tick), climb rate (8.8 texels a tick).
-const TARGET_SPEED: [i16; action::COUNT as usize] = [0, 0, SPEED / 2, SPEED, SPEED, SPEED, SPEED * 3 / 4, SPEED * 3 / 4, SPEED, SPEED];
-const TARGET_TURN: [i16; action::COUNT as usize] = [0, 0, 0, 0, -40, 40, -96, 96, 0, 0];
-const TARGET_CLIMB: [i16; action::COUNT as usize] = [0, 24, 40, 0, 0, 0, 0, 0, -40, 0];
-/// How fast speed, turn and climb follow their targets, per tick.
-const EASE_SPEED: i16 = 1;
-const EASE_TURN: i16 = 3;
+const TARGET_BANK: [i16; 16] = [0, 0, 0, 0, 0, 0, -30 * DEG, 30 * DEG, 0, 0, 0, 0, 0, 0, 0, 0];
+const TARGET_PITCH: [i16; 16] = [0, 0, -1024, -2048, -2048, -2048, -1024, -1024, -2048, -2048, 0, 0, 0, 0, 0, 0];
+const TARGET_CLIMB: [i16; 16] = [0, 24, 40, 0, 0, 0, 0, 0, -40, 0, 0, 0, 0, 0, 0, 0];
+/// Turns bank between these (binary angle), in proportion to the heading error.
+const TURN_BANK_MIN: i16 = 10 * DEG;
+const TURN_BANK_MAX: i16 = 20 * DEG;
+/// Bank per unit of heading error (`features`' `steer` scale: ±32 ≈ the waypoint abeam).
+const STEER_GAIN: i16 = 320;
+/// Attitude rate limits (binary angle a tick: about 21°/s roll, 11°/s pitch) after a 1/8 lag.
+const ROLL_RATE: i16 = 64;
+const PITCH_RATE: i16 = 32;
+/// The climb rate's change a tick (8.8 texels a tick²).
 const EASE_CLIMB: i16 = 1;
+/// Yaw rate = bank >> TURN_SHIFT (30° of bank: 85 binary angle a tick, about 28°/s).
+const TURN_SHIFT: u32 = 6;
 /// The probes: feature, angle off the heading, texels out (two near ahead, one far, one each side).
 const PROBES: [(u8, u16, i16); 5] = [
     (feature::HAZ_NEAR as u8, 0, 24),
@@ -64,6 +80,8 @@ pub mod feature {
     /// The largest of the four.
     pub const HAZ_MAX: usize = 9;
     pub const COUNT: usize = 10;
+    /// The feature block's size: a power of two, so slots index it with `& 15` and no bounds check.
+    pub const BLOCK: usize = 16;
 }
 
 /// The tree's leaves.
@@ -95,13 +113,18 @@ pub struct Agent {
     pub v: i32,
     pub h: i32,
     pub yaw: u16,
-    pub speed: i16,
-    pub turn: i16,
+    /// Airspeed, 8.8 texels a tick × 64 (`speed()`).
+    pub vf: i16,
+    /// Attitude: bank (right wing down positive, turning right), pitch (nose down negative).
+    pub roll: i16,
+    pub pitch: i16,
     pub climb: i16,
     /// The waypoint, texels.
     pub wu: i16,
     pub wv: i16,
     pub seed: u16,
+    /// The bank a turn toward the waypoint wants (from the heading error, at each decision).
+    pub steer: i16,
     pub action: u8,
     pub grounded: u8,
 }
@@ -115,6 +138,13 @@ impl Default for Agent {
 #[inline(always)]
 fn ease(x: &mut i16, target: i16, rate: i16) {
     *x = if *x < target { (*x + rate).min(target) } else { (*x - rate).max(target) };
+}
+
+/// Toward `target`: an eighth of the way (to within 7), at most `rate` a tick. (Resident on the C64:
+/// the overlay is full.)
+#[inline(never)]
+fn follow(x: &mut i16, target: i16, rate: i16) {
+    *x += ((target - *x) >> 3).clamp(-rate, rate);
 }
 
 #[inline(always)]
@@ -150,7 +180,7 @@ fn cell<R: Reu + ?Sized>(reu: &mut R, u: i16, v: i16) -> u8 {
 }
 
 impl Agent {
-    pub const BYTES: usize = 32;
+    pub const BYTES: usize = 36;
 
     /// On the home pad, facing the island's centre, engine off.
     pub const fn new() -> Self {
@@ -160,15 +190,23 @@ impl Agent {
             v: HOME.1 << 8,
             h: EYE,
             yaw: 0,
-            speed: 0,
-            turn: 0,
+            vf: 0,
+            roll: 0,
+            pitch: 0,
             climb: 0,
             wu: HOME.0 as i16,
             wv: HOME.1 as i16,
             seed: 0xACE1,
+            steer: 0,
             action: action::IDLE,
             grounded: 1,
         }
+    }
+
+    /// Airspeed, 8.8 texels a tick.
+    #[inline(always)]
+    pub fn speed(&self) -> i16 {
+        self.vf >> 6
     }
 
     /// Position, texels.
@@ -190,9 +228,9 @@ impl Agent {
     /// The decision features.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
-    pub fn features<R: Reu + ?Sized>(&self, reu: &mut R, f: &mut [u8; feature::COUNT]) {
+    pub fn features<R: Reu + ?Sized>(&mut self, reu: &mut R, f: &mut [u8; feature::BLOCK]) {
         use feature::*;
-        *f = [0; COUNT];
+        *f = [0; BLOCK];
         let alt = (self.h >> 8) as i16;
         f[GROUND] = self.grounded;
         f[ROTOR] = (self.t >= LIFT) as u8;
@@ -206,13 +244,28 @@ impl Agent {
         let fwd = ex * s + ey * c;
         let lat = ey * s - ex * c;
         f[BEARING] = if fwd > 0 && lat.abs() < fwd >> 2 { 128 } else if lat > 0 { 64 } else { 192 };
+        // The heading error as lat / (fwd + |lat|), ±32 with the waypoint abeam or behind (left
+        // positive): both halved until the sum is under 64 (no divide; within a factor of 2).
+        let err = if fwd > 0 {
+            let (mut n, mut l) = (fwd + lat.abs(), lat);
+            while n >= 64 {
+                n >>= 1;
+                l >>= 1;
+            }
+            l
+        } else if lat > 0 {
+            32
+        } else {
+            -32
+        };
+        self.steer = (-err * STEER_GAIN).clamp(-TURN_BANK_MAX, TURN_BANK_MAX);
         let (ax, ay) = (dx.abs(), dy.abs());
         f[DIST] = clamp8((ax.max(ay) + (ax.min(ay) >> 1)) >> 3);
         // The probes in feature order (the near pair both into HAZ_NEAR), each obstacle top − altitude.
         let mut max = 0;
         for &(slot, angle, d) in &PROBES {
             let haz = clamp8(self.probe(reu, self.yaw.wrapping_add(angle), d) - alt + 128);
-            let slot = slot as usize;
+            let slot = slot as usize & 15;
             f[slot] = f[slot].max(haz);
             max = max.max(haz);
         }
@@ -227,11 +280,12 @@ impl Agent {
         let (pu, pv) = self.at();
         for _ in 0..16 {
             self.seed = xorshift(self.seed);
-            let (cu, cv) = ((self.seed & 63) as i16, (self.seed >> 8 & 63) as i16);
-            if !(4..60).contains(&cu) || !(4..60).contains(&cv) {
+            // Cells 4..60 each way (unsigned: one compare).
+            let (cu, cv) = (self.seed & 63, self.seed >> 8 & 63);
+            if cu.wrapping_sub(4) >= 56 || cv.wrapping_sub(4) >= 56 {
                 continue;
             }
-            let (u, v) = (cu << HAZARD_SHIFT | 16, cv << HAZARD_SHIFT | 16);
+            let (u, v) = ((cu << HAZARD_SHIFT | 16) as i16, (cv << HAZARD_SHIFT | 16) as i16);
             if (u - pu).abs() + (v - pv).abs() >= 256 && cell(reu, u, v) == 0 {
                 self.wu = u;
                 self.wv = v;
@@ -243,7 +297,7 @@ impl Agent {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     fn think<R: Reu + ?Sized>(&mut self, reu: &mut R) {
-        let mut f = [0u8; feature::COUNT];
+        let mut f = [0u8; feature::BLOCK];
         self.features(reu, &mut f);
         let mut a = brain::walk(reu, AI_TREES, brain::PILOT, &f);
         if a == action::NEXT_WP {
@@ -252,6 +306,10 @@ impl Agent {
             a = brain::walk(reu, AI_TREES, brain::PILOT, &f);
         }
         self.action = if a < action::NEXT_WP { a } else { action::FORWARD };
+        if f[feature::BEARING] != 128 {
+            // Flying on past an obstacle: wings level until the waypoint is ahead again.
+            self.steer = 0;
+        }
     }
 
     /// One tick: decide (every [`THINK`] ticks), then fly the action.
@@ -261,13 +319,25 @@ impl Agent {
         if self.t % THINK == 0 {
             self.think(reu);
         }
-        let k = self.action as usize;
-        ease(&mut self.speed, TARGET_SPEED[k], EASE_SPEED);
-        ease(&mut self.turn, TARGET_TURN[k], EASE_TURN);
+        // The controls' targets.
+        // (Tables of 16 and `& 15`: no bounds checks in the overlay.)
+        let k = self.action as usize & 15;
+        let bank = match self.action {
+            action::TURN_L => -self.steer.abs().max(TURN_BANK_MIN),
+            action::TURN_R => self.steer.abs().max(TURN_BANK_MIN),
+            action::FORWARD => self.steer,
+            _ => TARGET_BANK[k],
+        };
+        // The attitude follows, lagged and rate-limited; the bank turns, the pitch drives the speed.
+        follow(&mut self.roll, bank, ROLL_RATE);
+        follow(&mut self.pitch, TARGET_PITCH[k], PITCH_RATE);
         ease(&mut self.climb, TARGET_CLIMB[k], EASE_CLIMB);
-        self.yaw = self.yaw.wrapping_add(self.turn as u16);
-        self.u += (sin7(self.yaw) * self.speed >> 7) as i32;
-        self.v += (sin7(self.yaw.wrapping_add(QUARTER_TURN)) * self.speed >> 7) as i32;
+        self.yaw = self.yaw.wrapping_add((self.roll >> TURN_SHIFT) as u16);
+        // Thrust along the tilt against drag: vf settles at −4 × pitch (32-tick time constant).
+        self.vf = (self.vf + ((-self.pitch - (self.vf >> 2)) >> 3)).max(0);
+        let speed = self.speed();
+        self.u += (sin7(self.yaw) * speed >> 7) as i32;
+        self.v += (sin7(self.yaw.wrapping_add(QUARTER_TURN)) * speed >> 7) as i32;
         self.h += self.climb as i32;
         if self.h < EYE {
             self.h = EYE;
@@ -288,13 +358,10 @@ impl Agent {
         }
     }
 
-    /// The floor camera and its yaw (for the objects): banked with the turn, nose down with the speed,
-    /// up with the climb. (Resident on the C64: the main loop calls it after the overlay.)
+    /// The floor camera and its yaw (for the objects): the helicopter's attitude. (Resident on the C64: the main loop calls it after the overlay.)
     #[inline(never)]
     pub fn camera(&self) -> (FloorCam, u16) {
-        let roll = self.turn * 70;
-        let pitch = self.climb * 20 - self.speed * 14;
-        let m = Matrix14::orientation(self.yaw, pitch as u16, roll as u16);
+        let m = Matrix14::orientation(self.yaw, self.pitch as u16, self.roll as u16);
         (FloorCam { u: self.u, v: self.v, h: self.h as u16, r: m.m }, self.yaw)
     }
 
@@ -304,14 +371,14 @@ impl Agent {
         b[4..8].copy_from_slice(&self.u.to_le_bytes());
         b[8..12].copy_from_slice(&self.v.to_le_bytes());
         b[12..16].copy_from_slice(&self.h.to_le_bytes());
-        for (k, w) in [self.yaw, self.speed as u16, self.turn as u16, self.climb as u16, self.wu as u16, self.wv as u16, self.seed]
+        for (k, w) in [self.yaw, self.vf as u16, self.roll as u16, self.pitch as u16, self.climb as u16, self.wu as u16, self.wv as u16, self.seed, self.steer as u16]
             .into_iter()
             .enumerate()
         {
             b[16 + 2 * k..18 + 2 * k].copy_from_slice(&w.to_le_bytes());
         }
-        b[30] = self.action;
-        b[31] = self.grounded;
+        b[34] = self.action;
+        b[35] = self.grounded;
         b
     }
 }

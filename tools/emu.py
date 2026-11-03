@@ -26,7 +26,7 @@ from native_cpu import Cpu, KernelError  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = 0xCA80
 AGENT = 0xCAA0      # layout::AGENT (agent::Agent::BYTES), then CLOCK
-AGENT_BYTES = 32
+AGENT_BYTES = 36
 SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
 TURBO = 64          # CPU cycles per Phi2 tick

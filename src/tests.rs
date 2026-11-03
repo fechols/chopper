@@ -708,3 +708,32 @@ fn the_flight_waits_for_the_rotor_then_roams_clear_of_the_mountains() {
     println!("{waypoints} waypoints; closest {closest:.1} texels over a mountain; actions {actions:?}");
     assert!(waypoints >= 10, "only {waypoints} waypoints in {} ticks", FLIGHT - LIFT);
 }
+
+#[test]
+fn the_flight_banks_smoothly() {
+    // The flight model's bank: never faster than its rate limit, never past 30°, and seldom reversed.
+    let f = &flight()[crate::agent::LIFT as usize..];
+    let deg = |x: i16| x as f64 * 360.0 / 65536.0;
+    let max_rate = f.windows(2).map(|w| (w[1].roll - w[0].roll).abs()).max().unwrap();
+    let peak = f.iter().map(|a| a.roll.abs()).max().unwrap();
+    // A reversal: from one side past 5° to the other past 5°.
+    let mut side = 0i16;
+    let mut reversals = 0;
+    for a in f {
+        let s = if a.roll > 5 * 182 { 1 } else if a.roll < -5 * 182 { -1 } else { 0 };
+        if s != 0 && s == -side {
+            reversals += 1;
+        }
+        if s != 0 {
+            side = s;
+        }
+    }
+    let minutes = f.len() as f64 / 3600.0;
+    println!(
+        "bank: peak {:.1}°, fastest {:.1}°/s; {:.1} reversals a minute",
+        deg(peak),
+        deg(max_rate) * 60.0,
+        reversals as f64 / minutes
+    );
+    assert!(deg(max_rate) * 60.0 < 25.0 && deg(peak) <= 30.5);
+}
