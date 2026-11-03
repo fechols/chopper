@@ -35,7 +35,7 @@ pub const OPS: [Op; 6] = [
     Op { name: "attack", action: unit::ATTACK, need: FOES | READY | ARMED, not: OUTNUMBERED | WOUNDED, clear: FOES, set: 0, cost: 1 },
     Op { name: "attack-odds", action: unit::ATTACK, need: FOES | READY | ARMED | OUTNUMBERED, not: 0, clear: FOES, set: 0, cost: 3 },
     Op { name: "attack-hurt", action: unit::ATTACK, need: FOES | READY | ARMED | WOUNDED, not: OUTNUMBERED, clear: FOES, set: 0, cost: 3 },
-    Op { name: "retreat", action: unit::RETREAT, need: FOES | MOBILE, not: 0, clear: FOES, set: 0, cost: 2 },
+    Op { name: "retreat", action: unit::RETREAT, need: FOES | MOBILE | WOUNDED, not: 0, clear: FOES, set: 0, cost: 4 },
     Op { name: "reload", action: unit::HOLD, need: FOES, not: READY, clear: 0, set: READY, cost: 1 },
     Op { name: "dig-in", action: unit::HOLD, need: FOES, not: MOBILE, clear: FOES, set: 0, cost: 3 },
 ];

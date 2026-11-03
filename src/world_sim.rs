@@ -75,6 +75,8 @@ pub mod rec {
 pub const ALIVE: u8 = 0x80;
 pub const NEAR_FLAG: u8 = 0x40;
 pub const SIDE: u8 = 0x01;
+/// It has turned back on a retreat (and not yet back to its way): a further retreat keeps it going.
+pub const TURNED: u8 = 0x20;
 pub const NOBODY: u16 = 0xFFFF;
 
 /// What a unit is doing.
@@ -82,10 +84,11 @@ pub mod act {
     pub const MOVE: u8 = 0;
     pub const FIGHT: u8 = 1;
     pub const HOLD: u8 = 2;
-    /// Turn back along its road (the move phase then carries on as `BACK`).
+    /// Turn back along its road: on a retreat (the move phase then carries on as `BACK`), or back to its
+    /// way once clear of foes.
     pub const RETREAT: u8 = 3;
-    /// Retreating, turned back already: it moves as `MOVE`, and a further retreat decision keeps it going
-    /// the way it is (no turning back and forth while foes stay near).
+    /// Retreating, turned back already: it moves as `MOVE`, and further retreats keep it going the way it
+    /// is until foes are away from it (`TURNED`; no turning back and forth while they stay near).
     pub const BACK: u8 = 4;
 }
 
@@ -130,7 +133,7 @@ const _: () = assert!(head::OWNER + PADS <= HEADER_LEN);
 /// The front: each side's road to the enemy (`FRONT_ROUTE`) runs through pads (a waypoint's pad, plus
 /// one, in its u's top bits: `PAD_SHIFT`). The director ends each road at the first pad the other side
 /// holds; a pad whose sector holds enough of the other side changes
-/// hands (`CAPTURE` or more, and more than twice the owner's, for `HOLD_PASSES` passes in a row). Reinforcements on a front road arrive at
+/// hands (`CAPTURE` or more, and more than the owner's, for `HOLD_PASSES` passes in a row). Reinforcements on a front road arrive at
 /// its last pad before the front (the defender's short supply line). So the front walks, both ways.
 pub const FRONT_ROUTE: [u8; 2] = [2, 3];
 pub const PAD_SHIFT: u16 = 12;
@@ -180,7 +183,7 @@ const _: () = assert!(PHASE + 1 <= 0xCB00);
 pub const NEAR_RANGE: i16 = 320;
 /// The dead stay where they fell this long (ticks; drawn, smoking, near the player), before their slot
 /// can be a reinforcement.
-pub const WRECK_TICKS: u16 = 40 * 60;
+pub const WRECK_TICKS: u16 = 30 * 60;
 /// Enemies fire on the player within this many texels (|du| + |dv|).
 pub const PLAYER_RANGE: u16 = 200;
 /// The agent's airspeed field (`Agent::to_bytes`: `vf`, u16 at 18).
@@ -435,11 +438,33 @@ pub fn step_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
     }
 }
 
+/// What the war did, for the tests: per unit, its retreats' turns back and its decisions with no foes
+/// near.
+#[cfg(test)]
+pub(crate) mod trace {
+    use std::cell::{Cell, RefCell};
+    pub const REVERSED: u8 = 0;
+    pub const CLEAR: u8 = 1;
+    pub const RESUMED: u8 = 2;
+    thread_local! {
+        pub static FIRST: Cell<u16> = const { Cell::new(0) };
+        pub static LOG: RefCell<Vec<(u16, u8)>> = const { RefCell::new(Vec::new()) };
+    }
+    pub fn log(slot: u16, e: u8) {
+        log_id(FIRST.get() + slot, e);
+    }
+    pub fn log_id(id: u16, e: u8) {
+        LOG.with_borrow_mut(|l| l.push((id, e)));
+    }
+}
+
 /// The decide phase over the page.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
 pub fn decide_page<H: Hw + ?Sized>(hw: &mut H) {
     let first = reu_get16(hw, HEADER + head::CURSOR as u32);
+    #[cfg(test)]
+    trace::FIRST.set(first);
     page(hw, first, false);
     // The brains in RAM for the page (walked and taught there), back in one.
     let brains = crate::layout::BRAIN_RAM;
@@ -479,6 +504,10 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
     let mut counts = [0u8; 2];
     hw::read_into(hw, s + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
     let (foes, friends) = (counts[1 - side as usize], counts[side as usize]);
+    #[cfg(test)]
+    if foes == 0 {
+        trace::log(slot, trace::CLEAR);
+    }
     let mut seed = hw.peek(r + rec::SEED);
     let mut f = [0u8; unit::FEATURES];
     f[unit::WOUNDED] = ((hw.peek(r + rec::HP) as u16) * 2 < stats::HP[k] as u16) as u8;
@@ -493,25 +522,38 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
     }
     hw.poke(r + rec::SEED, seed);
     let (mv, node, took) = crate::brain::walk_learn(hw, crate::layout::BRAIN_RAM, kind, &f);
-    // The trail: this decision's learn node first, the last one's after it.
+    let (action, own) = chosen(mv, flags & TURNED != 0, foes == 0, friends >= RALLY, kind == crate::actors::kind::CARRIER, f[unit::MOBILE] == 0);
+    // The trail: this decision's learn node first (none when not acted on), the last one's after it.
     for i in 0..3 {
         let b = hw.peek(t + i);
         hw.poke(t + 3 + i, b);
     }
-    wr(hw, t, node);
+    wr(hw, t, if own { node } else { 0 });
     hw.poke(t + 2, took);
-    let static_ = f[unit::MOBILE] == 0;
-    let doing = hw.peek(r + rec::ACTION);
-    hw.poke(r + rec::ACTION, match mv {
-        unit::ATTACK => act::FIGHT,
-        unit::RETREAT if doing == act::BACK => act::BACK,
-        // The carrier keeps its station (its escorts fight): a flagship does not turn tail.
-        unit::RETREAT if kind == crate::actors::kind::CARRIER => act::MOVE,
-        unit::RETREAT => act::RETREAT,
-        unit::HOLD => act::HOLD,
-        _ if static_ => act::HOLD,
-        _ => act::MOVE,
-    });
+    hw.poke(r + rec::ACTION, action);
+}
+
+/// Friends in its sector (itself among them) a unit fallen back waits for before it goes back in.
+pub const RALLY: u8 = 4;
+
+/// A decision (`brain::unit`) as acted on (`act`), and whether as the brain chose it (to learn from). A
+/// retreat turns a unit back once (`turned`: it has since) and it falls back until `clear` of foes,
+/// then holds there until enough friends have gathered (`rally`) and turns back to its way with them.
+/// The carrier keeps its station (its escorts fight): a flagship does not turn tail, and does not learn
+/// from the retreat it did not make.
+#[inline(always)]
+pub(crate) fn chosen(mv: u8, turned: bool, clear: bool, rally: bool, carrier: bool, static_: bool) -> (u8, bool) {
+    use crate::brain::unit;
+    match mv {
+        _ if turned && clear && !static_ => if rally { (act::RETREAT, true) } else { (act::HOLD, false) },
+        unit::ATTACK => (act::FIGHT, true),
+        unit::RETREAT if carrier => (act::MOVE, false),
+        unit::RETREAT if turned => (act::BACK, true),
+        unit::RETREAT => (act::RETREAT, true),
+        unit::HOLD => (act::HOLD, true),
+        _ if static_ => (act::HOLD, true),
+        _ => (act::MOVE, true),
+    }
 }
 
 /// The move phase over the next page.
@@ -556,7 +598,7 @@ pub fn direct_page<H: Hw + ?Sized>(hw: &mut H, now: u16) {
 /// each side behind its strength gets a wave (budget) of reinforcements, spent as dead slots of its side
 /// come round. Strength and waves grow with the pads the other side holds: a side pushed back fights
 /// nearer its depots (so the front swings both ways rather than one side being wiped out).
-pub const WAVE_TICKS: u16 = 60 * 60;
+pub const WAVE_TICKS: u16 = 30 * 60;
 
 /// The director's knobs, as in the header (`head::KNOBS`).
 #[derive(Clone, Copy, Debug)]
@@ -573,7 +615,7 @@ pub struct Knobs {
 impl Knobs {
     /// Tuned with `chopper war --knobs` so the front swings both ways over an hour, every few minutes to a
     /// quarter of an hour, and home holds (`the_front_swings_both_ways`).
-    pub const DEFAULT: Self = Self { strength: [100, 110], per_pad: 24, wave: 12, wave_per_pad: 4 };
+    pub const DEFAULT: Self = Self { strength: [160, 170], per_pad: 24, wave: 16, wave_per_pad: 4 };
 
     pub fn to_bytes(self) -> [u8; 5] {
         [(self.strength[0] / 2) as u8, (self.strength[1] / 2) as u8, (self.per_pad / 2) as u8, self.wave, self.wave_per_pad]
@@ -633,7 +675,7 @@ fn front<H: Hw + ?Sized>(hw: &mut H) {
                 let mut counts = [0u8; 2];
                 hw::read_into(hw, sector_at(sector) + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
                 let o = owner[p] as usize & 1;
-                if counts[1 - o] >= CAPTURE && counts[1 - o] > 2 * counts[o] {
+                if counts[1 - o] >= CAPTURE && counts[1 - o] > counts[o] {
                     pressure[p] += 1;
                     if pressure[p] >= HOLD_PASSES {
                         owner[p] = 1 - o as u8;
@@ -726,9 +768,10 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         }
         wr(hw, r + rec::LAST, now);
         reu_put(hw, budget, b - 1);
-        // At the route's start; on its side's front road, the last waypoint before the front.
+        // At the route's start; on its side's front road, the waypoint before the last before the front
+        // (it marches up: reinforcements arriving inside the fight for a pad would make it untakeable).
         let (start, len, _) = route(hw, route_no);
-        let k = if route_no == FRONT_ROUTE[side as usize] { len.saturating_sub(2) } else { 0 };
+        let k = if route_no == FRONT_ROUTE[side as usize] { len.saturating_sub(3) } else { 0 };
         let (u, v) = waypoint(hw, start + k);
         let (mut u, mut v) = ((u as u16) << 4, (v as u16) << 4);
         if route_no == CARRIER_AIR {
@@ -744,7 +787,9 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         wr(hw, r + rec::V, v);
         hw.poke(r + rec::LEG, k);
         hw.poke(r + rec::HP, stats::HP[kind]);
-        flags = (flags | ALIVE) & !NEAR_FLAG;
+        flags = (flags | ALIVE) & !(NEAR_FLAG | TURNED);
+        #[cfg(test)]
+        trace::log_id(id, trace::CLEAR);
         hw.poke(r + rec::FLAGS, flags);
         hw.poke(r + rec::ACTION, act::MOVE);
         let sector = sector_of(hw, r);
@@ -787,6 +832,10 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             // Turn back along a road: the same waypoint, from the other way.
             if mode != LOOP && len > 1 {
                 leg = (2 * len - 1).wrapping_sub(leg) % (2 * len - 2);
+                #[cfg(test)]
+                trace::log_id(id, if flags & TURNED != 0 { trace::RESUMED } else { trace::REVERSED });
+                // (Turned back on a retreat, or back to its way once clear.)
+                flags ^= TURNED;
             }
             hw.poke(r + rec::ACTION, act::BACK);
         }
@@ -807,6 +856,12 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             leg = leg.wrapping_add(1);
             if leg >= span {
                 leg = 0;
+            }
+            // (Round a road's end: on its way again, retreating or not.)
+            if mode != LOOP && (leg == len || leg == 0) {
+                flags &= !TURNED;
+                #[cfg(test)]
+                trace::log_id(id, trace::CLEAR);
             }
         }
         hw.poke(r + rec::LEG, leg);
@@ -849,7 +904,9 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i
     wr(hw, crate::layout::BOUNCE, id);
     hw::stash(hw, crate::layout::BOUNCE, s + sec::REP as u32 + 2 * side as u32, 2);
     let cool = hw.peek(r + rec::COOL);
-    let fighting = hw.peek(r + rec::ACTION) == act::FIGHT;
+    // (A unit falling back still returns fire: a fighting withdrawal.)
+    let doing = hw.peek(r + rec::ACTION);
+    let fighting = doing == act::FIGHT || doing == act::BACK;
     // The player, if near and in range of an enemy that can hit aircraft and chose to fight: fired on with
     // human aim (the odds halved, and halved again when the player is fast).
     let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);

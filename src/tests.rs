@@ -1235,6 +1235,55 @@ fn the_carrier_does_not_see_saw() {
     assert!(reversals <= 2, "the carrier turned back {reversals} times in 3 minutes");
 }
 
+/// Decisions as acted on: a retreat turns back only when not turned already, whatever came between,
+/// and once clear of foes the unit turns back to its way; the carrier keeps its station and does not
+/// learn from it.
+#[test]
+fn decisions_as_acted_on() {
+    use crate::brain::unit;
+    use crate::world_sim::{act, chosen};
+    // (mv, turned, clear, rally, carrier, static)
+    assert_eq!(chosen(unit::RETREAT, false, false, false, false, false), (act::RETREAT, true));
+    assert_eq!(chosen(unit::RETREAT, true, false, false, false, false), (act::BACK, true));
+    assert_eq!(chosen(unit::ATTACK, true, false, false, false, false), (act::FIGHT, true));
+    // Clear of foes, turned back: it holds until friends gather, then back to its way, once.
+    assert_eq!(chosen(unit::ADVANCE, true, true, false, false, false), (act::HOLD, false));
+    assert_eq!(chosen(unit::ADVANCE, true, true, true, false, false), (act::RETREAT, true));
+    assert_eq!(chosen(unit::ADVANCE, false, true, false, false, false), (act::MOVE, true));
+    assert_eq!(chosen(unit::RETREAT, false, false, false, true, false), (act::MOVE, false));
+    assert_eq!(chosen(unit::RETREAT, true, false, false, true, false), (act::MOVE, false));
+    assert_eq!(chosen(unit::HOLD, false, false, false, false, false), (act::HOLD, true));
+    assert_eq!(chosen(unit::ADVANCE, false, false, false, false, true), (act::HOLD, true));
+    assert_eq!(chosen(unit::ADVANCE, false, false, false, false, false), (act::MOVE, true));
+}
+
+/// A retreat turns a unit back once: over 10 minutes of war, no unit turns back along its road twice
+/// without foes having been away from it between (whatever else it decided meanwhile).
+#[test]
+fn retreats_do_not_see_saw() {
+    use crate::world_sim::{self as ws, carrier, trace};
+    let mut m = Machine::new(package());
+    trace::LOG.with_borrow_mut(|l| l.clear());
+    for t in (0..10 * 3600u32).step_by(8) {
+        let d = carrier(&mut &m.reu[..], t as u16).unwrap();
+        ws::step_page(&mut m, t as u16, (d.u >> 4) as i16, (d.v >> 4) as i16);
+    }
+    let log = trace::LOG.with_borrow(|l| l.clone());
+    let mut armed = vec![true; ws::COUNT as usize];
+    let (mut again, mut reversals) = (0, 0);
+    for (id, e) in log {
+        if e == trace::CLEAR {
+            armed[id as usize] = true;
+        } else if e == trace::REVERSED {
+            reversals += 1;
+            again += !armed[id as usize] as u32;
+            armed[id as usize] = false;
+        }
+    }
+    assert!(reversals > 0, "no retreats to judge");
+    assert_eq!(again, 0, "{again} of {reversals} turns back came with foes near all along since the last");
+}
+
 /// Every moving unit turns on an arc at its kind's rate (`stats::TURN`), never snapping round: on long
 /// laps of the war (15 ticks a frame), each tick its heading turns by at most its rate and it moves by at
 /// most its speed. The carrier, on its station, turns at its waypoints too.
@@ -1540,8 +1589,9 @@ fn landing_on_the_deck_or_in_the_sea() {
     assert!((0..crate::combat::FX_MAX as usize).any(|k| m.ram[fx + k * crate::combat::FX_ENTRY as usize] == crate::effects::effect::SPLASH + 1), "a splash");
 }
 
-/// The units' brain: the baked tree reproduces the planner's decision in every situation; attacking when
-/// healthy and even is a learned choice against retreating; with no foes a mobile unit advances.
+/// The units' brain: the baked tree reproduces the planner's decision in every situation; healthy, a unit
+/// attacks, against the odds too; wounded, attacking is a learned choice against retreating (the attack
+/// likelier to start with); with no foes a mobile unit advances.
 #[test]
 fn the_units_tree_replays_the_plans() {
     use crate::brain::unit;
@@ -1552,12 +1602,16 @@ fn the_units_tree_replays_the_plans() {
     }
     let s = |bits: &[usize]| bits.iter().fold(0u8, |a, &b| a | 1 << b);
     assert_eq!(decide(s(&[unit::MOBILE, unit::ARMED, unit::READY])), Decision::Do(unit::ADVANCE));
-    match decide(s(&[unit::FOES, unit::MOBILE, unit::ARMED, unit::READY])) {
-        Decision::Choose { yes, no, p } => {
-            assert_eq!((yes, no), (unit::ATTACK, unit::RETREAT));
-            assert!(p > 128, "attack should start likelier: {p}");
+    assert_eq!(decide(s(&[unit::FOES, unit::MOBILE, unit::ARMED, unit::READY])), Decision::Do(unit::ATTACK), "healthy and even");
+    assert_eq!(decide(s(&[unit::FOES, unit::OUTNUMBERED, unit::MOBILE, unit::ARMED, unit::READY])), Decision::Do(unit::ATTACK), "healthy, against the odds");
+    for hurt in [&[unit::FOES, unit::WOUNDED, unit::MOBILE, unit::ARMED, unit::READY][..], &[unit::FOES, unit::WOUNDED, unit::OUTNUMBERED, unit::MOBILE, unit::ARMED, unit::READY]] {
+        match decide(s(hurt)) {
+            Decision::Choose { yes, no, p } => {
+                assert_eq!((yes, no), (unit::ATTACK, unit::RETREAT));
+                assert!(p > 128, "attack should start likelier: {p}");
+            }
+            d => panic!("wounded: {d:?}"),
         }
-        d => panic!("healthy and even: {d:?}"),
     }
     assert_eq!(decide(s(&[unit::FOES, unit::ARMED])), Decision::Do(unit::HOLD), "a static unit reloading holds");
     // The blob: each kind's tree walks to the same moves (learn nodes at their priors aside).
