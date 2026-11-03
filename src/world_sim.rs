@@ -250,9 +250,13 @@ pub fn live_inline(r: &[u8; CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
         // Heading clockwise from north (+v), east +u: turning right, u gains R (cos a0 - cos a), v R (sin a
         // - sin a0); turning left, the opposite.
         let (s1, c1) = (sin(yaw) as i16, cos(yaw) as i16);
-        let (mut du, mut dv) = (mul14(rad, cos(a0) as i16) - mul14(rad, c1), mul14(rad, s1) - mul14(rad, sin(a0) as i16));
-        if left < 0 {
-            (du, dv) = (-du, -dv);
+        // (Not turning, most of the time: no arc to add, and two table lookups saved.)
+        let (mut du, mut dv) = (0, 0);
+        if left != 0 {
+            (du, dv) = (mul14(rad, cos(a0) as i16) - mul14(rad, c1), mul14(rad, s1) - mul14(rad, sin(a0) as i16));
+            if left < 0 {
+                (du, dv) = (-du, -dv);
+            }
         }
         // (At most `CATCH_UP` ticks: the products fit the 16 × 16 multiply.)
         let d = speed * straight as i16;
