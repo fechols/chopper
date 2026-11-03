@@ -33,6 +33,8 @@ pub fn bake(world: &World) -> Vec<u8> {
     for (k, b) in crate::hud::art::shapes().iter().enumerate() {
         reu[HUD_SHAPES as usize + k * 64..][..64].copy_from_slice(b);
     }
+    let vehicles = crate::scene::vehicle_bank();
+    reu[VEHICLES as usize..][..vehicles.len()].copy_from_slice(&vehicles);
     let targets = crate::hud::art::targets(world);
     reu[HUD_TARGETS as usize..][..targets.len()].copy_from_slice(&targets);
     let hazard = crate::goap::hazard_map(world);
@@ -71,9 +73,16 @@ pub fn setup(m: &mut Machine, buf: Buffer) {
 /// Copy the C64 build's REU overlays and its build stamp into an image (`chopper bake --elf`): the PRG
 /// only runs with an image baked from its own ELF.
 pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
-    for (name, at) in [(".aitext", OVERLAY_AI), (".hudtext", OVERLAY_HUD), (".geomtext", OVERLAY_GEOM)] {
+    for (name, at, max) in [
+        (".aitext", OVERLAY_AI, OVERLAY_MAX),
+        (".hudtext", OVERLAY_HUD, OVERLAY_MAX),
+        (".geomtext", OVERLAY_GEOM, OVERLAY_MAX),
+        (".actorstext", OVERLAY_ACTORS, OVERLAY_MAX),
+        (".cocktext", OVERLAY_COCKPIT, OVERLAY2_MAX),
+        (".dyntext", OVERLAY_DYN, OVERLAY2_MAX),
+    ] {
         let code = crate::elf::section(elf, name)?;
-        if code.len() as u32 > OVERLAY_MAX {
+        if code.len() as u32 > max {
             return Err(format!("{name}: {} bytes, more than its window", code.len()));
         }
         reu[at as usize..][..code.len()].copy_from_slice(code);
@@ -112,7 +121,10 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
     let mut st = FloorStats::default();
     let mut work = Box::new(Work::new());
     let mut verts = Box::new(Verts::new());
-    st.geom = geom::draw(m, scene, &View { cam: *cam, pop: 0 }, &mut work, &mut verts);
+    let view = View { cam: *cam, pop: 0 };
+    st.geom = geom::draw(m, scene, &view, &mut work, &mut verts);
+    geom::walk_args(m, layout::WALK_ARGS, &view);
+    geom::push_dynamic(m, &mut work, &mut verts);
     let mut bands = Bands::new(&work);
     let rays = Rays::new(cam);
     let mut shadow;
@@ -161,6 +173,7 @@ pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::
         m.poke(crate::hud::LOCK_STATE + i as u16, b);
     }
     crate::hud::update(&mut m, &agent, &cam);
+    crate::actors::demo(&mut m, agent.t, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)
@@ -200,6 +213,7 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
         m.poke(crate::hud::LOCK_STATE + i as u16, b);
     }
     crate::hud::update(&mut m, &agent, &cam);
+    crate::actors::demo(&mut m, agent.t, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     Ok((m, st))

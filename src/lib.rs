@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(feature = "host"), no_std)]
 
+pub mod actors;
 pub mod agent;
 pub mod brain;
 pub mod camera;

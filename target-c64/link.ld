@@ -41,19 +41,18 @@ MEMORY {
     /* Free in the PRG (was the AI overlay's load image), between relocated pages. */
     aiload (r) : ORIGIN = 0x8C00, LENGTH = 0x0F00
     gap2 (r) : ORIGIN = 0x9B00, LENGTH = 0x0500
-    /* The cockpit overlay (`.text.cockpit`: cockpit::update and the static panel), loaded in place with
-     * the PRG, stashed to the REU at boot (format::OVERLAY_COCKPIT) and fetched back each frame while the
-     * band state (layout::BAND_RAM, here) is spent: before geo_bin refills it. */
-    cockpit (rwx) : ORIGIN = 0xA000, LENGTH = 0x0F00
+    /* Free in the PRG (was the cockpit overlay's load image; it is an REU overlay now, `.cocktext`). */
+    cockpit (r) : ORIGIN = 0xA000, LENGTH = 0x0F00
     gap3 (r) : ORIGIN = 0xAF00, LENGTH = 0x1100
     /* asm/audio.S, run once at boot, loaded in place: the floor's tiles and runs live here afterwards
      * (layout::TILES, SPANS, below RAYS). */
     audio (rx) : ORIGIN = 0xC000, LENGTH = 0x0640
     /* REU overlays' load images: never in the PRG. `chopper bake --elf` copies each overlay's bytes from
      * the ELF into the REU (format::OVERLAY_AI, OVERLAY_HUD). */
-    reuimage (r) : ORIGIN = 0x10000, LENGTH = 0x10000
-    /* The REU overlays' window: see `.aitext`. */
+    reuimage (r) : ORIGIN = 0x10000, LENGTH = 0x20000
+    /* The REU overlays' windows: see `.aitext` and `.cocktext`. */
     window (rx) : ORIGIN = 0xE000, LENGTH = 0x1100
+    window2 (rx) : ORIGIN = 0xA000, LENGTH = 0x0F00
 }
 
 /* Matched before commodore.ld's catch-all .text (first match wins). */
@@ -84,15 +83,22 @@ SECTIONS {
      * Work::clear refills the heads once they have run), each fetched in the frame's set-up:
      * - `.text.ai`: agent::Agent::fly and what it calls;
      * - `.text.hud`: hud::build and what it calls;
-     * - `.text.geomsetup`: geom::walk_args (the grids' set-up for asm/geom.S geo_walk), before Work::clear. */
+     * - `.text.geomsetup`: geom::walk_args (the grids' set-up for asm/geom.S geo_walk), before Work::clear;
+     * - `.text.actors`: the frame's moving objects (actors). */
     OVERLAY 0xE000 : AT (0x10000) {
         .aitext { *(.text.ai .text.ai.*) }
         .hudtext { *(.text.hud .text.hud.*) }
         .geomtext { *(.text.geomsetup .text.geomsetup.*) }
+        .actorstext { *(.text.actors .text.actors.*) }
     } >window
-    .cocktext : {
-        *(.text.cockpit .text.cockpit.*)
-    } >cockpit
+    /* The second window, over the band state at $A000 (layout::BAND_RAM: spent from the last band to
+     * geo_bin), REU overlays too:
+     * - `.text.cockpit`: the gauges and the HUD's first and last steps, in the set-up;
+     * - `.text.dyn`: the moving objects pushed into the depth buckets, after geo_walk. */
+    OVERLAY 0xA000 : AT (0x20000) {
+        .cocktext { *(.text.cockpit .text.cockpit.*) }
+        .dyntext { *(.text.dyn .text.dyn.*) }
+    } >window2
     .audiotext : {
         *(.text.audio_boot)
     } >audio
@@ -121,12 +127,16 @@ __hitext_pages = (SIZEOF(.hitext) + 255) / 256;
 __aitext_size = SIZEOF(.aitext);
 __hudtext_size = SIZEOF(.hudtext);
 __geomtext_size = SIZEOF(.geomtext);
+__actorstext_size = SIZEOF(.actorstext);
+ASSERT(SIZEOF(.actorstext) <= 0x1100, "the actors overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.geomtext) <= 0x1100, "the geometry set-up overlay is larger than its window ($E000-$F0FF)")
 /* The window: up to the multiply tables (fixed::SQ_NEG_LO). */
 ASSERT(SIZEOF(.aitext) <= 0x1100, "the AI overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.hudtext) <= 0x1100, "the HUD overlay is larger than its window ($E000-$F0FF)")
-__cocktext_start = ADDR(.cocktext);
 __cocktext_size = SIZEOF(.cocktext);
+__dyntext_size = SIZEOF(.dyntext);
+ASSERT(SIZEOF(.cocktext) <= 0x0F00, "the cockpit overlay is larger than its window ($A000-$AEFF)")
+ASSERT(SIZEOF(.dyntext) <= 0x0F00, "the moving objects' overlay is larger than its window ($A000-$AEFF)")
 
 /* The SDK's charset switch (.init.250) calls KERNAL CHROUT, which is unmapped by the time it runs. */
 SECTIONS { /DISCARD/ : { *(.init.250) } }

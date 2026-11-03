@@ -85,6 +85,7 @@ pub fn init<H: Hw + ?Sized>(hw: &mut H) {
     hw.poke(reu::CONTROL, 0);
 }
 
+#[inline(never)]
 fn transfer<H: Hw + ?Sized>(hw: &mut H, command: u8, mut c64: u16, mut addr: u32, mut len: u16) {
     while len != 0 {
         let to_bank = REU_BANK - (addr & (REU_BANK - 1));

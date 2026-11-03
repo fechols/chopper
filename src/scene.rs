@@ -22,6 +22,12 @@ pub enum Material {
     Roof,
     /// Pad markers: light blue.
     Marker,
+    /// The enemy's vehicles and sites: brown, shaded to blue.
+    Enemy,
+    /// The allies': light blue, shaded to brown.
+    Allied,
+    /// Tracers and missiles: light blue throughout.
+    Bright,
 }
 
 impl Material {
@@ -32,6 +38,9 @@ impl Material {
             Material::Wall => [1, 5, 11, 2],
             Material::Roof => [2, 8, 13, 3],
             Material::Marker => [1, 1, 7, 7],
+            Material::Enemy => [2, 8, 13, 3],
+            Material::Allied => [1, 5, 11, 2],
+            Material::Bright => [1, 1, 1, 1],
         }
     }
 }
@@ -153,6 +162,24 @@ impl Mesh {
         self.quad([d, c, r1, r0], [0.0, 1.0, 1.0], roof);
         self.tri([a, d, r0], [-1.0, 0.0, 0.0], wall);
         self.tri([b, c, r1], [1.0, 0.0, 0.0], wall);
+    }
+
+    /// `other`'s faces added, moved by `at`.
+    pub fn add(&mut self, other: &Mesh, at: [f32; 3]) {
+        for (f, shade) in &other.faces {
+            let i = f.map(|k| {
+                let v = other.verts[k];
+                self.vert([v[0] + at[0], v[1] + at[1], v[2] + at[2]])
+            });
+            self.faces.push((i, *shade));
+        }
+    }
+
+    /// A thin plate both ways round (`p0..p3`): seen from either side.
+    pub fn plate(&mut self, p: [[f32; 3]; 4], mat: Material) {
+        let n = normal(p[0], p[1], p[2]);
+        self.quad(p, n, mat);
+        self.quad(p, [-n[0], -n[1], -n[2]], mat);
     }
 
     /// A mountain: a ring of `n` jittered points (radius `r`, from `seed`) round a peak `h` high.
@@ -297,6 +324,116 @@ pub fn objects(world: &crate::world::World) -> Vec<Object> {
                 out.push(o);
             }
         }
+    }
+    out
+}
+
+/// The moving objects' meshes (`actors::kind`), each in the enemy's colours then the allies'
+/// (`actors::mesh_of`): modelled facing +v (yaw 0 is north), in texels, at most 16 faces each.
+pub fn vehicles() -> Vec<Mesh> {
+    use crate::actors::kind;
+    let mut out = Vec::new();
+    for k in 0..kind::COUNT {
+        for mat in [Material::Enemy, Material::Allied] {
+            out.push(vehicle(k, mat));
+        }
+    }
+    out
+}
+
+fn vehicle(k: u8, mat: Material) -> Mesh {
+    use crate::actors::kind;
+    let mut m = Mesh::default();
+    let pyramid = |r: f32, h: f32, mat: Material| {
+        let mut t = Mesh::default();
+        t.cone(4, r, &[], (h, mat));
+        t
+    };
+    match k {
+        kind::TRUCK => m.cuboid([-0.4, -0.9, 0.0], [0.4, 0.9, 0.7], mat, Some(mat)),
+        kind::APC => {
+            m.cuboid([-0.5, -0.8, 0.0], [0.5, 0.8, 0.5], mat, Some(mat));
+            m.add(&pyramid(0.3, 0.35, mat), [0.0, 0.0, 0.5]);
+        }
+        kind::TANK => {
+            m.cuboid([-0.55, -0.8, 0.0], [0.55, 0.8, 0.35], mat, Some(mat));
+            m.add(&pyramid(0.45, 0.4, mat), [0.0, 0.0, 0.35]);
+            m.quad([[-0.06, 0.2, 0.55], [0.06, 0.2, 0.55], [0.06, 1.4, 0.55], [-0.06, 1.4, 0.55]], [0.0, 0.0, 1.0], mat);
+        }
+        kind::AA => {
+            m.cuboid([-0.5, -0.7, 0.0], [0.5, 0.7, 0.4], mat, Some(mat));
+            m.add(&pyramid(0.4, 0.35, mat), [0.0, 0.0, 0.4]);
+            for x in [-0.15, 0.15] {
+                m.tri([[x, 0.0, 0.6], [x, 1.1, 1.2], [x + 0.05, 0.0, 0.7]], [0.0, 0.0, 1.0], mat);
+            }
+        }
+        kind::SAM => {
+            m.cuboid([-0.5, -0.8, 0.0], [0.5, 0.8, 0.35], mat, Some(mat));
+            for x in [-0.25, 0.25] {
+                m.quad([[x - 0.1, -0.6, 0.4], [x + 0.1, -0.6, 0.4], [x + 0.1, 0.8, 1.2], [x - 0.1, 0.8, 1.2]], [0.0, -0.5, 1.0], Material::Bright);
+            }
+        }
+        kind::RADAR => {
+            m.cone(3, 0.25, &[], (1.6, mat));
+            m.plate([[-0.7, 0.0, 1.2], [0.7, 0.0, 1.2], [0.7, 0.2, 2.0], [-0.7, 0.2, 2.0]], Material::Bright);
+        }
+        kind::GUNBOAT | kind::MISSILE_BOAT => {
+            m.cuboid([-0.45, -1.2, 0.0], [0.45, 1.2, 0.35], mat, Some(mat));
+            m.add(&pyramid(0.35, 0.45, mat), [0.0, -0.2, 0.35]);
+            if k == kind::MISSILE_BOAT {
+                m.quad([[-0.2, 0.3, 0.45], [0.2, 0.3, 0.45], [0.2, 1.0, 0.8], [-0.2, 1.0, 0.8]], [0.0, -0.5, 1.0], Material::Bright);
+            }
+        }
+        kind::GUNSHIP => {
+            m.cuboid([-0.3, -0.9, 0.3], [0.3, 0.9, 0.8], mat, Some(mat));
+            m.plate([[-0.08, -0.9, 0.6], [0.08, -0.9, 0.6], [0.08, -2.0, 0.7], [-0.08, -2.0, 0.7]], mat);
+            m.quad([[-1.2, -1.2, 1.0], [1.2, -1.2, 1.0], [1.2, 1.2, 1.0], [-1.2, 1.2, 1.0]], [0.0, 0.0, 1.0], Material::Bright);
+        }
+        kind::DEPOT => m.cone(5, 0.8, &[(1.0, 0.8, mat)], (1.4, mat)),
+        kind::BUNKER => m.cone(4, 1.2, &[(0.5, 0.8, mat)], (0.7, mat)),
+        kind::TRACER => m.plate([[-0.06, 0.0, 0.0], [0.06, 0.0, 0.0], [0.06, 1.5, 0.0], [-0.06, 1.5, 0.0]], Material::Bright),
+        _ => {
+            // Missile: a cross of two plates.
+            m.plate([[-0.12, -0.4, 0.0], [0.12, -0.4, 0.0], [0.12, 0.4, 0.0], [-0.12, 0.4, 0.0]], Material::Bright);
+            m.plate([[0.0, -0.4, -0.12], [0.0, -0.4, 0.12], [0.0, 0.4, 0.12], [0.0, 0.4, -0.12]], Material::Bright);
+        }
+    }
+    m
+}
+
+/// A mesh as the 3D code reads it: the vertex shift, the bounding radius, then the vertices (3 × i8 each,
+/// quarter texels `>> shift`) and the faces (3 indices, winding reversed for the camera's mirrored axes,
+/// and the shade).
+pub fn encode(m: &Mesh) -> (u8, u8, Vec<u8>, Vec<u8>) {
+    assert!(m.verts.len() <= crate::geom::MAX_VERTS && m.faces.len() <= 255);
+    let extent = m.verts.iter().flat_map(|v| v.iter()).fold(0f32, |a, &c| a.max(c.abs()));
+    let shift = (0..=4u8).find(|&s| extent * 4.0 / (1 << s) as f32 <= 127.0).expect("mesh too large");
+    let verts = m.verts.iter().flat_map(|v| v.map(|c| (c * 4.0 / (1 << shift) as f32).round() as i8 as u8)).collect();
+    let faces = m.faces.iter().flat_map(|(f, shade)| [f[0] as u8, f[2] as u8, f[1] as u8, *shade]).collect();
+    (shift, m.radius(), verts, faces)
+}
+
+/// The vehicles' mesh bank (`format::VEHICLES`): a table of `actors::MESH_RECORD` bytes per mesh (the
+/// blob's offset in the bank u16, its length u16, vertices, faces, shift, radius), then the blobs
+/// (vertices, then faces).
+pub fn vehicle_bank() -> Vec<u8> {
+    use crate::actors::{MESH_RECORD, MESHBUF_LEN};
+    let ms = vehicles();
+    let mut out = vec![0u8; ms.len() * MESH_RECORD];
+    for (k, m) in ms.iter().enumerate() {
+        assert!(m.faces.len() <= 16, "vehicle mesh {k}: {} faces", m.faces.len());
+        let (shift, r, verts, faces) = encode(m);
+        let blob = [verts, faces].concat();
+        assert!(blob.len() <= MESHBUF_LEN as usize, "vehicle mesh {k}: {} bytes", blob.len());
+        let at = out.len() as u16;
+        let rec_at = k * MESH_RECORD;
+        out[rec_at..rec_at + 2].copy_from_slice(&at.to_le_bytes());
+        out[rec_at + 2..rec_at + 4].copy_from_slice(&(blob.len() as u16).to_le_bytes());
+        out[rec_at + 4] = m.verts.len() as u8;
+        out[rec_at + 5] = m.faces.len() as u8;
+        out[rec_at + 6] = shift;
+        out[rec_at + 7] = r;
+        out.extend(blob);
     }
     out
 }

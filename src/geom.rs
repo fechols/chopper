@@ -737,6 +737,56 @@ pub fn draw<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], view: &View, w: &mut Work,
     st
 }
 
+/// Draw the frame's moving objects (`actors::DYN`, ready in camera space) after the static ones: each
+/// one's mesh streamed from the REU (`format::VEHICLES`) into `actors::MESHBUF`, turned to its yaw (mesh
+/// (a, up, b) → world by the yaw's sine and cosine, then world → camera by the frame's `Rᵀ` from
+/// `walk_args`' block), transformed and filed by depth like a static object (always the near path: there
+/// are few).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.dyn"))]
+pub fn push_dynamic<H: Hw + ?Sized>(hw: &mut H, w: &mut Work, v: &mut Verts) {
+    use crate::actors::{DYN, DYN_ENTRY, DYN_MAX, MESHBUF, dyn_entry};
+    use crate::hud::mul16;
+    use crate::layout::{SCENE_RAM, WALK_ARGS};
+    let rd = |hw: &mut H, a: u16| (hw.peek(a) as u16 | (hw.peek(a + 1) as u16) << 8) as i16;
+    let mut rt = [[0i16; 3]; 3];
+    for (j, row) in rt.iter_mut().enumerate() {
+        for (k, x) in row.iter_mut().enumerate() {
+            *x = rd(hw, WALK_ARGS + walk::RT + 2 * (3 * j + k) as u16);
+        }
+    }
+    let n = hw.peek(DYN).min(DYN_MAX);
+    for i in 0..n as u16 {
+        let at = DYN + 1 + i * DYN_ENTRY;
+        let len = hw.peek(at + dyn_entry::LEN) as u16;
+        let blob = rd(hw, at + dyn_entry::BLOB) as u16 as u32;
+        crate::hw::fetch(hw, crate::format::VEHICLES + blob, MESHBUF, len);
+        let (s, co) = (rd(hw, at + dyn_entry::SIN), rd(hw, at + dyn_entry::COS));
+        let mut m = [[0i16; 3]; 3];
+        for j in 0..3 {
+            let (a, b) = (rt[j][0], rt[j][2]);
+            m[j] = [((mul16(a, co) - mul16(b, s)) >> 14) as i16, rt[j][1], ((mul16(a, s) + mul16(b, co)) >> 14) as i16];
+        }
+        let base = MESHBUF.wrapping_sub(SCENE_RAM);
+        let nv = hw.peek(at + dyn_entry::NV).min(MAX_VERTS as u8);
+        let org = [rd(hw, at + dyn_entry::ORG), rd(hw, at + dyn_entry::ORG + 2), rd(hw, at + dyn_entry::ORG + 4)];
+        let ob = Obj { verts: base, nv, faces: base + 3 * nv as u16, nf: hw.peek(at + dyn_entry::NF), t: 2 + hw.peek(at + dyn_entry::SHIFT), org, m };
+        // (The host's 3D reads the mesh from a slice laid out as C64 RAM from `SCENE_RAM`; the C64's reads
+        // RAM itself.)
+        #[cfg(not(target_arch = "mos"))]
+        let mem: alloc_vec::Vec<u8> = (0..base + len).map(|i| hw.peek(SCENE_RAM.wrapping_add(i))).collect();
+        #[cfg(target_arch = "mos")]
+        let mem: [u8; 0] = [];
+        hw.xform(&mem, &ob, v);
+        hw.faces(&mem, &ob, v, w);
+    }
+}
+
+#[cfg(not(target_arch = "mos"))]
+mod alloc_vec {
+    pub use std::vec::Vec;
+}
+
 /// `asm/geom.S` `geo_walk`'s argument block (`layout::WALK_ARGS`): what [`draw`] uses, written once a
 /// frame by [`walk_args`].
 pub mod walk {

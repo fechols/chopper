@@ -16,6 +16,7 @@ T (`chopper agent`) and the clock (T + N) are poked into `layout::AGENT` / `CLOC
 bytes are checked against the host's at the frame's tick too, and the soft stack's depth is reported.
 """
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -309,7 +310,10 @@ def host_frame(reu, state, doubled):
         cmd = [str(exe), 'frame', '--reu', str(reu), '--state', str(Path(d) / 'state.bin'), '--out', str(out)]
         if doubled:
             cmd.append('--doubled')
-        subprocess.run(cmd, check=True, capture_output=True)
+        r = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if os.environ.get('EMU_HOST_LOG'):
+            print('  host:', r.stdout.strip())
+            Path(os.environ['EMU_HOST_LOG']).write_bytes(state)
         return out.with_suffix('.bin').read_bytes()
 
 

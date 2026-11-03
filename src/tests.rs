@@ -1011,3 +1011,25 @@ fn the_player_flies_with_one_stick() {
     run(&mut a, &mut reu, input::DOWN, 600);
     assert_eq!(a.grounded, 1, "did not land: h {} speed {}", a.h, a.speed());
 }
+
+/// The moving objects: the demo convoy and gunship seen from close by, drawn among the static scene (the
+/// picture goes to `output/m2/close.png`), and turned the way they drive.
+#[test]
+fn moving_objects_are_drawn_where_they_are() {
+    use crate::layout::BUFFERS;
+    let reu = package();
+    let mut m = Machine::new(reu);
+    crate::package::setup(&mut m, BUFFERS[0]);
+    // Looking north at the convoy on the loop round (1024, 820), 4 texels up, nose 10° down.
+    let cam = camera_at(1020.0, 835.0, 4.0, 0, -10, 0);
+    let t = 900;
+    crate::actors::demo(&mut m, t, &cam);
+    let n = m.ram[crate::actors::DYN as usize];
+    assert!(n >= 4, "only {n} of the demo's objects in view");
+    let scene = crate::package::scene_block(reu);
+    let st = crate::package::render_floor(&mut m, BUFFERS[0], &scene, &cam, false);
+    let mut rgb = m.decode(BUFFERS[0], crate::format::COLORS[0]);
+    crate::hud::composite(&m, 0, &mut rgb);
+    crate::png::save_wide(std::path::Path::new("output/m2/close.png"), 160, &rgb).unwrap();
+    assert!(st.tris as u32 + st.dropped as u32 > st.geom.tris as u32, "{st:?}");
+}
