@@ -77,8 +77,11 @@ pub mod act {
     pub const MOVE: u8 = 0;
     pub const FIGHT: u8 = 1;
     pub const HOLD: u8 = 2;
-    /// Turn back along its road (the move phase then carries on as `MOVE`).
+    /// Turn back along its road (the move phase then carries on as `BACK`).
     pub const RETREAT: u8 = 3;
+    /// Retreating, turned back already: it moves as `MOVE`, and a further retreat decision keeps it going
+    /// the way it is (no turning back and forth while foes stay near).
+    pub const BACK: u8 = 4;
 }
 
 /// A sector: units of each side (u8 × 2), each side's representative (u16 × 2).
@@ -428,8 +431,12 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
     wr(hw, t, node);
     hw.poke(t + 2, took);
     let static_ = f[unit::MOBILE] == 0;
+    let doing = hw.peek(r + rec::ACTION);
     hw.poke(r + rec::ACTION, match mv {
         unit::ATTACK => act::FIGHT,
+        unit::RETREAT if doing == act::BACK => act::BACK,
+        // The carrier keeps its station (its escorts fight): a flagship does not turn tail.
+        unit::RETREAT if kind == crate::actors::kind::CARRIER => act::MOVE,
         unit::RETREAT => act::RETREAT,
         unit::HOLD => act::HOLD,
         _ if static_ => act::HOLD,
@@ -706,7 +713,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             if mode != LOOP && len > 1 {
                 leg = (2 * len - 1).wrapping_sub(leg) % (2 * len - 2);
             }
-            hw.poke(r + rec::ACTION, act::MOVE);
+            hw.poke(r + rec::ACTION, act::BACK);
         }
         // Round a loop; along a road and back (legs len.. take its waypoints in reverse).
         let len = len.max(1);

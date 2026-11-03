@@ -1206,6 +1206,35 @@ fn deck_moves_smoothly_on_long_laps() {
     assert!(still < 20 * 3600 / 10, "the deck stood still for {still} ticks");
 }
 
+/// The carrier on station with the enemy flotilla near (the player on its deck, as at the start): it
+/// keeps a course, turning back at most at its road's ends and on a fresh retreat, never back and forth
+/// every lap of the war (a retreat turns a unit back once, `act::BACK`).
+#[test]
+fn the_carrier_does_not_see_saw() {
+    use crate::world_sim::{self as ws, carrier};
+    let mut m = Machine::new(package());
+    let start = carrier(&mut &m.reu[..], 0).unwrap();
+    let (mut last, mut way) = ((start.u as i32, start.v as i32), (0i32, 0i32));
+    let mut reversals = 0;
+    for t in (0..3 * 3600u32).step_by(8) {
+        let d = carrier(&mut &m.reu[..], t as u16).unwrap();
+        ws::step_page(&mut m, t as u16, (d.u >> 4) as i16, (d.v >> 4) as i16);
+        // Its way made good over each 256 ticks (2 war laps' worth or so).
+        if t % 256 == 0 && t > 0 {
+            let now = (d.u as i32, d.v as i32);
+            let w = (now.0 - last.0, now.1 - last.1);
+            if w.0 * way.0 + w.1 * way.1 < 0 {
+                reversals += 1;
+            }
+            if w != (0, 0) {
+                way = w;
+            }
+            last = now;
+        }
+    }
+    assert!(reversals <= 2, "the carrier turned back {reversals} times in 3 minutes");
+}
+
 /// The carrier: an agent placed on its deck rides it (keeping its place on the deck while the ship
 /// steams on with the war), then the autopilot lifts off and climbs away from it.
 #[test]

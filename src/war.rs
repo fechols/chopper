@@ -53,6 +53,9 @@ fn shore(w: &World, mut u: i32, mut v: i32, du: i32, dv: i32) -> (i32, i32) {
     (u, v)
 }
 
+/// How far inside the map's edge the sea routes keep (texels).
+const SEA_ROOM: i32 = 48;
+
 /// The routes' waypoints (texels) and modes.
 pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
     let pad = |k: usize| (PADS[k].u as i32, PADS[k].v as i32);
@@ -71,7 +74,9 @@ pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
             }
             r += 4.0;
         }
-        ((1024.0 + c * (last + 70.0)) as i32, (1024.0 + s * (last + 70.0)) as i32)
+        // (Kept a sea room inside the map's edge.)
+        let room = |x: f32| (x as i32).clamp(SEA_ROOM, 2047 - SEA_ROOM);
+        (room(1024.0 + c * (last + 70.0)), room(1024.0 + s * (last + 70.0)))
     };
     // The enemy flotilla raids from the west coast round the south; the carrier group's station overlaps
     // the end of it, so the fleets meet.
