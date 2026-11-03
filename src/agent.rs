@@ -166,7 +166,8 @@ pub struct Agent {
     /// On the carrier's deck (`ON_DECK`), to be placed on it or at home (`PLACE_CARRIER`, `PLACE_HOME`), or
     /// ditched in the sea (`DITCHED`, for `combat`); 0 otherwise.
     pub deck: u8,
-    /// On the deck: where (1/16 texel across and along it) and the heading, relative to the carrier's.
+    /// On the deck: where (1/16 texel across and along it) and the heading, relative to the carrier's. In
+    /// the air, `dyaw` is the player's course instead (its high byte: the copilot's, `carrot`).
     pub du: i16,
     pub dv: i16,
     pub dyaw: u8,
@@ -206,6 +207,10 @@ pub const MODE_AUTO: u8 = 0;
 pub const MODE_PLAYER: u8 = 1;
 /// The player's stick: full throttle (64 ticks from a hover), the bank of a turn, the flare when slowing.
 pub const THROTTLE_MAX: u8 = 64;
+/// The player's course: the copilot flies to a waypoint this far ahead on it (texels), placed anew
+/// once within `CARROT_NEAR` of it (`feature::DIST`, 8-texel units: 128 texels).
+const CARROT: i16 = 256;
+const CARROT_NEAR: u8 = 16;
 const PLAYER_BANK: i16 = 25 * DEG;
 const FLARE: i16 = 768;
 /// Hurt, the autopilot flies no faster than this pitch's speed (half the cruise).
@@ -347,6 +352,60 @@ impl Agent {
         self.h = self.h.max(DECK_EYE + DECK_TOP);
     }
 
+    /// The player takes over from the autopilot (the fire button, each frame it is held): the copilot
+    /// holds the course it is on now, not the autopilot's waypoint (one here, where it is, is placed
+    /// anew on the course at the next decision).
+    #[inline(always)]
+    pub fn take_over(&mut self) {
+        if self.mode != MODE_PLAYER {
+            self.mode = MODE_PLAYER;
+            (self.wu, self.wv) = self.at();
+        }
+    }
+
+    /// The player's copilot is the same pilot, flying to a carrot on the course: [`CARROT`] texels
+    /// ahead. `think` places it anew while the stick turns (and when near it, or just taken over), and
+    /// leaves it otherwise, so the pilot comes back onto the course after dodging a mountain. (In the
+    /// deck's overlay, in with the AI's: that one is full.)
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+    fn carrot(&mut self, fresh: bool) {
+        // Afresh (turning, lifting off, just taken over): from here, on the course it heads, kept
+        // (`dyaw`: in the air, the course's high byte; riding the deck, it is the deck's). Else on from
+        // the last carrot along the course: it keeps to its line, whatever a dodge did to the heading.
+        let (u, v) = if fresh {
+            if self.deck != ON_DECK {
+                self.dyaw = (self.yaw >> 8) as u8;
+            }
+            self.at()
+        } else {
+            (self.wu, self.wv)
+        };
+        // (Riding the deck, it means nothing: the copilot only lifts off there, and its first decision in
+        // the air, after a lift, places the carrot afresh.)
+        let (du, dv) = turn(0, CARROT, (self.dyaw as u16) << 8, true);
+        (self.wu, self.wv) = (u + du, v + dv);
+    }
+
+    /// The player's part of the pilot's decision `a`: off the ground with the stick forward once the
+    /// rotor is up to speed; hovering with it held back, down; turning, the stick's bank (`step_with`), so
+    /// a dodge the stick overrides becomes a climb (never into a mountain, whatever the stick does).
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
+    fn copilot(&self, a: u8) -> u8 {
+        let i = self.input;
+        if self.grounded != 0 {
+            // (The pilot's own choice there: a lift once the rotor is up to speed.)
+            if i & input::UP != 0 { a } else { action::IDLE }
+        } else if self.throttle == 0 && self.vf < 256 && i & input::DOWN != 0 {
+            action::LAND
+        } else if i & (input::LEFT | input::RIGHT) != 0 && a.wrapping_sub(action::EVADE_L) < 2 {
+            action::CLIMB
+        } else {
+            a
+        }
+    }
+
     /// Airspeed, 8.8 texels a tick.
     #[inline(always)]
     pub fn speed(&self) -> i16 {
@@ -465,33 +524,28 @@ impl Agent {
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     fn think<R: Reu + ?Sized>(&mut self, reu: &mut R) {
         let mut f = [0u8; feature::BLOCK];
+        let player = self.mode == MODE_PLAYER;
         self.features(reu, &mut f);
-        if self.mode == MODE_PLAYER {
-            // The player steers and sets the speed; the helicopter keeps its height: over what is ahead,
-            // down to cruise, onto the ground when hovering with the stick held back, off it with the
-            // stick forward once the rotor is up to speed.
-            use feature::*;
-            let blocked = f[HAZ_NEAR] >= 128 || f[HAZ_FAR] >= 128;
-            let hover = self.throttle == 0 && self.vf < 256;
-            self.action = if self.grounded != 0 {
-                if self.t >= LIFT && self.input & input::UP != 0 { action::LIFT } else { action::IDLE }
-            } else if blocked || f[ALT] < 126 && !(hover && self.input & input::DOWN != 0) {
-                action::CLIMB
-            } else if f[ALT] >= 131 || hover && self.input & input::DOWN != 0 {
-                action::DESCEND
-            } else {
-                action::FORWARD
-            };
-            return;
-        }
         let (mut a, mut learned) = brain::walk(reu, AI_TREES, brain::PILOT, &f);
-        // At the waypoint: the next (unless the fight owns it: the prey, or home).
-        if a == action::NEXT_WP && self.combat & (combat::HUNT | combat::HURT) == 0 {
-            self.next_waypoint(reu);
+        // At the waypoint: the next (unless the fight owns it: the prey, or home). The player's: a carrot
+        // anew on the course while the stick turns, and when near it (or just taken over: it is here).
+        // (Afresh: turning; just taken over, or off the ground: the last decision a lift.)
+        let fresh = self.input & (input::LEFT | input::RIGHT) != 0 || self.action == action::LIFT || f[feature::DIST] == 0;
+        let replan = if player {
+            fresh || f[feature::DIST] < CARROT_NEAR
+        } else {
+            a == action::NEXT_WP && self.combat & (combat::HUNT | combat::HURT) == 0
+        };
+        if replan {
+            if player { self.carrot(fresh) } else { self.next_waypoint(reu) }
             self.features(reu, &mut f);
             (a, learned) = brain::walk(reu, AI_TREES, brain::PILOT, &f);
         }
-        self.action = if a == action::NEXT_WP { action::FORWARD } else { a };
+        let mut a = if a == action::NEXT_WP { action::FORWARD } else { a };
+        if player {
+            a = self.copilot(a);
+        }
+        self.action = a;
         if learned != 0 {
             self.learned = learned.to_le_bytes();
         }
@@ -526,9 +580,24 @@ impl Agent {
         // The controls' targets.
         // (Tables of 16 and `& 15`: no bounds checks in the overlay.)
         let k = self.action as usize & 15;
-        let (bank, pitch) = if self.mode == MODE_PLAYER {
-            // The stick: the bank of a turn; the speed setting up and down, the nose down to hold it, up
-            // to slow (a flare). On the ground, still.
+        // (In the fight, the turns are hard: a tight circle onto the prey, or home.)
+        let hard = if self.combat != 0 { FIGHT_BANK } else { TURN_BANK_MIN };
+        let mut bank = match self.action {
+            action::TURN_L => -self.steer.abs().max(hard),
+            action::TURN_R => self.steer.abs().max(hard),
+            action::FORWARD | action::STRAFE | action::LAUNCH | action::SLOW | action::LAND => self.steer,
+            _ => TARGET_BANK[k],
+        };
+        // Hurt, home at half speed at most (a tighter circle, a gentler arrival); landing, a flare
+        // while it still moves, then level as it settles.
+        let mut pitch = if self.combat & combat::HURT != 0 { TARGET_PITCH[k].max(HURT_PITCH) } else { TARGET_PITCH[k] };
+        if self.action == action::LAND && self.vf > 256 {
+            pitch = FLARE;
+        }
+        if self.mode == MODE_PLAYER {
+            // The stick: the bank of a turn (let go, the pilot's: wings level on the course); the speed
+            // setting up and down, the nose down to hold it, up to slow (a flare). On the ground, still.
+            // The height stays the pilot's.
             let i = self.input;
             if i & input::UP != 0 && self.throttle < THROTTLE_MAX {
                 self.throttle += 1;
@@ -536,23 +605,16 @@ impl Agent {
             if i & input::DOWN != 0 && self.throttle > 0 {
                 self.throttle -= 1;
             }
-            let bank = if self.grounded != 0 { 0 } else if i & input::LEFT != 0 { -PLAYER_BANK } else if i & input::RIGHT != 0 { PLAYER_BANK } else { 0 };
+            if self.grounded != 0 {
+                bank = 0;
+            } else if i & input::LEFT != 0 {
+                bank = -PLAYER_BANK;
+            } else if i & input::RIGHT != 0 {
+                bank = PLAYER_BANK;
+            }
             let want = -((self.throttle as i16) << 5);
-            (bank, if self.grounded != 0 { 0 } else if self.vf > (-want << 2) + 512 { FLARE } else { want })
-        } else {
-            // (In the fight, the turns are hard: a tight circle onto the prey, or home.)
-            let hard = if self.combat != 0 { FIGHT_BANK } else { TURN_BANK_MIN };
-            let bank = match self.action {
-                action::TURN_L => -self.steer.abs().max(hard),
-                action::TURN_R => self.steer.abs().max(hard),
-                action::FORWARD | action::STRAFE | action::LAUNCH | action::SLOW | action::LAND => self.steer,
-                _ => TARGET_BANK[k],
-            };
-            // Hurt, home at half speed at most (a tighter circle, a gentler arrival); landing, a flare
-            // while it still moves, then level as it settles.
-            let pitch = if self.combat & combat::HURT != 0 { TARGET_PITCH[k].max(HURT_PITCH) } else { TARGET_PITCH[k] };
-            (bank, if self.action == action::LAND && self.vf > 256 { FLARE } else { pitch })
-        };
+            pitch = if self.grounded != 0 { 0 } else if self.vf > (-want << 2) + 512 { FLARE } else { want };
+        }
         // The attitude follows, lagged and rate-limited; the bank turns, the pitch drives the speed.
         follow(&mut self.roll, bank, ROLL_RATE);
         follow(&mut self.pitch, pitch, PITCH_RATE);
@@ -589,8 +651,7 @@ impl Agent {
         if self.h < floor {
             self.h = floor;
             self.climb = self.climb.max(0);
-            let down = if self.mode == MODE_PLAYER { action::DESCEND } else { action::LAND };
-            if self.action == down && self.grounded == 0 {
+            if self.action == action::LAND && self.grounded == 0 {
                 self.grounded = 1;
                 self.vf = 0;
                 if let Some((x, y, yaw)) = over {

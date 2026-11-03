@@ -1016,16 +1016,16 @@ fn the_waypoint_caret_tracks_the_waypoint() {
 /// with the stick back settles onto the ground.
 #[test]
 fn the_player_flies_with_one_stick() {
-    use crate::agent::{Agent, LIFT, MODE_PLAYER, THROTTLE_MAX, input};
+    use crate::agent::{Agent, LIFT, THROTTLE_MAX, input};
     let mut reu: &[u8] = package();
     let mut a = Agent::new();
-    a.mode = MODE_PLAYER;
+    a.take_over();
     // (Fire held, as a player would: `main.rs` hands the player the controls each frame, except past the
     // sea limit, where a random stick may wander.)
     let run = |a: &mut Agent, reu: &mut &[u8], stick: u8, ticks: u32| {
         a.input = stick;
         for _ in 0..ticks {
-            a.mode = MODE_PLAYER;
+            a.take_over();
             a.step(reu);
         }
     };
@@ -1059,6 +1059,100 @@ fn the_player_flies_with_one_stick() {
     // Slow to a hover, then hold back: down onto the ground.
     run(&mut a, &mut reu, input::DOWN, 600);
     assert_eq!(a.grounded, 1, "did not land: h {} speed {}", a.h, a.speed());
+}
+
+/// The player's helicopter at cruise over (`u`, `v`), heading `yaw`, at half throttle and its speed.
+fn player_at(u: i32, v: i32, yaw: u16) -> crate::agent::Agent {
+    use crate::agent::{Agent, CRUISE, EYE, LIFT, THROTTLE_MAX};
+    let mut a = Agent::new();
+    (a.t, a.u, a.v, a.h, a.yaw, a.grounded) = (LIFT + 100, u << 8, v << 8, EYE + ((CRUISE as i32) << 8), yaw, 0);
+    a.take_over();
+    (a.throttle, a.vf) = (THROTTLE_MAX / 2, 4096);
+    a
+}
+
+/// The copilot (the attract-mode pilot, flying to a waypoint ahead on the player's course): let go after
+/// a turn, the wings come level, the course holds, and the height stays at cruise.
+#[test]
+fn hands_off_the_copilot_levels_and_holds_course() {
+    use crate::agent::{CRUISE, input};
+    const DEG: i16 = 182;
+    let mut reu: &[u8] = package();
+    let mountains = crate::goap::mountains(&crate::world::generate(1983));
+    // A start and heading with no mountain near the next 700 texels (turned 15° left of it, to turn
+    // back onto it).
+    let clear = |u0: f64, v0: f64, yaw: u16| {
+        let a = yaw as f64 / 65536.0 * std::f64::consts::TAU;
+        (0..=70).all(|k| {
+            let (u, v) = (u0 + a.sin() * k as f64 * 10.0, v0 + a.cos() * k as f64 * 10.0);
+            mountains.iter().all(|&(mu, mv, mr, _)| ((u - mu).powi(2) + (v - mv).powi(2)).sqrt() > mr + 40.0)
+                && (60.0..1988.0).contains(&u) && (60.0..1988.0).contains(&v)
+        })
+    };
+    let (u0, v0, yaw) = (0..64u32)
+        .flat_map(|p| (0..32u16).map(move |k| (400.0 + (p % 8) as f64 * 160.0, 400.0 + (p / 8) as f64 * 160.0, k << 11)))
+        .find(|&(u, v, y)| clear(u, v, y) && clear(u, v, y.wrapping_add(15 * DEG as u16)))
+        .expect("no clear heading");
+    let mut a = player_at(u0 as i32, v0 as i32, yaw.wrapping_add(15 * DEG as u16));
+    a.input = input::LEFT;
+    while (a.yaw.wrapping_sub(yaw) as i16) > 0 {
+        a.step(&mut reu);
+        assert!(a.t < crate::agent::LIFT + 1000, "never turned");
+    }
+    a.input = 0;
+    for k in 0..400 {
+        a.step(&mut reu);
+        if std::env::var("COPILOT_TRACE").is_ok() && k % 10 == 0 {
+            println!("{k} roll {} yaw {} steer {} action {}", a.roll / 18, (a.yaw.wrapping_sub(yaw) as i16) / 18, a.steer / 18, a.action);
+        }
+    }
+    assert!(a.roll.abs() < 2 * DEG, "still banked {}°", a.roll / DEG);
+    let course = a.yaw;
+    for _ in 0..1200 {
+        a.step(&mut reu);
+        let alt = (a.h >> 8) as i16 - CRUISE;
+        assert!((-2..3).contains(&alt), "tick {}: {alt} texels off cruise", a.t);
+    }
+    let drift = a.yaw.wrapping_sub(course) as i16;
+    assert!(drift.abs() < 3 * DEG, "drifted {}°", drift / DEG);
+}
+
+/// Hands off, at a mountain: the copilot gets over (or round) it, back down to cruise, and back on the
+/// course it was on.
+#[test]
+fn the_copilot_climbs_over_what_is_ahead() {
+    use crate::agent::CRUISE;
+    const DEG: i16 = 182;
+    let mut reu: &[u8] = package();
+    let mountains = crate::goap::mountains(&crate::world::generate(1983));
+    // The tallest mountain well inside the map, from 220 texels south of it, heading north.
+    let &(mu, mv, mr, mh) = mountains
+        .iter()
+        .filter(|m| (400.0..1650.0).contains(&m.0) && (500.0..1500.0).contains(&m.1))
+        .max_by(|a, b| a.3.total_cmp(&b.3))
+        .expect("no mountain");
+    let mut a = player_at(mu as i32, (mv - mr - 220.0) as i32, 0);
+    a.input = 0;
+    let (mut top, mut wide, mut passed) = (0i32, 0f64, 0u32);
+    while passed < 1500 {
+        a.step(&mut reu);
+        let (u, v, h) = (a.u as f64 / 256.0, a.v as f64 / 256.0, a.h as f64 / 256.0);
+        let d = ((u - mu).powi(2) + (v - mv).powi(2)).sqrt();
+        if d < mr {
+            assert!(h > mh * (1.0 - d / mr), "tick {}: into the mountain", a.t);
+        }
+        if (v - mv).abs() < mr {
+            (top, wide) = (top.max(a.h >> 8), wide.max((u - mu).abs()));
+        }
+        passed += (v > mv + mr + 40.0) as u32;
+        assert!(a.t < crate::agent::LIFT + 100 + 6000, "never past: at ({u:.0}, {v:.0})");
+    }
+    assert!(top as f64 > mh || wide > mr, "neither over nor round: top {top} of {mh}, {wide:.0} off of {mr}");
+    println!("past the {mh}-texel mountain: up to {top} texels, {wide:.0} texels off its middle (radius {mr})");
+    let alt = (a.h >> 8) as i16 - CRUISE;
+    assert!((-2..3).contains(&alt), "{alt} texels off cruise after it");
+    let off = a.yaw as i16;
+    assert!(off.abs() < 10 * DEG, "course {}° off north after it", off / DEG);
 }
 
 /// The moving objects: the demo convoy and gunship seen from close by, drawn among the static scene (the
@@ -1650,6 +1744,7 @@ fn the_sea_lamp_warns_and_the_autopilot_turns_back() {
     let mut a = Agent::new();
     (a.t, a.u, a.v, a.h, a.yaw, a.grounded) = (LIFT + 100, 1900 << 8, 1024 << 8, EYE + ((CRUISE as i32) << 8), 0x4000, 0);
     (a.mode, a.throttle, a.vf) = (MODE_PLAYER, THROTTLE_MAX, 8192);
+    (a.wu, a.wv) = a.at();
     let lamp_on = |a: &Agent| {
         let mut k = [0u8; gauge::COUNT];
         readings(a, &mut k);
@@ -1661,7 +1756,7 @@ fn the_sea_lamp_warns_and_the_autopilot_turns_back() {
     // ten seconds after the takeover.
     while held < 600 {
         a.input = input::UP | input::FIRE;
-        a.mode = MODE_PLAYER;
+        a.take_over();
         let t = a.t + 4;
         a.fly(&mut &reu[..], t);
         warned |= lamp_on(&a) && !taken;
@@ -1767,6 +1862,7 @@ fn landing_on_the_deck_or_in_the_sea() {
     let hover = |u: i32, v: i32| {
         let mut a = Agent::new();
         (a.u, a.v, a.h, a.grounded, a.mode, a.t, a.yaw) = (u, v, EYE + DECK_TOP + (3 << 8), 0, MODE_PLAYER, 6000, d.yaw);
+        (a.wu, a.wv) = a.at();
         a.input = input::DOWN;
         a
     };
@@ -1949,6 +2045,7 @@ fn wrecks_smoke_then_go() {
     combat::init(&mut m);
     let mut a = Agent::new();
     (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
+    (a.wu, a.wv) = a.at();
     let at = ws::UNITS as usize + 7 * RECORD as usize;
     let r = &mut m.reu[at..at + RECORD as usize];
     r.fill(0);
@@ -1985,6 +2082,7 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
     // Two enemy tanks ahead (north) of a player 10 texels up at (1024, 1100), hovering, facing north.
     let mut a = Agent::new();
     (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
+    (a.wu, a.wv) = a.at();
     let put = |m: &mut Machine, id: u16, u: u16, v: u16| {
         let at = ws::UNITS as usize + id as usize * RECORD as usize;
         let r = &mut m.reu[at..at + RECORD as usize];

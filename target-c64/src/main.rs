@@ -409,7 +409,7 @@ pub extern "C" fn main() -> i16 {
         agent.input = joy | if peek(0xD419) < 0x80 { chopper::agent::input::FIRE2 } else { 0 };
         if joy & chopper::agent::input::FIRE != 0 {
             // The player takes over from the autopilot.
-            agent.mode = chopper::agent::MODE_PLAYER;
+            agent.take_over();
         }
         // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry, the bands.
         stopwatch_start();

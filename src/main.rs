@@ -404,6 +404,7 @@ fn wrecks(args: &[String]) -> Result<(), String> {
     let mut a = chopper::agent::Agent::new();
     let t0 = 20_000u32;
     (a.u, a.v, a.h, a.grounded, a.mode, a.t) = (1024 << 8, (num(args, "--v", 1112.0) as i32) << 8, (num(args, "--h", 5.0) as i32) << 8, 0, chopper::agent::MODE_PLAYER, t0);
+    (a.wu, a.wv) = a.at();
     a.pitch = num(args, "--pitch", -2000.0) as i16;
     // A row ahead: (kind, alive) pairs, ids 200 on.
     let row = [(kind::TANK, false), (kind::TANK, true), (kind::APC, false), (kind::TRUCK, false), (kind::AA, false), (kind::GUNSHIP, false)];

@@ -432,6 +432,11 @@ def main():
             # (The agent's offset in the compared bytes: bitmap, screen and colour RAM, the HUD table, its
             # sprite blocks, the lock state.)
             stick = 8000 + 1000 + 1000 + HUD_TABLE + 64 * len(HUD_SLOTS) + LOCK_BYTES + 36
+            if got[stick + 1] != want[stick + 1]:
+                # Taken over: `Agent::take_over` also put the copilot's carrot (wu, wv: agent bytes 26-29)
+                # where the helicopter is.
+                carrot = stick - 36 + 26
+                got = got[:carrot] + want[carrot:carrot + 4] + got[carrot + 4:]
             got = got[:stick] + want[stick:stick + 2] + got[stick + 2:]
             bad = sum(a != b for a, b in zip(got, want))
             dmas = d1 - d0
