@@ -1116,6 +1116,86 @@ fn the_fleets_meet() {
     assert!(carrier[rec::FLAGS as usize] & ALIVE != 0, "the carrier sank");
 }
 
+/// The near list and `NEAR_FLAG` agree: a living unit is flagged exactly when it is listed (drawn), so one
+/// left out of a full list (or pushed out by the carrier) can't fire at the player unseen.
+#[test]
+fn near_flag_means_listed() {
+    use crate::world_sim::{self as ws, ALIVE, NEAR_FLAG, carrier, rec};
+    let mut m = Machine::new(package());
+    let mut t = 0u32;
+    while t < 10 * 3600 {
+        // The player by the carrier's group, where the fleets meet.
+        let d = carrier(&mut &m.reu[..], t as u16).expect("a carrier");
+        let (pu, pv) = ((d.u >> 4) as i16, (d.v >> 4) as i16);
+        ws::step_page(&mut m, t as u16, pu, pv);
+        t += 4;
+        let n = m.ram[ws::NEAR as usize].min(ws::NEAR_MAX);
+        let listed: Vec<u16> = (0..n as usize).map(|k| u16::from_le_bytes([m.ram[ws::NEAR as usize + 1 + 2 * k], m.ram[ws::NEAR as usize + 2 + 2 * k]])).collect();
+        for id in 0..ws::COUNT {
+            // (The page in RAM is stashed at the end of its phase: read the REU's copy.)
+            let r = &m.reu[ws::UNITS as usize + id as usize * ws::RECORD as usize..][..ws::RECORD as usize];
+            let (alive, flagged) = (r[rec::FLAGS as usize] & ALIVE != 0, r[rec::FLAGS as usize] & NEAR_FLAG != 0);
+            if alive {
+                assert_eq!(flagged, listed.contains(&id), "unit {id} at tick {t}: flagged {flagged}");
+            }
+        }
+    }
+}
+
+/// A full near list: the carrier coming near takes the last place, and the unit it pushes out is unflagged
+/// at once (in the REU: it is in a later page).
+#[test]
+fn the_carrier_pushes_the_last_near_unit_out_unflagged() {
+    use crate::world_sim::{self as ws, NEAR_FLAG, carrier, head, rec};
+    let mut m = Machine::new(package());
+    let id = u16::from_le_bytes([m.reu[(ws::HEADER + head::CARRIER as u32) as usize], m.reu[(ws::HEADER + head::CARRIER as u32) as usize + 1]]);
+    let flags = |m: &Machine, u: u16| m.reu[ws::UNITS as usize + u as usize * ws::RECORD as usize + rec::FLAGS as usize];
+    // Twelve units from the pages after the carrier's, listed and flagged.
+    let later = (id / ws::PAGE + 1) * ws::PAGE;
+    let full: Vec<u16> = (later..ws::COUNT).take(ws::NEAR_MAX as usize).collect();
+    assert_eq!(full.len(), ws::NEAR_MAX as usize, "units after the carrier's page (it is unit {id})");
+    m.ram[ws::NEAR as usize] = ws::NEAR_MAX;
+    for (k, &u) in full.iter().enumerate() {
+        m.ram[ws::NEAR as usize + 1 + 2 * k..][..2].copy_from_slice(&u.to_le_bytes());
+        let f = ws::UNITS as usize + u as usize * ws::RECORD as usize + rec::FLAGS as usize;
+        m.reu[f] |= NEAR_FLAG;
+    }
+    // The pages up to the carrier's move, the player beside it.
+    let d = carrier(&mut &m.reu[..], 0).unwrap();
+    let (pu, pv) = ((d.u >> 4) as i16, (d.v >> 4) as i16);
+    for f in 0..=3 * (id / ws::PAGE) {
+        ws::step_page(&mut m, 4 * f, pu, pv);
+    }
+    let listed: Vec<u16> = (0..ws::NEAR_MAX as usize).map(|k| u16::from_le_bytes([m.ram[ws::NEAR as usize + 1 + 2 * k], m.ram[ws::NEAR as usize + 2 + 2 * k]])).collect();
+    let out = full[ws::NEAR_MAX as usize - 1];
+    assert!(listed.contains(&id) && !listed.contains(&out), "the carrier in the last place: {listed:?}");
+    assert_eq!(flags(&m, out) & NEAR_FLAG, 0, "unit {out} pushed out but still flagged");
+    assert!(flags(&m, full[0]) & NEAR_FLAG != 0);
+}
+
+/// On long laps of the war (15 ticks a frame, as on a slow C64 frame), the carrier's deck still moves
+/// every tick, never jumping: its projection covers a whole lap.
+#[test]
+fn deck_moves_smoothly_on_long_laps() {
+    use crate::world_sim::{self as ws, carrier, stats};
+    let mut m = Machine::new(package());
+    let speed = stats::SPEED[crate::actors::kind::CARRIER as usize] as i32;
+    let mut last = carrier(&mut &m.reu[..], 0).unwrap();
+    let (mut t, mut still) = (0u32, 0u32);
+    while t < 20 * 3600 {
+        ws::step_page(&mut m, t as u16, -4000, -4000);
+        for k in 1..=15 {
+            let Some(d) = carrier(&mut &m.reu[..], (t + k) as u16) else { return };
+            let step = (d.u as i32 - last.u as i32).abs().max((d.v as i32 - last.v as i32).abs());
+            assert!(step <= speed + 1, "the deck jumped {step}/16 texel at tick {}", t + k);
+            still += (step == 0 && d.yaw == last.yaw) as u32;
+            last = d;
+        }
+        t += 15;
+    }
+    assert!(still < 20 * 3600 / 10, "the deck stood still for {still} ticks");
+}
+
 /// The carrier: an agent placed on its deck rides it (keeping its place on the deck while the ship
 /// steams on with the war), then the autopilot lifts off and climbs away from it.
 #[test]
@@ -1161,7 +1241,17 @@ fn landing_on_the_deck_or_in_the_sea() {
     use crate::world_sim::{DECK_TOP, carrier};
     let mut m = Machine::new(package());
     crate::combat::init(&mut m);
+    crate::war::run(&mut m, 0, 6000, 4);
     let d = carrier(&mut &m.reu[..], 6000).unwrap();
+    // The war goes on while they fly (the deck moves on under them).
+    let fly = |m: &mut Machine, a: &mut Agent| {
+        while a.t < 6000 + 600 {
+            let (pu, pv) = a.at();
+            crate::world_sim::step_page(m, a.t as u16, pu, pv);
+            let t = a.t + 4;
+            a.fly(&mut &m.reu[..], t);
+        }
+    };
     let hover = |u: i32, v: i32| {
         let mut a = Agent::new();
         (a.u, a.v, a.h, a.grounded, a.mode, a.t, a.yaw) = (u, v, EYE + DECK_TOP + (3 << 8), 0, MODE_PLAYER, 6000, d.yaw);
@@ -1169,11 +1259,13 @@ fn landing_on_the_deck_or_in_the_sea() {
         a
     };
     let mut a = hover((d.u as i32) << 4, (d.v as i32) << 4);
-    a.fly(&mut &m.reu[..], 6000 + 600);
+    let mut m2 = Machine::new(&m.reu);
+    m2.ram.copy_from_slice(&m.ram);
+    fly(&mut m2, &mut a);
     assert_eq!((a.deck, a.grounded), (ON_DECK, 1), "landed on the deck");
     // 30 texels off its beam: the sea.
     let mut b = hover(((d.u as i32) << 4) + (crate::camera::cos(d.yaw) * (30 << 8) >> 14), ((d.v as i32) << 4) - (crate::camera::sin(d.yaw) * (30 << 8) >> 14));
-    b.fly(&mut &m.reu[..], 6000 + 600);
+    fly(&mut m, &mut b);
     assert_eq!(b.deck, DITCHED, "ditched");
     let cam = b.camera().0;
     assert!(crate::combat::update(&mut m, &b, &cam), "down after ditching");

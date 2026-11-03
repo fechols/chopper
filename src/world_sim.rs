@@ -147,6 +147,19 @@ const _: () = assert!(HALF as u32 * RECORD as u32 <= 0x300);
 /// page runs (`MOVE` / `FIGHT`: which overlay the main loop fetches).
 pub const NEAR: u16 = crate::layout::GAUGES + crate::cockpit::gauge::COUNT as u16;
 pub const NEAR_MAX: u8 = 12;
+
+/// The most ticks a unit's move (and `live`'s projection of it) catches up at once: longer than a lap of
+/// the war on the C64 (31 frames of several ticks), so the carrier's deck never stalls between its moves.
+pub const CATCH_UP: u16 = 1023;
+/// The map's far edge, 1/16 texel (units stay on it).
+const EDGE: i16 = 2047 << 4;
+const _: () = {
+    let mut k = 0;
+    while k < stats::SPEED.len() {
+        assert!(stats::SPEED[k] as u32 * CATCH_UP as u32 <= i16::MAX as u32);
+        k += 1;
+    }
+};
 pub const NEAR_LEN: u16 = 1 + 2 * NEAR_MAX as u16;
 pub const PHASE: u16 = NEAR + NEAR_LEN;
 pub const MOVE: u8 = 0;
@@ -198,11 +211,12 @@ pub fn live(r: &[u8], now: u16) -> (u16, u16) {
 pub fn live_inline(r: &[u8], now: u16) -> (u16, u16) {
     let (mut u, mut v) = (u16::from_le_bytes([r[4], r[5]]), u16::from_le_bytes([r[6], r[7]]));
     if r[rec::FLAGS as usize] & ALIVE != 0 && r[rec::ACTION as usize] != act::HOLD {
-        // (At most 255 × 120: the products fit the 16 × 16 multiply.)
-        let d = (r[rec::SPEED as usize] as u16 * now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(120)) as i16;
+        // (At most `CATCH_UP` ticks: the products fit the 16 × 16 multiply.)
+        let d = (r[rec::SPEED as usize] as u16 * now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(CATCH_UP)) as i16;
         let yaw = (r[rec::YAW as usize] as u16) << 8;
-        u = u.wrapping_add((crate::fixed::mul(crate::camera::sin(yaw) as i16, d) >> 14) as u16);
-        v = v.wrapping_add((crate::fixed::mul(crate::camera::cos(yaw) as i16, d) >> 14) as u16);
+        // (Kept on the map, as `move_unit` keeps it: the same sum.)
+        u = (u as i16).wrapping_add((crate::fixed::mul(crate::camera::sin(yaw) as i16, d) >> 14) as i16).clamp(0, EDGE) as u16;
+        v = (v as i16).wrapping_add((crate::fixed::mul(crate::camera::cos(yaw) as i16, d) >> 14) as i16).clamp(0, EDGE) as u16;
     }
     (u, v)
 }
@@ -228,10 +242,17 @@ pub fn carrier<R: crate::brain::Reu + ?Sized>(reu: &mut R, now: u16) -> Option<D
     reu.read(HEADER + head::CARRIER as u32, &mut id);
     let mut r = [0u8; 18];
     reu.read(UNITS + u16::from_le_bytes(id) as u32 * RECORD as u32, &mut r);
+    deck_of(&r, now)
+}
+
+/// The deck at tick `now` from the carrier's record's first 18 bytes, if it is the carrier and afloat.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+pub fn deck_of(r: &[u8], now: u16) -> Option<Deck> {
     if r[rec::FLAGS as usize] & ALIVE == 0 || r[rec::KIND as usize] != crate::actors::kind::CARRIER {
         return None;
     }
-    let (u, v) = live(&r, now);
+    let (u, v) = live(r, now);
     Some(Deck { u, v, yaw: (r[rec::YAW as usize] as u16) << 8 })
 }
 
@@ -597,17 +618,17 @@ fn waypoint<H: Hw + ?Sized>(hw: &mut H, k: u8) -> (i16, i16) {
 fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i16, pv: i16) {
     let r = at(slot);
     let id = first + slot;
-    let flags = hw.peek(r + rec::FLAGS);
+    let mut flags = hw.peek(r + rec::FLAGS);
     let side = flags & SIDE;
     let kind = hw.peek(r + rec::KIND) as usize % crate::actors::kind::COUNT as usize;
-    let last = rd(hw, r + rec::LAST);
+    let mut last = rd(hw, r + rec::LAST);
     let route_no = hw.peek(r + rec::ROUTE);
     if flags & ALIVE == 0 {
         // A wreck for `WRECK_TICKS` (listed near the player, then gone); then a free slot, respawned if its
         // side has reinforcements due.
         let fresh = now.wrapping_sub(last) < WRECK_TICKS;
         let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
-        near_list(hw, id, fresh && (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE, false);
+        near_list(hw, first, id, fresh && (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE, false);
         if fresh {
             return;
         }
@@ -628,23 +649,25 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             let id = reu_get16(hw, HEADER + head::CARRIER as u32);
             let mut c = [0u8; 18];
             hw::read_into(hw, UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut c);
-            if c[rec::FLAGS as usize] & ALIVE != 0 {
-                (u, v) = live(&c, now);
+            if let Some(d) = deck_of(&c, now) {
+                (u, v) = (d.u, d.v);
             }
         }
         wr(hw, r + rec::U, u);
         wr(hw, r + rec::V, v);
         hw.poke(r + rec::LEG, k);
         hw.poke(r + rec::HP, stats::HP[kind]);
-        hw.poke(r + rec::FLAGS, (flags | ALIVE) & !NEAR_FLAG);
+        flags = (flags | ALIVE) & !NEAR_FLAG;
+        hw.poke(r + rec::FLAGS, flags);
         hw.poke(r + rec::ACTION, act::MOVE);
         let sector = sector_of(hw, r);
         hw.poke(r + rec::SECTOR, sector);
         census(hw, sector, side, true);
         living(hw, side, true);
-        return;
+        // On to its first heading (no step yet).
+        last = now;
     }
-    let dt = now.wrapping_sub(last).min(255);
+    let dt = now.wrapping_sub(last).min(CATCH_UP);
     wr(hw, r + rec::LAST, now);
     // The carrier's damage control: a hit point back about every fourth lap.
     if kind == crate::actors::kind::CARRIER as usize && now & 0x180 == 0 {
@@ -654,7 +677,18 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         }
     }
     let speed = stats::SPEED[kind];
-    if speed > 0 && route_no != 0xFF && hw.peek(r + rec::ACTION) != act::HOLD {
+    if speed > 0 && route_no != 0xFF {
+        // On along the heading it has been seen on since its last move (`live` projects it so, the same
+        // sum), then turned toward its waypoint: what is drawn never jumps when a unit turns.
+        let old = hw.peek(r + rec::YAW);
+        let step = if hw.peek(r + rec::ACTION) == act::HOLD { 0 } else { speed as u16 * dt };
+        let a = (old as u16) << 8;
+        let (u0, v0) = (rd(hw, r + rec::U), rd(hw, r + rec::V));
+        // (Kept on the map: a step past a waypoint by its edge stops there.)
+        let u = (u0 as i16).wrapping_add((crate::hud::mul16(crate::camera::sin(a) as i16, step as i16) >> 14) as i16).clamp(0, EDGE) as u16;
+        let v = (v0 as i16).wrapping_add((crate::hud::mul16(crate::camera::cos(a) as i16, step as i16) >> 14) as i16).clamp(0, EDGE) as u16;
+        wr(hw, r + rec::U, u);
+        wr(hw, r + rec::V, v);
         let (start, len, mode) = route(hw, route_no);
         let mut leg = hw.peek(r + rec::LEG);
         if hw.peek(r + rec::ACTION) == act::RETREAT {
@@ -666,29 +700,27 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         }
         // Round a loop; along a road and back (legs len.. take its waypoints in reverse).
         let len = len.max(1);
-        let k = if mode == LOOP || leg < len { leg % len } else { (2 * len - 2).wrapping_sub(leg) % len };
-        let (tu, tv) = waypoint(hw, start + k);
-        let (u, v) = (rd(hw, r + rec::U), rd(hw, r + rec::V));
-        let (dx, dy) = (tu - (u >> 4) as i16, tv - (v >> 4) as i16);
-        let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
-        let dist = ax.max(ay) + (ax.min(ay) >> 1);
-        // 1/16 texels this step, along the heading.
-        let step = speed as u16 * dt;
-        let yaw = heading(dx, dy);
-        hw.poke(r + rec::YAW, yaw);
-        if dist <= (step >> 4) + 1 {
-            wr(hw, r + rec::U, (tu as u16) << 4);
-            wr(hw, r + rec::V, (tv as u16) << 4);
+        let span = if mode == LOOP { len } else { (2 * len).saturating_sub(2).max(1) };
+        let mut yaw = 0;
+        // Its waypoint; reached (or just passed: behind it now), the next one.
+        for pass in 0..2 {
+            let k = if mode == LOOP || leg < len { leg % len } else { (2 * len - 2).wrapping_sub(leg) % len };
+            let (tu, tv) = waypoint(hw, start + k);
+            let (dx, dy) = (tu - (u >> 4) as i16, tv - (v >> 4) as i16);
+            let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
+            let dist = ax.max(ay) + (ax.min(ay) >> 1);
+            yaw = heading(dx, dy);
+            let passed = dist <= (step >> 4) + 1 && (yaw.wrapping_sub(old) as i8).unsigned_abs() > 64;
+            if pass == 1 || !(dist <= 1 || passed) {
+                break;
+            }
             leg = leg.wrapping_add(1);
-            let span = if mode == LOOP { len } else { (2 * len).saturating_sub(2).max(1) };
-            hw.poke(r + rec::LEG, if leg >= span { 0 } else { leg });
-        } else {
-            let a = (yaw as u16) << 8;
-            let du = crate::hud::mul16(crate::camera::sin(a) as i16, step as i16) >> 14;
-            let dv = crate::hud::mul16(crate::camera::cos(a) as i16, step as i16) >> 14;
-            wr(hw, r + rec::U, (u as i16).wrapping_add(du as i16) as u16);
-            wr(hw, r + rec::V, (v as i16).wrapping_add(dv as i16) as u16);
+            if leg >= span {
+                leg = 0;
+            }
         }
+        hw.poke(r + rec::LEG, leg);
+        hw.poke(r + rec::YAW, yaw);
         let sector = sector_of(hw, r);
         let old = hw.peek(r + rec::SECTOR);
         if sector != old {
@@ -700,8 +732,8 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     // Near the player: listed for the actors.
     let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
     let near = (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE;
-    hw.poke(r + rec::FLAGS, if near { flags | NEAR_FLAG } else { flags & !NEAR_FLAG });
-    near_list(hw, id, near, kind == crate::actors::kind::CARRIER as usize);
+    let listed = near_list(hw, first, id, near, kind == crate::actors::kind::CARRIER as usize);
+    hw.poke(r + rec::FLAGS, if listed { flags | NEAR_FLAG } else { flags & !NEAR_FLAG });
 }
 
 /// One unit's fight: it represents its side in its sector, and fires at the other side's representative
@@ -858,25 +890,48 @@ fn muzzle<H: Hw + ?Sized>(hw: &mut H, r: u16, now: u16) {
     crate::combat::spawn(hw, crate::effects::effect::MUZZLE, u, v, h, now);
 }
 
-/// Keep unit `id` in the near list or out of it.
+/// Keep unit `id` in the near list or out of it; whether it is listed now (`NEAR_FLAG` follows that,
+/// not the range: a unit left out of a full list must neither be drawn nor fire at the player). `page`:
+/// the first unit of the page in RAM.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
-fn near_list<H: Hw + ?Sized>(hw: &mut H, id: u16, near: bool, first: bool) {
+fn near_list<H: Hw + ?Sized>(hw: &mut H, page: u16, id: u16, near: bool, first: bool) -> bool {
     let n = hw.peek(NEAR).min(NEAR_MAX);
     let mut k = 0;
     while k < n && rd(hw, NEAR + 1 + 2 * k as u16) != id {
         k += 1;
     }
-    if near && k == n && n < NEAR_MAX {
+    if near && k < n {
+        return true;
+    }
+    if near && n < NEAR_MAX {
         wr(hw, NEAR + 1 + 2 * n as u16, id);
         hw.poke(NEAR, n + 1);
-    } else if near && k == n && first {
-        // The list full: one that must be there (the carrier) takes the last place.
-        wr(hw, NEAR + 1 + 2 * (n - 1) as u16, id);
-    } else if !near && k < n {
+        return true;
+    }
+    if near && first {
+        // The list full: one that must be there (the carrier) takes the last place, its unit unflagged
+        // (in the page in RAM, or in the REU).
+        let a = NEAR + 1 + 2 * (n - 1) as u16;
+        let old = rd(hw, a);
+        wr(hw, a, id);
+        let slot = old.wrapping_sub(page);
+        if slot < PAGE {
+            let f = at(slot) + rec::FLAGS;
+            let b = hw.peek(f);
+            hw.poke(f, b & !NEAR_FLAG);
+        } else {
+            let f = UNITS + old as u32 * RECORD as u32 + rec::FLAGS as u32;
+            let b = reu_get(hw, f);
+            reu_put(hw, f, b & !NEAR_FLAG);
+        }
+        return true;
+    }
+    if !near && k < n {
         // Remove: the last moves into its place.
         let last = rd(hw, NEAR + 1 + 2 * (n - 1) as u16);
         wr(hw, NEAR + 1 + 2 * k as u16, last);
         hw.poke(NEAR, n - 1);
     }
+    false
 }
