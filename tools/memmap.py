@@ -39,6 +39,7 @@ DATA = [
     (0x8F84, 0x8FF5, 'combat::FXDYN'),
     (0x9000, 0x9800, 'fixed::RECIP'),
     (0x9800, 0x9A80, 'VERTS (set-up: world page half 0)'),
+    (0x9A80, 0x9B00, 'world page half 0, its tail (set-up; world_sim::PAGE_RAM)'),
     (0xA000, 0xAF00, 'BAND_RAM (geom.S band state) = window 2'),
     (0xB760, 0xB7B0, 'combat::FX'),
     (0xB800, 0xBB00, 'BT ray table (set-up: world page half 1)'),

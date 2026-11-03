@@ -23,9 +23,11 @@ MEMORY {
     /* Ends at the HUD's sprite blocks ($5A80-$5BFF, chopper::hud::SLOT_ADDR). */
     ram (rw) : ORIGIN = 0x0801, LENGTH = 0x47FF
     /* After the program: the multiply tables' negative half ($5000-$53FF, fixed::SQ_NEG_*), the sprite
-     * chunk ($5400-$567F, layout::SPRITE_CHUNK), spare ($5680-$5A7F); then the HUD's sprite blocks (written
-     * each frame). Padding in the PRG. */
-    tables (r) : ORIGIN = 0x5000, LENGTH = 0x0A80
+     * chunk ($5400-$567F, layout::SPRITE_CHUNK); then the HUD's sprite blocks (written each frame).
+     * Padding in the PRG. */
+    tables (r) : ORIGIN = 0x5000, LENGTH = 0x0680
+    /* Code loaded in place with the PRG (not relocated), before the HUD's sprite blocks. */
+    spare (rx) : ORIGIN = 0x5680, LENGTH = 0x0400
     hudblocks (r) : ORIGIN = 0x5A80, LENGTH = 0x0180
     /* Code where the VIC never looks, page-aligned and whole pages long (the boot copy moves pages). */
     lowram (rwx) : ORIGIN = 0x0200, LENGTH = 0x0200
@@ -73,8 +75,11 @@ SECTIONS {
         *(.text.span_line .rodata.span_tables .text.geo_bin .text.band_publish .text.bt_build .text._ZN7chopper2hw5fetch*)
     } >spanram AT>boot
     .victext : {
-        *(.text.floor_draw .text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable)
+        *(.text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable)
     } >vicrom AT>boot
+    .sparetext : {
+        *(.text.floor_draw)
+    } >spare
     .bandtext : {
         *(.text.geo_walk .text.geo_xform)
     } >bandram AT>boot
@@ -188,6 +193,7 @@ OUTPUT_FORMAT {
     SHORT(ORIGIN(ram))
     FULL(ram)
     FULL(tables)
+    FULL(spare)
     FULL(hudblocks)
     FULL(boot)
     FULL(gap)

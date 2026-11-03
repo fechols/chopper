@@ -10,13 +10,17 @@
 ; last (the C64U reloads the whole address on any address write). The C64 address is set at each ground
 ; run's start and auto-increments.
 ;
-; Zero page $A0-$B5 while a line is drawn (nothing is kept there between calls: the REU shadows live in
+; In a magnified run (steps within half a texel a byte), a ground byte at the address of the last fetch (the
+; texel repeated) is copied from the byte before it instead of fetched again; the next fetch then sets
+; its C64 address again. Other runs take the plain loop.
+;
+; Zero page $A0-$B6 while a line is drawn (nothing is kept there between calls: the REU shadows live in
 ; SAVE_MID / SAVE_BANK).
 
 RUNP     = $A0    ; (2) the current run record
 XB     = $A2    ; next byte of the line buffer
 REM    = $A3    ; bytes left in the run
-LEN    = $A4
+LEN    = $A4    ; in a ground run: nonzero when the next fetch must set its C64 address (XB)
 UL     = $A5    ; u: 16.8 (UHH = tile column)
 UH     = $A6
 UHH    = $A7
@@ -33,6 +37,7 @@ BK     = $B1
 SHMID  = $B2
 SHBANK = $B3
 TP     = $B4    ; (2) the level's tile table
+SHLO   = $B6    ; the REU address lo of the last fetch (with SHMID and SHBANK, its whole address)
 
 LINEBUF = $BF00
 TILES   = $C000
@@ -43,6 +48,59 @@ SAVE_BANK = $C7D5
 FETCH   = $91
 RECORD  = 12
 COLS    = 40
+
+; Mid and bank written when they change (X = how many did).
+.macro SHADOWS
+    ldx #0
+    lda VH
+    cmp SHMID
+    beq 4f
+    sta $df05
+    sta SHMID
+    inx
+4:  lda BK
+    cmp SHBANK
+    beq 5f
+    sta $df06
+    sta SHBANK
+    inx
+5:
+.endm
+
+; u += du, v += dv; a new tile coordinate means a new bank.
+.macro STEP
+    ldx #0
+    clc
+    lda UL
+    adc DUL
+    sta UL
+    lda UH
+    adc DUH
+    sta UH
+    lda UHH
+    adc DUS
+    cmp UHH
+    beq 6f
+    sta UHH
+    inx
+6:  clc
+    lda VL
+    adc DVL
+    sta VL
+    lda VH
+    adc DVH
+    sta VH
+    lda VHH
+    adc DVS
+    cmp VHH
+    beq 7f
+    sta VHH
+    inx
+7:  txa
+    beq 8f
+    jsr lookup
+8:
+.endm
 
 .section .text.floor_draw,"ax",@progbits
 
@@ -83,6 +141,8 @@ floor_line:
     sta SHMID
     lda SAVE_BANK
     sta SHBANK
+    lda #>LINEBUF
+    sta $df03
     lda #0
     sta XB
     sta TP
@@ -150,64 +210,76 @@ ground:
     bcc 3f
     dex
 3:  stx DVS
-    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned).
+    jsr lookup
+    ; A magnified run (both steps within half a texel a byte: -$80 <= d < $80 in 8.8) repeats texels
+    ; often enough to look for them; nearer 1 they are too rare to pay for the test.
+    lda DUL
+    clc
+    adc #$80
+    lda DUH
+    adc #0
+    bne plain
+    lda DVL
+    clc
+    adc #$80
+    lda DVH
+    adc #0
+    beq magnified
+plain:
+    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned), auto-incremented by each fetch.
     lda XB
     sta $df02
-    lda #>LINEBUF
-    sta $df03
-    jsr lookup
-gbyte:
-    lda VH
-    cmp SHMID
-    beq 4f
-    sta $df05
-    sta SHMID
-4:  lda BK
-    cmp SHBANK
-    beq 5f
-    sta $df06
-    sta SHBANK
-5:  lda UH
+pbyte:
+    SHADOWS
+    lda UH
     sta $df04
     lda #FETCH
     sta $df01
-    ; u += du, v += dv; a new tile coordinate means a new bank.
-    ldx #0
-    clc
-    lda UL
-    adc DUL
-    sta UL
-    lda UH
-    adc DUH
-    sta UH
-    lda UHH
-    adc DUS
-    cmp UHH
-    beq 6f
-    sta UHH
-    inx
-6:  clc
-    lda VL
-    adc DVL
-    sta VL
-    lda VH
-    adc DVH
-    sta VH
-    lda VHH
-    adc DVS
-    cmp VHH
-    beq 7f
-    sta VHH
-    inx
-7:  txa
-    beq 8f
-    jsr lookup
-8:  dec REM
-    bne gbyte
-    clc
+    STEP
+    dec REM
+    beq 9f
+    jmp pbyte
+9:  clc
     lda XB
     adc LEN
     sta XB
+    jmp next
+
+magnified:
+    ; The first byte is fetched (SHLO cannot match), into LINEBUF + XB (LEN, nonzero, says to set it).
+    lda UH
+    eor #$ff
+    sta SHLO
+mbyte:
+    SHADOWS
+    lda UH
+    cmp SHLO
+    bne 1f
+    txa
+    bne 1f
+    ; The last fetch's texel again (never a run's first byte, so XB > 0).
+    ldx XB
+    lda LINEBUF-1,x
+    sta LINEBUF,x
+    stx LEN
+    jmp 6f
+    ; The C64 address after a copied byte or at the run's start.
+1:  ldy LEN
+    beq 2f
+    ldy XB
+    sty $df02
+    ldy #0
+    sty LEN
+2:  lda UH
+    sta $df04
+    sta SHLO
+    lda #FETCH
+    sta $df01
+6:  inc XB
+    STEP
+    dec REM
+    beq next
+    jmp mbyte
 
 next:
     lda XB
@@ -293,7 +365,8 @@ copy2:
 
 ; turbo_probe() -> u16: CIA 2 timer A ticks for 4096 x 5 cycles (~20,500 at 1 MHz, ~320 at 64 MHz).
 ; The C64U engages turbo ~2 s after $D031 is written; main repeats this until it is fast.
-.section .text.turbo_probe,"ax",@progbits
+; (Boot only: in the boot code, not relocated.)
+.section .text.boot.turbo_probe,"ax",@progbits
 .globl turbo_probe
 .type turbo_probe,@function
 turbo_probe:
