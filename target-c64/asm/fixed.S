@@ -74,6 +74,63 @@ m7_umul16:
     rts
 .size m7_umul16, .-m7_umul16
 
+; m7_smul16(a: i16, b: i16) -> i32: the magnitudes multiplied (so small negatives keep umul's zero-byte
+; skips), negated when the signs differ. Reference: `fixed::smul`.
+.section .text.m7_smul16,"ax",@progbits
+.globl m7_smul16
+.type m7_smul16,@function
+m7_smul16:
+    sta AL
+    stx AH
+    txa
+    eor __rc3
+    sta U0              ; bit 7: the signs differ
+    lda __rc2
+    sta BL
+    lda __rc3
+    sta BH
+    bpl 1f
+    lda #0
+    sec
+    sbc BL
+    sta BL
+    lda #0
+    sbc BH
+    sta BH
+1:  lda AH
+    bpl 2f
+    lda #0
+    sec
+    sbc AL
+    sta AL
+    lda #0
+    sbc AH
+    sta AH
+2:  jsr umul
+    bit U0
+    bpl 3f
+    lda #0
+    sec
+    sbc P0
+    sta P0
+    lda #0
+    sbc P1
+    sta P1
+    lda #0
+    sbc P2
+    sta P2
+    lda #0
+    sbc P3
+    sta P3
+3:  lda P2
+    sta __rc2
+    lda P3
+    sta __rc3
+    lda P0
+    ldx P1
+    rts
+.size m7_smul16, .-m7_smul16
+
 ; Point the table pointers' high bytes at the tables (once, at boot; nothing else writes $80-$87).
 .section .text.m7_umul_init,"ax",@progbits
 .globl m7_umul_init

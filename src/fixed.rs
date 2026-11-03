@@ -16,6 +16,7 @@ pub const MANTISSA: u16 = 1024;
 #[cfg(target_arch = "mos")]
 unsafe extern "C" {
     fn m7_umul16(a: u16, b: u16) -> u32;
+    fn m7_smul16(a: i16, b: i16) -> i32;
     fn m7_umul_init();
 }
 
@@ -32,11 +33,17 @@ pub fn umul(a: u16, b: u16) -> u32 {
     }
 }
 
-/// `a * b`, exactly.
+/// `a * b`, exactly (`asm/fixed.S` `m7_smul16` on the C64: one call site's worth of code, a tail call).
 #[inline(never)]
 pub fn mul(a: i16, b: i16) -> i32 {
-    let p = umul(a.unsigned_abs(), b.unsigned_abs()) as i32;
-    if (a < 0) != (b < 0) { -p } else { p }
+    #[cfg(target_arch = "mos")]
+    unsafe {
+        m7_smul16(a, b)
+    }
+    #[cfg(not(target_arch = "mos"))]
+    {
+        a as i32 * b as i32
+    }
 }
 
 /// `a * b`, exactly; `a` must not be `i16::MIN`.

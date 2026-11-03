@@ -98,6 +98,9 @@ pub const VERTS: u16 = 0x9800;
 const _: () = assert!(VERTS as u32 + core::mem::size_of::<crate::geom::Verts>() as u32 <= BAND_RAM as u32);
 /// `geom::Work`, the frame's triangles and depth buckets; `$01 = $35` keeps `$E000+` RAM.
 pub const WORK: u16 = 0xE000;
+/// The units' brains (`world_sim::BRAINS`) during the war's decide phase: the top of the main window,
+/// above that phase's overlay (target-c64/link.ld checks `.world3text` fits under it).
+pub const BRAIN_RAM: u16 = 0xF800 - crate::brain::UNIT_BYTES as u16;
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= 0xFFFA);
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= WORK as u32 + crate::format::OVERLAY_MAX);
 /// `asm/geom.S`'s arguments (`geom::geo_args`), and a row of the object directory being streamed

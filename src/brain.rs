@@ -81,21 +81,21 @@ pub mod unit {
 /// A learn node's odds stay in this band, so neither branch is ever lost.
 pub const LEARN_MIN: u8 = 8;
 pub const LEARN_MAX: u8 = 248;
-/// Room for the units' blob (`format::TREES`).
-pub const UNIT_BYTES: usize = 0x1000;
+/// Room for the units' blob (`format::TREES`; the decide phase works on it in RAM at `layout::BRAIN_RAM`).
+pub const UNIT_BYTES: usize = 0x0A00;
 
-/// Walk unit tree `tree` of the blob at REU `base`: the move, and the first learn node passed (its blob
+/// Walk unit tree `tree` of the blob at `ram` (C64 memory): the move, and the first learn node passed (its blob
 /// offset, or 0) with the branch taken (1: yes, the odds' branch). A learn node's feature is a fresh random
 /// byte: under the node's odds, yes.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
-pub fn walk_learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, features: &[u8; unit::FEATURES]) -> (u8, u16, u8) {
-    let mut n = [0u8; NODE_BYTES];
-    crate::hw::read_into(hw, base + (ROOTS + 2 * tree as usize) as u32, crate::layout::BOUNCE, &mut n[..2]);
-    let mut at = u16::from_le_bytes([n[0], n[1]]);
+pub fn walk_learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, ram: u16, tree: u8, features: &[u8; unit::FEATURES]) -> (u8, u16, u8) {
+    let rd = |hw: &mut H, a: u16| hw.peek(a) as u16 | (hw.peek(a + 1) as u16) << 8;
+    let mut at = rd(hw, ram + ROOTS as u16 + 2 * tree as u16);
     let (mut learned, mut took) = (0u16, 0u8);
     for _ in 0..MAX_DEPTH {
-        crate::hw::read_into(hw, base + at as u32, crate::layout::BOUNCE, &mut n);
+        let a = ram.wrapping_add(at);
+        let n = [hw.peek(a), hw.peek(a + 1)];
         if n[0] == LEAF {
             return (n[1], learned, took);
         }
@@ -105,7 +105,7 @@ pub fn walk_learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, fe
             learned = at;
             took = !ge as u8;
         }
-        at = if ge { u16::from_le_bytes([n[2], n[3]]) } else { u16::from_le_bytes([n[4], n[5]]) };
+        at = rd(hw, a + if ge { 2 } else { 4 });
     }
     (0, learned, took)
 }
@@ -116,14 +116,11 @@ pub fn walk_learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, fe
 /// older walk at half the step (Impact's rule).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world3"))]
-pub fn learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, trail: &[(u16, u8); 2], reward: i8) {
-    let b = base + (unit::BASELINES + tree as usize) as u32;
-    let mut v = [0u8; 1];
-    crate::hw::read_into(hw, b, crate::layout::BOUNCE, &mut v);
-    let baseline = v[0] as i8;
+pub fn learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, ram: u16, tree: u8, trail: &[(u16, u8); 2], reward: i8) {
+    let b = ram + (unit::BASELINES + tree as usize) as u16;
+    let baseline = hw.peek(b) as i8;
     let adv = (reward as i16 - (baseline as i16 >> 3)).clamp(-127, 127);
-    hw.poke(crate::layout::BOUNCE, (baseline as i16 + adv).clamp(-128, 127) as i8 as u8);
-    crate::hw::stash(hw, crate::layout::BOUNCE, b, 1);
+    hw.poke(b, (baseline as i16 + adv).clamp(-128, 127) as i8 as u8);
     if adv == 0 {
         return;
     }
@@ -133,10 +130,9 @@ pub fn learn<H: crate::hw::Hw + ?Sized>(hw: &mut H, base: u32, tree: u8, trail: 
         if node == 0 || s == 0 {
             continue;
         }
-        let a = base + node as u32 + 1;
-        crate::hw::read_into(hw, a, crate::layout::BOUNCE, &mut v);
-        let p = if (took != 0) == (adv > 0) { v[0].saturating_add(s).min(LEARN_MAX) } else { v[0].saturating_sub(s).max(LEARN_MIN) };
-        hw.poke(crate::layout::BOUNCE, p);
-        crate::hw::stash(hw, crate::layout::BOUNCE, a, 1);
+        let a = ram.wrapping_add(node + 1);
+        let v = hw.peek(a);
+        let p = if (took != 0) == (adv > 0) { v.saturating_add(s).min(LEARN_MAX) } else { v.saturating_sub(s).max(LEARN_MIN) };
+        hw.poke(a, p);
     }
 }

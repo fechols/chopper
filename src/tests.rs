@@ -1100,12 +1100,13 @@ fn learning_moves_the_odds_toward_what_paid() {
     use crate::brain::{LEARN_MAX, LEARN_MIN, learn, unit};
     use crate::hw::Hw;
     let mut m = Machine::new(package());
-    let base = crate::format::TREES;
+    let base = crate::layout::BRAIN_RAM;
+    crate::hw::fetch(&mut m, crate::format::TREES, base, crate::brain::UNIT_BYTES as u16);
     // Two learn nodes of tree 0: find them by their feature.
     let blob = crate::roles::compile();
     let nodes: Vec<u16> = (crate::brain::HEADER_BYTES..blob.len()).step_by(6).filter(|&o| blob[o] >= unit::LEARN0 && blob[o] != crate::brain::LEAF).map(|o| o as u16).take(2).collect();
     assert_eq!(nodes.len(), 2);
-    let p = |m: &mut Machine, n: u16| m.reu[(base + n as u32 + 1) as usize];
+    let p = |m: &mut Machine, n: u16| m.peek(base + n + 1);
     let (a0, b0) = (p(&mut m, nodes[0]), p(&mut m, nodes[1]));
     // Took yes on the newer, no on the older; a good outcome.
     learn(&mut m, base, 0, &[(nodes[0], 1), (nodes[1], 0)], 10);
@@ -1121,7 +1122,6 @@ fn learning_moves_the_odds_toward_what_paid() {
         learn(&mut m, base, 0, &[(nodes[0], 1), (0, 0)], -15);
     }
     assert_eq!(p(&mut m, nodes[0]), LEARN_MIN);
-    let _ = m.peek(0);
 }
 
 /// The war teaches the brains: after twenty minutes some kinds' learn nodes have moved off their priors,

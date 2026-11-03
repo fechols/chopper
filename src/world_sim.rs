@@ -183,13 +183,15 @@ fn reu_put<H: Hw + ?Sized>(hw: &mut H, addr: u32, v: u8) {
 
 #[inline(always)]
 fn reu_get16<H: Hw + ?Sized>(hw: &mut H, addr: u32) -> u16 {
-    reu_get(hw, addr) as u16 | (reu_get(hw, addr + 1) as u16) << 8
+    let mut b = [0u8; 2];
+    hw::read_into(hw, addr, crate::layout::BOUNCE, &mut b);
+    u16::from_le_bytes(b)
 }
 
 #[inline(always)]
 fn reu_put16<H: Hw + ?Sized>(hw: &mut H, addr: u32, w: u16) {
-    reu_put(hw, addr, w as u8);
-    reu_put(hw, addr + 1, (w >> 8) as u8);
+    wr(hw, crate::layout::BOUNCE, w);
+    hw::stash(hw, crate::layout::BOUNCE, addr, 2);
 }
 
 /// An 8-bit xorshift.
@@ -249,9 +251,13 @@ pub fn step_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
 pub fn decide_page<H: Hw + ?Sized>(hw: &mut H) {
     let first = reu_get16(hw, HEADER + head::CURSOR as u32);
     page(hw, first, false);
+    // The brains in RAM for the page (walked and taught there), back in one.
+    let brains = crate::layout::BRAIN_RAM;
+    hw::fetch(hw, BRAINS, brains, BRAINS_LEN as u16);
     for slot in 0..PAGE {
         decide_unit(hw, slot);
     }
+    hw::stash(hw, brains, BRAINS, BRAINS_LEN as u16);
     page(hw, first, true);
     hw.poke(PHASE, FIGHT);
 }
@@ -275,13 +281,14 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
     let t = r + rec::TRAIL;
     let trail = [(rd(hw, t), hw.peek(t + 2)), (rd(hw, t + 3), hw.peek(t + 5))];
     if reward != 0 {
-        crate::brain::learn(hw, BRAINS, kind, &trail, reward);
+        crate::brain::learn(hw, crate::layout::BRAIN_RAM, kind, &trail, reward);
     }
     // Its situation.
     let side = flags & SIDE;
     let s = sector_at(hw.peek(r + rec::SECTOR));
-    let foes = reu_get(hw, s + sec::COUNT as u32 + 1 - side as u32);
-    let friends = reu_get(hw, s + sec::COUNT as u32 + side as u32);
+    let mut counts = [0u8; 2];
+    hw::read_into(hw, s + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
+    let (foes, friends) = (counts[1 - side as usize], counts[side as usize]);
     let mut seed = hw.peek(r + rec::SEED);
     let mut f = [0u8; unit::FEATURES];
     f[unit::WOUNDED] = ((hw.peek(r + rec::HP) as u16) * 2 < stats::HP[k] as u16) as u8;
@@ -295,7 +302,7 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
         *x = seed;
     }
     hw.poke(r + rec::SEED, seed);
-    let (mv, node, took) = crate::brain::walk_learn(hw, BRAINS, kind, &f);
+    let (mv, node, took) = crate::brain::walk_learn(hw, crate::layout::BRAIN_RAM, kind, &f);
     // The trail: this decision's learn node first, the last one's after it.
     for i in 0..3 {
         let b = hw.peek(t + i);
@@ -509,11 +516,15 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, pu: i16, pv: i1
     let side = flags & SIDE;
     let kind = hw.peek(r + rec::KIND) as usize % crate::actors::kind::COUNT as usize;
     let s = sector_at(hw.peek(r + rec::SECTOR));
-    reu_put16(hw, s + sec::REP as u32 + 2 * side as u32, id);
-    let cool = hw.peek(r + rec::COOL);
     let them = 1 - side;
-    let foe = reu_get16(hw, s + sec::REP as u32 + 2 * them as u32);
-    let present = reu_get(hw, s + sec::COUNT as u32 + them as u32) > 0;
+    let mut sr = [0u8; SECTOR as usize];
+    hw::read_into(hw, s, crate::layout::BOUNCE, &mut sr);
+    let rep = (sec::REP + 2 * them as u16) as usize;
+    let foe = u16::from_le_bytes([sr[rep], sr[rep + 1]]);
+    let present = sr[(sec::COUNT + them as u16) as usize] > 0;
+    wr(hw, crate::layout::BOUNCE, id);
+    hw::stash(hw, crate::layout::BOUNCE, s + sec::REP as u32 + 2 * side as u32, 2);
+    let cool = hw.peek(r + rec::COOL);
     let fighting = hw.peek(r + rec::ACTION) == act::FIGHT;
     // The player, if near and in range of an enemy that can hit aircraft and chose to fight: fired on with
     // human aim (the odds halved, and halved again when the player is fast).
@@ -564,8 +575,9 @@ const _: () = assert!(1 + 3 * PAGE <= crate::layout::ROW_STRIDE);
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
 fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16, dice: u8) -> bool {
     let base = UNITS + foe as u32 * RECORD as u32;
-    let foe_flags = reu_get(hw, base + rec::FLAGS as u32);
-    let air = reu_get(hw, base + rec::KIND as u32) == stats::AIR;
+    let mut kf = [0u8; 2];
+    hw::read_into(hw, base + rec::KIND as u32, crate::layout::BOUNCE, &mut kf);
+    let (air, foe_flags) = (kf[rec::KIND as usize] == stats::AIR, kf[rec::FLAGS as usize]);
     if foe_flags & ALIVE == 0 || stats::TARGETS[kind] & if air { 2 } else { 1 } == 0 {
         return false;
     }

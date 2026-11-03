@@ -207,11 +207,9 @@ pub fn pack(list: &mut [Sprite], table: &mut [u8; TABLE]) -> u8 {
 }
 
 /// `a * b`, exactly (the C64's 16 × 16 multiply).
-#[inline(never)]
-// (Resident on the C64: shared by the overlays.)
+#[inline(always)]
 pub fn mul16(a: i16, b: i16) -> i32 {
-    let p = crate::fixed::umul(a.unsigned_abs(), b.unsigned_abs()) as i32;
-    if (a < 0) != (b < 0) { -p } else { p }
+    crate::fixed::mul(a, b)
 }
 
 /// The near plane, quarter texels.

@@ -61,12 +61,13 @@ fn sin_step(index: u16) -> i32 {
 
 /// Sine of a binary angle, Q14, linearly interpolated between table steps so
 /// slow turns rotate smoothly.
+#[inline(never)]
 pub fn sin(angle: u16) -> i32 {
     let index = angle >> 6;
     let fraction = (angle & 63) as i32;
     let a = sin_step(index);
     let b = sin_step(index.wrapping_add(1));
-    a + (((b - a) * fraction + 32) >> 6)
+    a + ((crate::fixed::mul((b - a) as i16, fraction as i16) + 32) >> 6)
 }
 
 pub fn cos(angle: u16) -> i32 {
@@ -87,15 +88,24 @@ pub struct Matrix14 {
     pub m: [[i32; 3]; 3],
 }
 
+/// `(a·b + c·d) / ONE`, rounded as [`Matrix14::mul`] rounds (Q14 rotation entries: all fit i16).
+#[inline(never)]
+fn dot14(a: i16, b: i16, c: i16, d: i16) -> i16 {
+    ((crate::fixed::mul(a, b) + crate::fixed::mul(c, d) + (ONE >> 1)) >> 14) as i16
+}
+
 impl Matrix14 {
     pub const IDENTITY: Self = Self { m: [[ONE, 0, 0], [0, ONE, 0], [0, 0, ONE]] };
 
+    #[inline(never)]
     pub fn mul(&self, other: &Self) -> Self {
         let mut m = [[0i32; 3]; 3];
         for (i, row) in m.iter_mut().enumerate() {
             for (j, entry) in row.iter_mut().enumerate() {
-                // Q14 entries: each product is at most 2^28, so the sum fits i32.
-                let sum = self.m[i][0] * other.m[0][j] + self.m[i][1] * other.m[1][j] + self.m[i][2] * other.m[2][j];
+                // Q14 entries of rotations (|x| <= ONE, so i16: the C64's 16 × 16 multiply, exactly): each
+                // product is at most 2^28, so the sum fits i32.
+                let p = |a: i32, b: i32| crate::fixed::mul(a as i16, b as i16);
+                let sum = p(self.m[i][0], other.m[0][j]) + p(self.m[i][1], other.m[1][j]) + p(self.m[i][2], other.m[2][j]);
                 *entry = (sum + (ONE >> 1)) >> 14;
             }
         }
@@ -108,14 +118,16 @@ impl Matrix14 {
     }
 
     /// Orientation (body → world) from yaw, pitch and roll: R_yaw · R_pitch · R_roll.
+    #[inline(never)]
     pub fn orientation(yaw: u16, pitch: u16, roll: u16) -> Self {
         let (sy, cy) = (sin(yaw), cos(yaw));
         let (sp, cp) = (sin(pitch), cos(pitch));
         let (sr, cr) = (sin(roll), cos(roll));
-        let ry = Self { m: [[cy, 0, sy], [0, ONE, 0], [-sy, 0, cy]] };
-        let rx = Self { m: [[ONE, 0, 0], [0, cp, sp], [0, -sp, cp]] };
-        let rz = Self { m: [[cr, sr, 0], [-sr, cr, 0], [0, 0, ONE]] };
-        ry.mul(&rx).mul(&rz)
+        // Multiplied out, the factors' zeros and ones dropped: the same bits as `mul` (`orientation_is_the_product`).
+        let (sy, cy, sp, cp, sr, cr) = (sy as i16, cy as i16, sp as i16, cp as i16, sr as i16, cr as i16);
+        let a = [[cy, dot14(sy, -sp, 0, 0), dot14(sy, cp, 0, 0)], [0, cp, sp], [-sy, dot14(cy, -sp, 0, 0), dot14(cy, cp, 0, 0)]];
+        let row = |x: [i16; 3]| [dot14(x[0], cr, x[1], -sr) as i32, dot14(x[0], sr, x[1], cr) as i32, x[2] as i32];
+        Self { m: [row(a[0]), row(a[1]), row(a[2])] }
     }
 
     /// `self · v` for |v| <= `REACH` per axis (so the sums fit i32); the
@@ -210,6 +222,20 @@ mod tests {
         let east = Camera::new(WorldPos::default(), QUARTER_TURN, 0, 0);
         let v = east.rotate([1000, 0, 0]);
         assert!(v.z > 990 && v.x.abs() < 2, "{v:?}");
+    }
+
+    #[test]
+    fn orientation_is_the_product() {
+        let mut x = 0x1234u32;
+        for _ in 0..3000 {
+            x = x.wrapping_mul(1103515245).wrapping_add(12345);
+            let (y, p, r) = ((x >> 16) as u16, (x >> 3) as u16, x.rotate_left(7) as u16);
+            let (sy, cy, sp, cp, sr, cr) = (sin(y), cos(y), sin(p), cos(p), sin(r), cos(r));
+            let ry = Matrix14 { m: [[cy, 0, sy], [0, ONE, 0], [-sy, 0, cy]] };
+            let rx = Matrix14 { m: [[ONE, 0, 0], [0, cp, sp], [0, -sp, cp]] };
+            let rz = Matrix14 { m: [[cr, sr, 0], [-sr, cr, 0], [0, 0, ONE]] };
+            assert_eq!(Matrix14::orientation(y, p, r), ry.mul(&rx).mul(&rz), "{y:#x} {p:#x} {r:#x}");
+        }
     }
 
     #[test]
