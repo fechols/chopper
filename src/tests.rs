@@ -1735,3 +1735,57 @@ fn the_waypoint_arrow_keeps_its_side_near_dead_astern() {
     a.yaw = 0u16.wrapping_sub(40 * 256);
     assert_ne!(arrow(&mut m, &a), first);
 }
+
+/// Replaying the start on the carrier's deck and the autopilot's flight (the war stepped every frame as
+/// on the C64, 8 ticks a frame): the living units listed and on screen in one frame and dropped from the
+/// near list in the next while still alive and on screen, and the frames whose draw list reached the
+/// actors' cap.
+fn near_churn(seconds: u32) -> (u32, u32) {
+    use crate::hud::{Eye, to_camera};
+    use crate::world_sim::{self as ws, ALIVE, rec};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let mut a = crate::agent::Agent::boot();
+    let (mut t, mut prev, mut dropped, mut frames) = (0u32, Vec::<u16>::new(), 0u32, 0u32);
+    let (mut capped, mut most) = (0u32, 0u8);
+    while t < seconds * 60 {
+        let (pu, pv) = a.at();
+        ws::step_page(&mut m, t as u16, pu, pv);
+        t += 8;
+        a.fly(&mut &m.reu[..], t);
+        let eye = Eye::new(&a.camera().0);
+        let on_screen = |m: &Machine, id: u16| {
+            let r = &m.reu[ws::UNITS as usize + id as usize * ws::RECORD as usize..][..18];
+            if r[rec::FLAGS as usize] & ALIVE == 0 {
+                return false;
+            }
+            let (u, v) = ws::live(r, t as u16);
+            let c = to_camera(&eye, [(u >> 2) as i16, (r[rec::H as usize] as i16) << 2, (v >> 2) as i16]);
+            c[2] > 8 && c[2] < 200 * 4 && c[0].abs() < c[2]
+        };
+        // The draw list as the C64 builds it: the combat pass, then the actors' cull (`DYN_MAX` at most).
+        let cam = a.camera().0;
+        crate::combat::update(&mut m, &a, &cam);
+        let objects = m.ram[crate::combat::OBJLIST as usize];
+        crate::actors::prepare(&mut m, &cam, crate::combat::OBJLIST);
+        let drawn = m.ram[crate::actors::DYN as usize];
+        capped += (drawn == crate::actors::DYN_MAX) as u32;
+        most = most.max(objects);
+        let n = m.ram[ws::NEAR as usize].min(ws::NEAR_MAX) as usize;
+        let listed: Vec<u16> = (0..n).map(|k| u16::from_le_bytes([m.ram[ws::NEAR as usize + 1 + 2 * k], m.ram[ws::NEAR as usize + 2 + 2 * k]])).collect();
+        dropped += prev.iter().filter(|&&id| !listed.contains(&id) && on_screen(&m, id)).count() as u32;
+        prev = listed.into_iter().filter(|&id| on_screen(&m, id)).collect();
+        frames += 1;
+    }
+    eprintln!("draw list: {most} objects at most; the actors' cap of {} reached in {capped} frames", crate::actors::DYN_MAX);
+    (dropped, capped)
+}
+
+/// Ten minutes from the start on the deck: no unit on screen is ever dropped from the near list, and
+/// the actors' cap never cuts the draw list (units seen to vanish were faces crossing the near plane,
+/// now cut instead of dropped).
+#[test]
+fn units_on_screen_stay_listed() {
+    let (dropped, capped) = near_churn(600);
+    assert_eq!((dropped, capped), (0, 0), "units on screen dropped from the near list; frames at the actors' cap");
+}
