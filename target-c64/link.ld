@@ -10,7 +10,8 @@
  * - Relocated code (copied there at boot by asm/startup.S, whole pages): $0200-$03FF, $8300-$8BFF,
  *   $9B00-$9FFF, $AF00-$B7FF, $BB00-$BEFF, $F800-$FEFF. Boot-only code (`.text.boot`) and the
  *   relocated code's load images sit in $5C00-$82FF, the frame buffer and the scene area, free until
- *   the boot is done. The AI overlay (`.text.ai`) runs at $E000 and loads at $8C00 (see `ai`). asm/audio.S runs once at boot from $C000 (loaded there with the PRG, after
+ *   the boot is done. The AI overlay (`.text.ai`) runs at $E000 and loads at $8C00 (see `ai`); the cockpit overlay
+ *   (`.text.cockpit`) runs and loads at $A000 (see `cockpit`). asm/audio.S runs once at boot from $C000 (loaded there with the PRG, after
  *   padding over $8300-$BFFF that the relocation then overwrites).
  * Zero page: the compiler's $02-$7F, fixed.S's $80-$9B, the kernels' $A0-$FF.
  * $01 = $35 (RAM everywhere except I/O); no ROM routines are used. */
@@ -37,7 +38,12 @@ MEMORY {
     /* The AI overlay's load image, between relocated pages: stashed to the REU early in the boot (before
      * fixed::init_tables writes the reciprocals at $9000). */
     aiload (r) : ORIGIN = 0x8C00, LENGTH = 0x0F00
-    gap2 (r) : ORIGIN = 0x9B00, LENGTH = 0x2500
+    gap2 (r) : ORIGIN = 0x9B00, LENGTH = 0x0500
+    /* The cockpit overlay (`.text.cockpit`: cockpit::update and the static panel), loaded in place with
+     * the PRG, stashed to the REU at boot (format::OVERLAY_COCKPIT) and fetched back each frame while the
+     * band state (layout::BAND_RAM, here) is spent: before geo_bin refills it. */
+    cockpit (rwx) : ORIGIN = 0xA000, LENGTH = 0x0F00
+    gap3 (r) : ORIGIN = 0xAF00, LENGTH = 0x1100
     /* asm/audio.S, run once at boot, loaded in place: the floor's tiles and runs live here afterwards
      * (layout::TILES, SPANS, below RAYS). */
     audio (rx) : ORIGIN = 0xC000, LENGTH = 0x0640
@@ -74,6 +80,9 @@ SECTIONS {
     .aitext : {
         *(.text.ai .text.ai.*)
     } >ai AT>aiload
+    .cocktext : {
+        *(.text.cockpit .text.cockpit.*)
+    } >cockpit
     .audiotext : {
         *(.text.audio_boot)
     } >audio
@@ -101,6 +110,8 @@ __hitext_load_start = LOADADDR(.hitext);
 __hitext_pages = (SIZEOF(.hitext) + 255) / 256;
 __aitext_load_start = LOADADDR(.aitext);
 __aitext_size = SIZEOF(.aitext);
+__cocktext_start = ADDR(.cocktext);
+__cocktext_size = SIZEOF(.cocktext);
 
 /* The SDK's charset switch (.init.250) calls KERNAL CHROUT, which is unmapped by the time it runs. */
 SECTIONS { /DISCARD/ : { *(.init.250) } }
@@ -116,5 +127,7 @@ OUTPUT_FORMAT {
     FULL(gap)
     FULL(aiload)
     FULL(gap2)
+    FULL(cockpit)
+    FULL(gap3)
     TRIM(audio)
 }

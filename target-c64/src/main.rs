@@ -18,10 +18,11 @@
 use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
-use chopper::format::{COLORS, HEADER, MAGIC, OVERLAYS, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::cockpit;
+use chopper::format::{COLORS, HEADER, MAGIC, OVERLAY_COCKPIT, OVERLAYS, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
-use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
+use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
 use chopper::agent::Agent;
 use chopper::poly::{Row, args};
 
@@ -62,6 +63,13 @@ unsafe extern "C" {
     /// target-c64/link.ld: the AI overlay (`.text.ai`, run at `WORK`) and where the PRG loads it.
     static __aitext_load_start: u8;
     static __aitext_size: u8;
+    /// The cockpit overlay (`.text.cockpit`, run and loaded at `$A000`).
+    static __cocktext_start: u8;
+    static __cocktext_size: u8;
+}
+
+fn cockpit_overlay() -> (u16, u16) {
+    (&raw const __cocktext_start as u16, &raw const __cocktext_size as u16)
 }
 
 /// The agent's REU reads (the hazard map, the tree), through the bounce buffer.
@@ -227,15 +235,10 @@ fn video_init(c: &mut C64) {
     c.fill(buf.screen, layout::CELLS, COLORS[1] << 4 | COLORS[2]);
     c.fill(layout::COLOR_RAM, layout::CELLS, COLORS[3]);
     c.fill(buf.bitmap, VIEW_BANDS * layout::ROW_STRIDE, floor::SKY_BYTE);
-    // The cockpit panel (`package::panel_byte`), drawn once.
-    for band in VIEW_BANDS..layout::ROWS {
-        for col in 0..layout::COLS {
-            for line in 0..8 {
-                let byte = if band == VIEW_BANDS && line < 2 { 0x55 } else { 0xAA };
-                poke(buf.bitmap + band * layout::ROW_STRIDE + col * 8 + line, byte);
-            }
-        }
-    }
+    // The cockpit's static panel (from its overlay; the gauges follow on the first frame).
+    let (at, size) = cockpit_overlay();
+    hw::fetch(c, OVERLAY_COCKPIT, at, size);
+    cockpit::panel(c);
     poke(0xD015, 0);
     poke(0xD020, 0);
     poke(0xD021, COLORS[0]);
@@ -258,6 +261,8 @@ fn boot(c: &mut C64) -> u16 {
     // The AI overlay's code to the REU, before asm/audio.S reuses the load images' RAM.
     let (load, size) = ai_overlay();
     hw::stash(c, load, OVERLAYS, size);
+    let (load, size) = cockpit_overlay();
+    hw::stash(c, load, OVERLAY_COCKPIT, size);
     // The frame clock starts with the sound, so the flight's time is the sound's (`agent`): CIA 2 timer
     // A underflows once an NTSC frame, timer B counts the underflows.
     poke16(0xDD04, FRAME_CYCLES - 1);
@@ -311,6 +316,9 @@ pub extern "C" fn main() -> i16 {
     *agent = Agent::new();
     unsafe { write_volatile(CLOCK as *mut u32, seen as u32) };
     let (_, overlay) = ai_overlay();
+    let (cockpit_at, cockpit_size) = cockpit_overlay();
+    let gauges = unsafe { &mut *(GAUGES as *mut [u8; cockpit::gauge::COUNT]) };
+    *gauges = [0xFF; cockpit::gauge::COUNT];
 
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);
@@ -335,6 +343,9 @@ pub extern "C" fn main() -> i16 {
         agent.fly(&mut Senses(c), clock);
         let (cam, _yaw) = agent.camera();
         let t = agent.t;
+        // The gauges whose readings changed, from their overlay over the (spent) band state.
+        hw::fetch(c, OVERLAY_COCKPIT, cockpit_at, cockpit_size);
+        cockpit::update(c, agent, gauges);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };

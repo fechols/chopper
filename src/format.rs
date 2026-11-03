@@ -131,6 +131,8 @@ const _: () = assert!((HAZARD_CELLS as u32) << HAZARD_SHIFT == crate::floor::MAP
 /// Code overlays (`overlay`): stashed here at boot from the PRG, fetched into their window when needed.
 /// Outside the image.
 pub const OVERLAYS: u32 = 108 << 16;
+/// The cockpit's overlay (`cockpit`), after the AI's.
+pub const OVERLAY_COCKPIT: u32 = OVERLAYS + 0x1000;
 
 /// The cockpit (`cockpit`, baked by `instruments`): the static panel, then every frame of every gauge.
 pub const COCKPIT: u32 = 109 << 16;
