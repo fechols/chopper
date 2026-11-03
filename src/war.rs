@@ -40,7 +40,7 @@ pub mod route {
     pub const NONE: u8 = 0xFF;
 }
 
-fn water(w: &World, u: i32, v: i32) -> bool {
+pub(crate) fn water(w: &World, u: i32, v: i32) -> bool {
     !(0..2048).contains(&u) || !(0..2048).contains(&v) || w.texels[v as usize * 2048 + u as usize] == texel::WATER
 }
 
@@ -63,20 +63,37 @@ pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
     let beach = shore(w, 980, 2040, 0, -1);
     let beach = (beach.0, beach.1 - 30);
     // Sea points: 70 texels off the coast along bearings from the island's centre (degrees, from east
-    // toward north).
-    let offshore = |deg: f32| {
+    // toward north): the farthest out, up to 70 off, that is at sea and keeps a sea room inside the
+    // map's edge (pulling a point in from the edge could land it back on the coast).
+    let room = |x: i32| (SEA_ROOM..2048 - SEA_ROOM).contains(&x);
+    let along = |deg: f32| {
         let (s, c) = deg.to_radians().sin_cos();
+        let at = move |r: f32| ((1024.0 + c * r) as i32, (1024.0 + s * r) as i32);
         let mut last = 0.0;
         let mut r = 0.0;
         while r < 1000.0 {
-            if !water(w, (1024.0 + c * r) as i32, (1024.0 + s * r) as i32) {
+            let (u, v) = at(r);
+            if !water(w, u, v) {
                 last = r;
             }
             r += 4.0;
         }
-        // (Kept a sea room inside the map's edge.)
-        let room = |x: f32| (x as i32).clamp(SEA_ROOM, 2047 - SEA_ROOM);
-        (room(1024.0 + c * (last + 70.0)), room(1024.0 + s * (last + 70.0)))
+        let mut r = last + 70.0;
+        while r >= last + 8.0 {
+            let (u, v) = at(r);
+            if room(u) && room(v) && water(w, u, v) {
+                return Ok((u, v));
+            }
+            r -= 4.0;
+        }
+        Err(at(last + 70.0))
+    };
+    // (Where the coast runs out to the edge on a bearing, the nearest bearing with sea room.)
+    let offshore = |deg: f32| {
+        [0.0, 5.0, -5.0, 10.0, -10.0, 15.0, -15.0, 20.0, -20.0, 25.0, -25.0, 30.0, -30.0]
+            .iter()
+            .find_map(|d| along(deg + d).ok())
+            .unwrap_or_else(|| along(deg).unwrap_or_else(|p| p))
     };
     // The enemy flotilla raids from the west coast round the south; the carrier group's station overlaps
     // the end of it, so the fleets meet.

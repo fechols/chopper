@@ -1316,6 +1316,31 @@ fn respawns_face_their_way() {
     assert!(air > 0 && ground > 0, "respawns off the deck {air}, elsewhere {ground}");
 }
 
+/// The sea routes stay at sea: every waypoint of the flotilla's raid and the carrier group's station is
+/// water, inside the sea room off the map's edge, and so is every leg of the carrier's station. (The
+/// raid's legs, 30° of bearing apart, still cut across headlands: known, not yet fixed.)
+#[test]
+fn sea_routes_stay_at_sea() {
+    use crate::war::{routes, water};
+    let w = crate::world::generate(1983);
+    let rs = routes(&w);
+    for k in [4, 5] {
+        let pts = &rs[k].0;
+        for &(u, v) in pts {
+            assert!(water(&w, u, v), "route {k}: waypoint ({u}, {v}) on land");
+            assert!((48..2000).contains(&u) && (48..2000).contains(&v), "route {k}: waypoint ({u}, {v}) by the edge");
+        }
+    }
+    for leg in rs[5].0.windows(2) {
+        let ((u0, v0), (u1, v1)) = (leg[0], leg[1]);
+        let n = ((u1 - u0).abs().max((v1 - v0).abs()) / 4).max(1);
+        for i in 0..=n {
+            let (u, v) = (u0 + (u1 - u0) * i / n, v0 + (v1 - v0) * i / n);
+            assert!(water(&w, u, v), "the carrier's station crosses land at ({u}, {v})");
+        }
+    }
+}
+
 /// Every moving unit turns on an arc at its kind's rate (`stats::TURN`), never snapping round: on long
 /// laps of the war (15 ticks a frame), each tick its heading turns by at most its rate and it moves by at
 /// most its speed. The carrier, on its station, turns at its waypoints too.
