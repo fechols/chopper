@@ -10,9 +10,38 @@ fn scene(reu: &[u8]) -> &[u8] {
     &reu[s..s + len]
 }
 
-/// The autopilot's view at `tick`.
+/// Ticks of the flight the tests look at: the pad, the lift-off, and a long roam.
+const FLIGHT: u32 = crate::agent::LIFT + 40_000;
+
+/// The agent at every tick of the flight (the host reference), once.
+fn flight() -> &'static [crate::agent::Agent] {
+    static F: OnceLock<Vec<crate::agent::Agent>> = OnceLock::new();
+    F.get_or_init(|| {
+        let mut reu: &[u8] = package();
+        let mut a = crate::agent::Agent::new();
+        let mut out = vec![a];
+        while a.t < FLIGHT {
+            a.step(&mut reu);
+            out.push(a);
+        }
+        out
+    })
+}
+
+/// The autopilot's view at tick `t` of the flight.
+fn flight_view(t: u32) -> crate::geom::View {
+    crate::geom::View { cam: flight()[t as usize].camera().0, pop: 0 }
+}
+
+/// Sample points of the roam: `tick` of `LAP`, 4 ticks apart from 10 s after the lift-off.
+const LAP: u16 = 4096;
+
 fn lap_view(tick: u16) -> crate::geom::View {
-    crate::geom::View { cam: crate::pilot::autopilot(tick).0, pop: 0 }
+    flight_view(lap_t(tick))
+}
+
+fn lap_t(tick: u16) -> u32 {
+    crate::agent::LIFT + 600 + 4 * tick as u32
 }
 
 /// Autopilot frame `tick`'s objects drawn whole into buffer 0 of a model of the package.
@@ -239,7 +268,7 @@ fn every_frame_dma_stays_inside_a_512k_bank() {
     let reu = package();
     for tick in [0u16, 512, 1024, 1536, 3000] {
         for doubled in [false, true] {
-            let (m, _) = crate::package::render(reu, tick, doubled);
+            let (m, _) = crate::package::render(reu, lap_t(tick), doubled);
             assert_eq!((m.stats.bank_wraps, m.stats.stray_writes), (0, 0), "tick {tick} doubled {doubled}");
         }
     }
@@ -348,7 +377,7 @@ fn a_face_toward_the_camera_is_drawn_and_away_is_culled() {
 #[test]
 fn the_geometry_frames_draw_inside_ram() {
     let mut total = 0u32;
-    for tick in (0..crate::pilot::LAP).step_by(256) {
+    for tick in (0..LAP).step_by(256) {
         let (m, st) = render_objects(tick);
         assert_eq!((m.stats.stray_writes, st.dropped), (0, 0), "tick {tick}");
         total += st.tris as u32;
@@ -426,7 +455,7 @@ fn the_grid_visits_every_object_the_cull_accepts() {
     let mut total = 0u32;
     for case in 0..400 {
         let cam = if case % 2 == 0 {
-            crate::pilot::autopilot(rng.below(crate::pilot::LAP as u32) as u16).0
+            flight_view(lap_t(rng.below(LAP as u32) as u16)).cam
         } else {
             camera_at(300.0 + rng.below(1450) as f64, 300.0 + rng.below(1450) as f64, 2.0 + rng.below(60) as f64, rng.next() as u16, rng.below(70) as i32 - 50, rng.below(121) as i32 - 60)
         };
@@ -462,7 +491,7 @@ fn band_rendering_equals_whole_triangle_painting() {
     let reu = package();
     let buf = BUFFERS[0];
     let mut checked = 0;
-    for tick in (0..crate::pilot::LAP).step_by(128) {
+    for tick in (0..LAP).step_by(128) {
         let mut a = Machine::new(reu);
         let mut work = Box::new(Work::new());
         draw(&mut a, scene(reu), &lap_view(tick), &mut work, &mut Box::new(Verts::new()));
@@ -572,4 +601,110 @@ fn the_rotor_sound_decodes_and_its_loop_seam_is_smooth() {
             assert_eq!(i16::from_le_bytes([c[0], c[1]]), (s as i16) << 8, "frame {i}");
         }
     }
+}
+
+#[test]
+fn the_ground_and_lift_off_frames_draw_inside_ram() {
+    use crate::agent::LIFT;
+    for t in [0, LIFT - 1, LIFT + 60, LIFT + 200, LIFT + 400] {
+        let reu = package();
+        let mut m = Machine::new(reu);
+        let mut work = Box::new(crate::geom::Work::new());
+        let st = crate::geom::draw(&mut m, scene(reu), &flight_view(t), &mut work, &mut Box::new(crate::geom::Verts::new()));
+        let (_, dropped) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+        let (_, fs) = crate::package::render(reu, t, false);
+        assert_eq!((m.stats.stray_writes, st.dropped, dropped), (0, 0, 0), "frame {t}");
+        println!("frame {t}: {} objects, {} runs", st.objects, fs.spans);
+    }
+}
+
+#[test]
+fn the_brain_tree_replays_the_plans() {
+    // Every feature block built from each threshold's two sides (and the extremes) walks the baked tree
+    // to the planner's action for its symbol state.
+    use crate::goap::{SYMBOLS, state_of, table};
+    let table = table();
+    let blob = crate::goap::compile();
+    let mut values: Vec<Vec<u8>> = vec![vec![0, 255]; crate::agent::feature::COUNT];
+    for sy in SYMBOLS {
+        values[sy.feature as usize].extend([sy.threshold - 1, sy.threshold]);
+    }
+    for v in &mut values {
+        v.sort();
+        v.dedup();
+    }
+    let mut image = vec![0u8; blob.len()];
+    image.copy_from_slice(&blob);
+    let mut reu: &[u8] = &image;
+    let mut idx = vec![0usize; values.len()];
+    let mut n = 0;
+    'all: loop {
+        let f: Vec<u8> = idx.iter().zip(&values).map(|(&i, v)| v[i]).collect();
+        let got = crate::brain::walk(&mut reu, 0, crate::brain::PILOT, &f);
+        assert_eq!(got, table[state_of(&f) as usize], "features {f:?}");
+        n += 1;
+        for k in 0..idx.len() {
+            idx[k] += 1;
+            if idx[k] < values[k].len() {
+                continue 'all;
+            }
+            idx[k] = 0;
+        }
+        break;
+    }
+    let tree = crate::goap::pilot_tree(&table);
+    assert!(tree.depth() < crate::brain::MAX_DEPTH as usize);
+    println!("{n} feature blocks; tree {} nodes, depth {}, blob {} bytes", tree.nodes(), tree.depth(), blob.len());
+}
+
+#[test]
+fn the_planner_lifts_off_and_climbs_or_steers() {
+    use crate::goap::{OPS, plan, s};
+    let first = |st: u16| OPS[plan(st).unwrap()[0]].name;
+    assert_eq!(first(s::GROUNDED), "wait");
+    assert_eq!(first(s::GROUNDED | s::ROTOR), "lift");
+    assert_eq!(first(s::LOW), "climb-up");
+    assert_eq!(first(s::BLOCKED | s::BLOCKED_L), "evade-r");
+    assert_eq!(first(s::BLOCKED | s::BLOCKED_L | s::BLOCKED_R), "climb-over");
+    assert_eq!(first(s::WP_L), "turn-l");
+    assert_eq!(first(s::HIGH), "descend");
+    // Every state has a plan.
+    assert!((0..1u32 << crate::goap::N).all(|st| crate::goap::goal(st as u16) || plan(st as u16).is_some()));
+}
+
+#[test]
+fn the_flight_waits_for_the_rotor_then_roams_clear_of_the_mountains() {
+    use crate::agent::{EYE, LIFT};
+    let hills = crate::goap::mountains(&crate::world::generate(1983));
+    assert!(!hills.is_empty());
+    assert_eq!(crate::agent::HOME, (crate::world::PADS[0].u as i32, crate::world::PADS[0].v as i32));
+    let f = flight();
+    let mut closest = f64::MAX;
+    let (mut waypoints, mut last) = (0, (0, 0));
+    let mut actions = [0u32; crate::agent::action::COUNT as usize];
+    for a in f {
+        let (u, v, h) = (a.u as f64 / 256.0, a.v as f64 / 256.0, a.h as f64 / 256.0);
+        if a.t <= LIFT {
+            assert_eq!((a.u, a.v, a.h), (crate::agent::HOME.0 << 8, crate::agent::HOME.1 << 8, EYE), "tick {}: off the pad", a.t);
+            continue;
+        }
+        assert!((0.0..2048.0).contains(&u) && (0.0..2048.0).contains(&v), "tick {}: off the map at ({u:.0}, {v:.0})", a.t);
+        // Above every mountain's cone (its peak may sit up to 0.075 r off the centre).
+        for &(mu, mv, r, top) in &hills {
+            let d = ((u - mu).hypot(v - mv) - 0.08 * r).max(0.0);
+            if d < r {
+                let surface = top * (1.0 - d / r);
+                closest = closest.min(h - surface);
+                assert!(h > surface + 2.0, "tick {}: {h:.1} texels up, {:.1} over the mountain at ({mu:.0}, {mv:.0})", a.t, h - surface);
+            }
+        }
+        actions[a.action as usize] += 1;
+        if (a.wu, a.wv) != last {
+            waypoints += 1;
+            last = (a.wu, a.wv);
+        }
+    }
+    assert!(f[LIFT as usize + 1].h > EYE, "no lift-off at the rotor's full power");
+    println!("{waypoints} waypoints; closest {closest:.1} texels over a mountain; actions {actions:?}");
+    assert!(waypoints >= 10, "only {waypoints} waypoints in {} ticks", FLIGHT - LIFT);
 }

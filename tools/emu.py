@@ -8,7 +8,11 @@ Every frame it shows (a `$DD00` bank flip) is checked byte for byte against the 
 `../talonhd/tools/emu64.py`.
 
     python tools/emu.py [--prg dist/chopper.prg] [--elf dist/chopper.elf] [--reu dist/chopper.reu]
-                        [--frames 4] [--doubled-after 2]
+                        [--frames 4] [--doubled-after 2] [--start T] [--leap N]
+
+`--start T` starts the flight at tick T: once the main loop is about to run, the host's agent state at
+T (`chopper agent`) and the clock (T + N) are poked into `layout::AGENT` / `CLOCK`. Each frame the agent's
+bytes are checked against the host's at the frame's tick too, and the soft stack's depth is reported.
 """
 import argparse
 import subprocess
@@ -21,6 +25,9 @@ from native_cpu import Cpu, KernelError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = 0xCA80
+AGENT = 0xCAA0      # layout::AGENT (agent::Agent::BYTES), then CLOCK
+AGENT_BYTES = 32
+SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
 TURBO = 64          # CPU cycles per Phi2 tick
 LINE_CYCLES = 65 * TURBO
@@ -228,6 +235,18 @@ def symbols(elf):
     return {p[2]: int(p[0], 16) for p in (l.split() for l in out.splitlines()) if len(p) == 3}
 
 
+def host_agent(reu, tick):
+    """The host's agent state after `tick` ticks (`chopper agent`, `agent::Agent::to_bytes`)."""
+    exe = ROOT / 'target/release/chopper.exe'
+    if not exe.exists():
+        exe = ROOT / 'target/release/chopper'
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / 'agent.bin'
+        subprocess.run([str(exe), 'agent', '--reu', str(reu), '--at', str(tick), '--out', str(out)],
+                       check=True, capture_output=True)
+        return out.read_bytes()
+
+
 def host_frame(reu, tick, doubled):
     exe = ROOT / 'target/release/chopper.exe'
     if not exe.exists():
@@ -248,7 +267,13 @@ def main():
     ap.add_argument('--reu', default='dist/chopper.reu')
     ap.add_argument('--frames', type=int, default=4)
     ap.add_argument('--doubled-after', type=int, default=2, help='switch MODE to doubled after this many frames')
+    ap.add_argument('--start', type=int, help='start the flight at this tick: poke the host agent and clock')
+    ap.add_argument('--leap', type=int, default=0, help='and the clock this many ticks further on (the first '
+                    'frame runs them all through the AI overlay)')
     args = ap.parse_args()
+    if args.leap and args.start is None:
+        args.start = 0
+    start = host_agent(args.reu, args.start) if args.start is not None else None
 
     prg = Path(args.prg).read_bytes()
     load = prg[0] | prg[1] << 8
@@ -262,14 +287,23 @@ def main():
 
     failures, checked, done = 0, 0, 0
     steps = 0
+    low_sp = SOFT_STACK_END
     pending = None
     modes = []   # MODE as each render pass started
     # Three stopwatches a frame: setup (events 1-2), geometry (3-4), the band loop (5-6). A frame is on
     # screen when its band loop ends; the status block (tick) is written right after, so check it at the
     # next frame's first event. One buffer: the bitmap at $6000.
     while checked < args.frames:
+        if start is not None and cpu.mem[STATUS] == 0xC1:
+            # The main loop is about to start: the agent and its clock at the start tick.
+            cpu.mem[AGENT:AGENT + len(start)] = start
+            cpu.mem[AGENT + len(start):AGENT + len(start) + 4] = (args.start + args.leap).to_bytes(4, 'little')
+            start = None
         n_watch = len(cpu.watch)
         cpu.step()
+        # The soft stack pointer (__rc0/__rc1) at each JSR, once it is set up (not mid-update).
+        if cpu.mem[cpu.pc] == 0x20 and cpu.mem[3] >= 0xC0:
+            low_sp = min(low_sp, cpu.mem[2] | cpu.mem[3] << 8)
         steps += 1
         if steps > 400_000_000:
             raise SystemExit('no frames shown')
@@ -287,8 +321,8 @@ def main():
             ((c0, io0, d0), (c1, io1, d1), doubled, (g0, _, _), (g1, _, _)) = pending
             pending = None
             checked += 1
-            st = cpu.mem[STATUS:STATUS + 21]
-            tick = st[2] | st[3] << 8
+            st = cpu.mem[STATUS:STATUS + 23]
+            tick = st[2] | st[3] << 8 | st[21] << 16 | st[22] << 24
             got = bytes(cpu.mem[BUFFERS[0]:BUFFERS[0] + 8000])
             want = host_frame(args.reu, tick, doubled)
             bad = sum(a != b for a, b in zip(got, want))
@@ -297,11 +331,21 @@ def main():
                   f'bands {(c1 - c0) / 64000:.2f} ms ({dmas} DMAs), geometry {(g1 - g0) / 64000:.2f} ms, '
                   f'{st[18]} triangles; raster wait {cpu.wait_cycles / 64000:.2f} ms')
             cpu.wait_cycles = 0
+            # The agent (layout::AGENT) is still the frame's: the next one has not flown yet.
+            agent = bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES])
+            want_agent = host_agent(args.reu, tick)
+            if agent != want_agent:
+                print(f'  agent differs from the host at tick {tick}: C64 {agent.hex()} host {want_agent.hex()}')
+                bad += 1
             failures += bad != 0
             for i in [i for i in range(8000) if got[i] != want[i]][:8]:
                 row, col, line = i // 320, (i % 320) // 8, i % 8
                 print(f'  byte {i}: cell row {row} column {col} line {line} (y {row * 8 + line}): '
                       f'C64 ${got[i]:02X} host ${want[i]:02X}')
+    # The soft stack (below $D000, under llvm-mos's static frames, target-c64/link.ld).
+    print(f'soft stack: {SOFT_STACK_END - low_sp} of {SOFT_STACK_END - SOFT_STACK} bytes used')
+    if low_sp < SOFT_STACK:
+        raise SystemExit('the soft stack reached the static frames')
     if failures:
         raise SystemExit(f'{failures} frames differ from the host')
     print(f'{checked} frames match the host')

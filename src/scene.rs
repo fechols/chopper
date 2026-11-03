@@ -64,6 +64,11 @@ pub fn normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 }
 
 impl Mesh {
+    /// The bounding radius about the origin, whole texels rounded up, plus one.
+    pub fn radius(&self) -> u8 {
+        self.verts.iter().map(|v| dot(*v, *v).sqrt()).fold(0f32, f32::max).ceil() as u8 + 1
+    }
+
     /// A shared vertex (each is transformed once a frame).
     fn vert(&mut self, p: [f32; 3]) -> usize {
         if let Some(i) = self.verts.iter().position(|q| sub(*q, p).iter().all(|d| d.abs() < 1e-4)) {
@@ -173,6 +178,9 @@ impl Mesh {
     }
 }
 
+/// The mountain meshes' (base radius, peak height), texels (`goap::hazard_map` uses them too).
+pub const MOUNTAIN_SHAPES: [(f32, f32); mesh::MOUNTAINS as usize] = [(40.0, 34.0), (30.0, 22.0), (50.0, 28.0)];
+
 /// An object on the map: position (texels), base height (texels above the ground), yaw (256 a turn),
 /// mesh.
 #[derive(Clone, Copy, Debug)]
@@ -224,7 +232,7 @@ pub fn meshes() -> Vec<Mesh> {
     m.cone(3, 0.5, &[], (0.8, Material::Marker));
     out.push(m);
     // Mountains.
-    for (k, (r, h)) in [(40.0, 34.0), (30.0, 22.0), (50.0, 28.0)].into_iter().enumerate() {
+    for (k, (r, h)) in MOUNTAIN_SHAPES.into_iter().enumerate() {
         let mut m = Mesh::default();
         m.mountain(6, r, h, 17 + k as u32);
         out.push(m);
@@ -246,14 +254,17 @@ pub fn objects(world: &crate::world::World) -> Vec<Object> {
     let at = |u: usize, v: usize| world.texels[v * N + u];
     let mut out = Vec::new();
     let yaw = |u: i32, v: i32| (hash(u, v, 3) * 256.0) as u8;
-    // Mountains: on a 56-texel lattice (jittered) where the range is high, sunk a texel into the ground.
+    // Mountains: on a 56-texel lattice (jittered) where the range is high, sunk a texel into the ground;
+    // none over a pad or its buildings.
     for v in (28..N - 28).step_by(56) {
         for u in (28..N - 28).step_by(56) {
             let ju = u as f32 + (hash(u as i32, v as i32, 1) - 0.5) * 30.0;
             let jv = v as f32 + (hash(u as i32, v as i32, 2) - 0.5) * 30.0;
             let e = world.elevation[jv as usize * N + ju as usize];
-            if e > 0.5 {
-                let k = (hash(u as i32, v as i32, 4) * mesh::MOUNTAINS as f32) as u8;
+            let k = (hash(u as i32, v as i32, 4) * mesh::MOUNTAINS as f32) as u8;
+            let clear = MOUNTAIN_SHAPES[k as usize].0 + 24.0;
+            let on_pad = world.pads.iter().any(|p| (ju - p.u as f32).hypot(jv - p.v as f32) < clear + p.half as f32);
+            if e > 0.5 && !on_pad {
                 out.push(Object { u: ju, v: jv, y: -1.0, yaw: yaw(u as i32, v as i32), mesh: mesh::MOUNTAIN + k });
             }
         }
@@ -311,7 +322,7 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
         assert!(m.verts.len() <= crate::geom::MAX_VERTS && m.faces.len() <= 255);
         let extent = m.verts.iter().flat_map(|v| v.iter()).fold(0f32, |a, &c| a.max(c.abs()));
         let shift = (0..=4u8).find(|&s| extent * 4.0 / (1 << s) as f32 <= 127.0).expect("mesh too large");
-        let r = m.verts.iter().map(|v| dot(*v, *v).sqrt()).fold(0f32, f32::max).ceil() as u8 + 1;
+        let r = m.radius();
         radius.push(r);
         let rec = fmt::MESHES + k * fmt::MESH;
         let vo = out.len();

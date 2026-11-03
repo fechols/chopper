@@ -6,6 +6,10 @@
 //! - `chopper map [--out O] [--level K]`: the ground map (one pixel per texel, 4 pixels per byte decoded).
 //! - `chopper flight [--out DIR] [--every N] [--frames K]`: a strip of autopilot frames as PNGs, with the
 //!   floor's DMA and run counts.
+//! - `chopper agent [--reu R] [--at T] [--out O] [--trace N]`: the attract-mode agent's state after `T`
+//!   ticks (`agent::Agent::to_bytes`, what `tools/emu.py --start` pokes), or every `N`th tick traced.
+//! - `chopper brain`: the GOAP operators' plans and the baked tree's size.
+//! - `chopper pcm [--out O]`: the rotor sound decoded.
 
 use chopper::format::COLORS;
 use chopper::layout::BUFFERS;
@@ -36,7 +40,7 @@ fn bake(args: &[String]) -> Result<(), String> {
 
 fn frame(args: &[String]) -> Result<(), String> {
     let reu = std::fs::read(arg(args, "--reu").unwrap_or("dist/chopper.reu".into())).map_err(|e| e.to_string())?;
-    let tick = num(args, "--tick", 0.0) as u16;
+    let tick = num(args, "--tick", 0.0) as u32;
     let doubled = args.iter().any(|a| a == "--doubled");
     let out = PathBuf::from(arg(args, "--out").unwrap_or("output/frame".into()));
     let (m, st) = package::render(&reu, tick, doubled);
@@ -85,10 +89,11 @@ fn map(args: &[String]) -> Result<(), String> {
 fn flight(args: &[String]) -> Result<(), String> {
     let reu = package::bake(&world::generate(SEED));
     let dir = PathBuf::from(arg(args, "--out").unwrap_or("output/flight".into()));
-    let every = num(args, "--every", 512.0) as u16;
-    let frames = num(args, "--frames", 8.0) as u16;
+    let every = num(args, "--every", 512.0) as u32;
+    let frames = num(args, "--frames", 8.0) as u32;
+    let first = num(args, "--from", chopper::agent::LIFT as f32) as u32;
     for f in 0..frames {
-        let tick = f * every;
+        let tick = first + f * every;
         for doubled in [false, true] {
             let (m, st) = package::render(&reu, tick, doubled);
             let name = format!("t{tick:05}{}", if doubled { "d" } else { "" });
@@ -96,6 +101,60 @@ fn flight(args: &[String]) -> Result<(), String> {
             println!("{name}: {} DMAs, {} I/O writes, {} runs ({} ground)", st.dmas, st.io_writes, st.spans, st.ground_spans);
         }
     }
+    Ok(())
+}
+
+/// The agent's state after `--at` ticks, or a trace of its flight.
+fn agent(args: &[String]) -> Result<(), String> {
+    let reu = match arg(args, "--reu") {
+        Some(p) => std::fs::read(p).map_err(|e| e.to_string())?,
+        None => package::bake(&world::generate(SEED)),
+    };
+    let at = num(args, "--at", 0.0) as u32;
+    if let Some(every) = arg(args, "--trace") {
+        let every: u32 = every.parse().map_err(|_| "--trace N")?;
+        let mut a = chopper::agent::Agent::new();
+        let mut r: &[u8] = &reu;
+        while a.t < at {
+            a.step(&mut r);
+            if a.t % every == 0 {
+                println!(
+                    "t {:6} {:8} u {:7.1} v {:7.1} h {:5.1} yaw {:5.1} wp ({}, {})",
+                    a.t,
+                    chopper::agent::action::NAMES[a.action as usize],
+                    a.u as f32 / 256.0,
+                    a.v as f32 / 256.0,
+                    a.h as f32 / 256.0,
+                    a.yaw as f32 * 360.0 / 65536.0,
+                    a.wu,
+                    a.wv
+                );
+            }
+        }
+        return Ok(());
+    }
+    let a = chopper::agent::at(&reu, at);
+    let out = PathBuf::from(arg(args, "--out").unwrap_or("output/agent.bin".into()));
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&out, a.to_bytes()).map_err(|e| e.to_string())?;
+    println!("{a:?}");
+    Ok(())
+}
+
+/// The planner's operators, some plans, and the tree.
+fn brain() -> Result<(), String> {
+    use chopper::goap::{self, OPS, SYMBOLS, s};
+    let names = |st: u16| SYMBOLS.iter().enumerate().filter(|(k, _)| st >> k & 1 != 0).map(|(_, y)| y.name).collect::<Vec<_>>().join(" ");
+    for st in [s::GROUNDED, s::GROUNDED | s::ROTOR, s::BLOCKED, s::BLOCKED | s::BLOCKED_L, s::BLOCKED | s::BLOCKED_L | s::BLOCKED_R, s::WP_L, s::WP_R | s::BLOCKED_R, s::HIGH, s::HIGH | s::OVER] {
+        let plan = goap::plan(st).map(|p| p.iter().map(|&k| OPS[k].name).collect::<Vec<_>>().join(" -> "));
+        println!("[{}]: {}", names(st), plan.unwrap_or("none".into()));
+    }
+    let table = goap::table();
+    let tree = goap::pilot_tree(&table);
+    let blob = goap::compile();
+    println!("tree: {} nodes, depth {}; blob {} bytes", tree.nodes(), tree.depth(), blob.len());
     Ok(())
 }
 
@@ -119,6 +178,8 @@ fn main() -> Result<(), String> {
         Some("map") => map(&args),
         Some("flight") => flight(&args),
         Some("pcm") => pcm(&args),
-        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--every N] [--frames K] | pcm [--out O]".into()),
+        Some("agent") => agent(&args),
+        Some("brain") => brain(),
+        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain".into()),
     }
 }

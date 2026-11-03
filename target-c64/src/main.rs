@@ -1,5 +1,7 @@
-//! Chopper for the C64 Ultimate: the floor and the 3D objects. The autopilot (`chopper::pilot`, shared
-//! with the host) flies a banked circle over the 2048×2048-texel island. Each frame the objects in view
+//! Chopper for the C64 Ultimate: the floor and the 3D objects. The attract-mode helicopter
+//! (`chopper::agent`, shared with the host, run from the AI code overlay) waits on the pad for the
+//! rotor, lifts off and roams the 2048×2048-texel island, steered by the GOAP-planned decision tree in
+//! the REU (`chopper::goap`, `chopper::brain`). Each frame the objects in view
 //! are streamed from the REU, transformed and sorted (`chopper::geom::draw`, `asm/geom.S`); then band by
 //! band every view line is cut into runs (`asm/spans.S`) and drawn by `asm/floor.S`, one REU DMA per
 //! ground byte, the band's triangles go over it (`geo_activate`, `geo_draw`), and the band is published
@@ -16,11 +18,11 @@
 use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
-use chopper::format::{COLORS, HEADER, MAGIC, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, HEADER, MAGIC, OVERLAYS, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
-use chopper::layout::{self, BOUNCE, BUFFERS, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
-use chopper::pilot::{LAP, autopilot};
+use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
+use chopper::agent::Agent;
 use chopper::poly::{Row, args};
 
 unsafe extern "C" {
@@ -54,6 +56,25 @@ unsafe extern "C" {
     fn geo_draw(band: u8);
     /// `asm/floor.S`: CIA 2 ticks for 20,480 cycles.
     fn turbo_probe() -> u16;
+}
+
+unsafe extern "C" {
+    /// target-c64/link.ld: the AI overlay (`.text.ai`, run at `WORK`) and where the PRG loads it.
+    static __aitext_load_start: u8;
+    static __aitext_size: u8;
+}
+
+/// The agent's REU reads (the hazard map, the tree), through the bounce buffer.
+struct Senses<'a>(&'a mut C64);
+
+impl chopper::brain::Reu for Senses<'_> {
+    fn read(&mut self, addr: u32, out: &mut [u8]) {
+        hw::read_into(self.0, addr, BOUNCE, out);
+    }
+}
+
+fn ai_overlay() -> (u16, u16) {
+    (&raw const __aitext_load_start as u16, &raw const __aitext_size as u16)
 }
 
 /// NTSC: 263 lines of 65 cycles.
@@ -234,7 +255,10 @@ fn boot(c: &mut C64) -> u16 {
     let probes = wait_turbo();
     hw::init(c);
     wait_image(c);
-    // The frame clock starts with the sound, so the flight's time is the sound's (`pilot`): CIA 2 timer
+    // The AI overlay's code to the REU, before asm/audio.S reuses the load images' RAM.
+    let (load, size) = ai_overlay();
+    hw::stash(c, load, OVERLAYS, size);
+    // The frame clock starts with the sound, so the flight's time is the sound's (`agent`): CIA 2 timer
     // A underflows once an NTSC frame, timer B counts the underflows.
     poke16(0xDD04, FRAME_CYCLES - 1);
     poke16(0xDD06, 0xFFFF);
@@ -249,8 +273,10 @@ fn boot(c: &mut C64) -> u16 {
         poke(PATS + 16 + i as u16, p[1]);
     }
     for level in 0..floor::LEVELS {
-        for (i, &b) in floor::tile_table(level).iter().enumerate() {
-            poke(TILES + level as u16 * 256 + i as u16, b);
+        // Entry by entry (`floor::tile_table`): a 256-byte table on the soft stack would push the boot's
+        // frame into llvm-mos's static frames.
+        for i in 0..=255u8 {
+            poke(TILES + level as u16 * 256 + i as u16, floor::tile_bank(level, i & 15, i >> 4));
         }
     }
     probes
@@ -278,23 +304,37 @@ pub extern "C" fn main() -> i16 {
     video_init(c);
 
 
+    // The helicopter on the pad, its clock the sound's (tools/emu.py --start overwrites both once MAGIC
+    // is set).
+    let mut seen = frames_elapsed();
+    let agent = unsafe { &mut *(AGENT as *mut Agent) };
+    *agent = Agent::new();
+    unsafe { write_volatile(CLOCK as *mut u32, seen as u32) };
+    let (_, overlay) = ai_overlay();
+
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);
     poke(STATUS + status::MAGIC, STATUS_MAGIC);
 
-    let mut tick = 0u16;
     let mut frames = 0u16;
     let (mut window, mut in_window) = (frames_elapsed(), 0u8);
     let mut fire_was = false;
     let args = unsafe { &mut *(RAYS as *mut SpanArgs) };
     loop {
         let now = frames_elapsed();
+        let mut clock = unsafe { read_volatile(CLOCK as *const u32) };
         if peek(STATUS + status::HOLD) == 0 {
-            tick = now % LAP;
+            clock += now.wrapping_sub(seen) as u32;
+            unsafe { write_volatile(CLOCK as *mut u32, clock) };
         }
+        seen = now;
         // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry, the bands.
         stopwatch_start();
-        let (cam, _yaw) = autopilot(tick);
+        // The agent catches up with the clock, from its overlay over the (spent) triangles at WORK.
+        hw::fetch(c, OVERLAYS, WORK, overlay);
+        agent.fly(&mut Senses(c), clock);
+        let (cam, _yaw) = agent.camera();
+        let t = agent.t;
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };
@@ -348,7 +388,8 @@ pub extern "C" fn main() -> i16 {
         poke16(STATUS + status::RENDER_US, (render >> 2) as u16);
         poke(STATUS + status::TRIS, peek(GEO_ARGS + geo_args::TRIS));
         poke(STATUS + status::OBJECTS, peek(WALK_ARGS + geom::walk::OBJECTS));
-        poke16(STATUS + status::TICK, tick);
+        poke16(STATUS + status::TICK, t as u16);
+        poke16(STATUS + status::TICK_HI, (t >> 16) as u16);
 
         frames = frames.wrapping_add(1);
         poke16(STATUS + status::FRAMES, frames);

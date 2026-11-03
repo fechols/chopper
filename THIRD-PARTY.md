@@ -30,3 +30,10 @@ Chopper's renderer comes from `../mode7` (same author), which in turn vendors co
 | `tools/branch-audit.py` | `../sueme64/tools/branch-audit.py` @ `d962bde` | resolves numeric local labels |
 | `tools/encode-digital-music/` | `../sueme64/tools/encode-digital-music` @ `8685892` (itself extending Second Reality's DLT2 quantizer; Unlicense) | none |
 | `src/digital.rs` | the DLT5 header and decode rule of `../sueme64/src/digital.rs` @ `8685892` | mono only, whole-file host decode |
+
+## impact (`../impact` @ `6aa056c`, same author, MIT): baked AI decision trees
+
+| File | From | Changes |
+|---|---|---|
+| `src/brain.rs` | the node format of `impact/src/brain.rs` (`[feature, threshold, ge, lt]`, `LEAF`, children before parents) | chopper's header and roots; the walker fetches one node per step instead of a 48-byte window, and is Rust shared with the host (impact's is `asm/ai_walk.S`) |
+| `src/goap.rs` | the postorder, deduplicating emitter of `impact/src/brain_compile.rs` | the trees come from a GOAP planner (A* over symbols) and ID3, not hand-written policies |

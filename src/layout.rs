@@ -135,11 +135,11 @@ pub mod status {
     pub const MAGIC: u16 = 0;
     /// u8: index of the buffer shown.
     pub const FRONT: u16 = 1;
-    /// u16: path tick of the frame shown.
+    /// u16: the flight's tick (`agent::Agent::t`) of the frame shown, low half (high half: `TICK_HI`).
     pub const TICK: u16 = 2;
     /// u16: the time the last floor took to draw, in units of 4 µs (4 CIA ticks).
     pub const RENDER_US: u16 = 4;
-    /// u8: set by the host to freeze the path tick (0 = run).
+    /// u8: set by the host to freeze the flight's clock (0 = run).
     pub const HOLD: u16 = 6;
     /// u8: 0 full, 1 line-doubled (fire on joystick 2 toggles it).
     pub const MODE: u16 = 7;
@@ -158,5 +158,14 @@ pub mod status {
     pub const OBJECTS: u16 = 19;
     /// u8: pop-in size, pixels of bounding radius (`geom::Camera::pop`; poke it to tune; 0 = default).
     pub const POP: u16 = 20;
-    pub const SIZE: u16 = 21;
+    pub const TICK_HI: u16 = 21;
+    pub const SIZE: u16 = 23;
 }
+
+/// The attract-mode helicopter (`agent::Agent`, as `Agent::to_bytes`) and the flight's clock (u32: NTSC
+/// frames since the sound started, frozen while `STATUS+HOLD` is set), after the status block; fixed so
+/// `tools/emu.py --start` can poke them.
+pub const AGENT: u16 = 0xCAA0;
+pub const CLOCK: u16 = AGENT + crate::agent::Agent::BYTES as u16;
+const _: () = assert!(STATUS + status::SIZE <= AGENT && CLOCK + 4 <= 0xCB00);
+const _: () = assert!(core::mem::size_of::<crate::agent::Agent>() == crate::agent::Agent::BYTES);

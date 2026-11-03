@@ -5,6 +5,8 @@
 
 #![cfg_attr(not(feature = "host"), no_std)]
 
+pub mod agent;
+pub mod brain;
 pub mod camera;
 pub mod cost;
 pub mod fixed;
@@ -13,7 +15,6 @@ pub mod geom;
 pub mod hw;
 pub mod layout;
 pub mod floor;
-pub mod pilot;
 pub mod poly;
 pub mod sprite;
 
@@ -21,6 +22,8 @@ pub mod sprite;
 pub mod digital;
 #[cfg(feature = "host")]
 pub mod encode;
+#[cfg(feature = "host")]
+pub mod goap;
 #[cfg(feature = "host")]
 pub mod model;
 #[cfg(feature = "host")]

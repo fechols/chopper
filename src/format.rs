@@ -113,8 +113,24 @@ pub const HAAS: u32 = 160;
 pub const AUDIO_DIVIDER: u16 = 390;
 const _: () = assert!(SPRITE_BLOCKS_END <= AUDIO_DLT && AUDIO_DLT + AUDIO_MAX <= AUDIO_PCM - HAAS);
 
+/// The AI (bank 107): the decision trees (`brain`, baked by `goap::compile`), then the hazard map the
+/// agents probe (`agent`, baked by `goap::hazard_map`): `HAZARD_CELLS`² bytes, row-major by v, one per
+/// `1 << HAZARD_SHIFT`-texel cell: the highest obstacle top over the cell in texels (with margins),
+/// bit 7 set over the sea.
+pub const AI_BANK: u8 = 107;
+pub const AI_TREES: u32 = (AI_BANK as u32) << 16;
+pub const HAZARD: u32 = AI_TREES + crate::brain::MAX_BYTES as u32;
+pub const HAZARD_CELLS: u16 = 64;
+pub const HAZARD_SHIFT: u32 = 5;
+const _: () = assert!(AUDIO_DLT + AUDIO_MAX <= AI_TREES && HAZARD + (HAZARD_CELLS as u32).pow(2) <= AI_TREES + 0x10000);
+const _: () = assert!((HAZARD_CELLS as u32) << HAZARD_SHIFT == crate::floor::MAP_TEXELS as u32);
+
+/// Code overlays (`overlay`): stashed here at boot from the PRG, fetched into their window when needed.
+/// Outside the image.
+pub const OVERLAYS: u32 = 108 << 16;
+
 /// The image ends here: upload only this much.
-pub const IMAGE_END: u32 = AUDIO_DLT + AUDIO_MAX;
+pub const IMAGE_END: u32 = AI_TREES + 0x10000;
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);
 

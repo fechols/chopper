@@ -27,6 +27,10 @@ pub fn bake(world: &World) -> Vec<u8> {
     let h = HEADER as usize;
     reu[h..h + 8].copy_from_slice(MAGIC);
     reu[h + H_VERSION as usize..][..2].copy_from_slice(&PACKAGE_VERSION.to_le_bytes());
+    let brain = crate::goap::compile();
+    reu[AI_TREES as usize..][..brain.len()].copy_from_slice(&brain);
+    let hazard = crate::goap::hazard_map(world);
+    reu[HAZARD as usize..][..hazard.len()].copy_from_slice(&hazard);
     let dlt = crate::digital::ROTOR;
     let d = crate::digital::Dlt5::parse(dlt).expect("rotor.dlt");
     // asm/audio.S decodes whole 8-frame groups only.
@@ -128,10 +132,10 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
 }
 
 /// Frame `tick` of the autopilot flight in buffer 0 of a fresh model of `reu`.
-pub fn render(reu: &[u8], tick: u16, doubled: bool) -> (Machine, FloorStats) {
+pub fn render(reu: &[u8], tick: u32, doubled: bool) -> (Machine, FloorStats) {
     let mut m = Machine::new(reu);
     setup(&mut m, BUFFERS[0]);
-    let (cam, _yaw) = crate::pilot::autopilot(tick);
+    let (cam, _yaw) = crate::agent::at(reu, tick).camera();
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)
