@@ -4,7 +4,7 @@ frame and dump it for `chopper compare`. Device class (REST + DMA socket) from .
 itself adapted from impact/tools/c64u_device.py (MIT).
 
     python tools/c64u.py run dist/chopper.prg
-    python tools/c64u.py upload-reu dist/chopper.reu
+    python tools/c64u.py upload-reu dist/chopper.reu [--no-reset]
     python tools/c64u.py status
     python tools/c64u.py mode full|doubled
     python tools/c64u.py pop PIXELS
@@ -70,6 +70,9 @@ class Device:
     def resume(self):
         self.request('PUT', '/v1/machine:resume')
 
+    def reset(self):
+        self.request('PUT', '/v1/machine:reset')
+
     def run_prg(self, path):
         self.request('POST', '/v1/runners:run_prg', Path(path).read_bytes())
 
@@ -123,7 +126,10 @@ def main():
     ap.add_argument('--host', default=os.environ.get('C64U_HOST', '192.168.66.178'))
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('run').add_argument('prg')
-    sub.add_parser('upload-reu').add_argument('reu')
+    u = sub.add_parser('upload-reu')
+    u.add_argument('reu')
+    u.add_argument('--no-reset', action='store_true',
+                   help='write into the running program (by default the C64 is reset first)')
     sub.add_parser('status')
     sub.add_parser('mode').add_argument('mode', choices=['full', 'doubled'])
     sub.add_parser('pop').add_argument('pixels', type=int, help='pop-in size: pixels of bounding radius (0 = default 6)')
@@ -137,6 +143,11 @@ def main():
     elif args.cmd == 'upload-reu':
         data = Path(args.reu).read_bytes()
         t = time.time()
+        if not args.no_reset:
+            # Reset first: a running program (an earlier build streaming its state or sound through the
+            # REU) would otherwise DMA into the image while it arrives. After a reset only the KERNAL and
+            # BASIC run, and neither touches the REU. (The header wipe and header-last order stay too.)
+            dev.reset()
         dev.write_reu(data)
         print(f'{len(data)} bytes in {time.time() - t:.1f} s')
     elif args.cmd == 'status':
