@@ -1321,6 +1321,68 @@ fn stragglers_go_back_in() {
     assert_eq!(m.reu[r + rec::ACTION as usize], act::RETREAT, "back in, on its way");
 }
 
+/// A tank of side 0 on its front road, alive, at `leg` of it, at texels (`u`, `v`) heading `yaw`, last
+/// moved `dt` ticks before `now`, doing `action` (`flags` more): its record's address.
+#[cfg(test)]
+fn on_the_road(m: &mut Machine, leg: u8, (u, v): (f64, f64), yaw: u8, now: u16, dt: u16, action: u8, flags: u8) -> usize {
+    use crate::world_sim::{self as ws, ALIVE, rec};
+    assert_eq!(u16::from_le_bytes([m.reu[ws::HEADER as usize], m.reu[ws::HEADER as usize + 1]]), 0, "the first page next");
+    let r = ws::UNITS as usize;
+    let rec_ = &mut m.reu[r..r + ws::RECORD as usize];
+    rec_[rec::KIND as usize] = crate::actors::kind::TANK;
+    rec_[rec::FLAGS as usize] = ALIVE | flags;
+    rec_[rec::HP as usize] = ws::stats::HP[crate::actors::kind::TANK as usize];
+    rec_[rec::ACTION as usize] = action;
+    rec_[rec::SPEED as usize] = ws::stats::SPEED[crate::actors::kind::TANK as usize];
+    rec_[rec::ROUTE as usize] = ws::FRONT_ROUTE[0];
+    rec_[rec::LEG as usize] = leg;
+    rec_[rec::U as usize..rec::U as usize + 2].copy_from_slice(&((u * 16.0) as u16).to_le_bytes());
+    rec_[rec::V as usize..rec::V as usize + 2].copy_from_slice(&((v * 16.0) as u16).to_le_bytes());
+    (rec_[rec::YAW as usize], rec_[rec::YAW_FINE as usize], rec_[rec::COURSE as usize]) = (yaw, 0, yaw);
+    rec_[rec::LAST as usize..rec::LAST as usize + 2].copy_from_slice(&now.wrapping_sub(dt).to_le_bytes());
+    r
+}
+
+/// Round its road's end, a unit turned back on a retreat stays so: chased there, clearing it would only
+/// have it turn back and forth at the end while foes stay near.
+#[test]
+fn road_ends_keep_a_retreat() {
+    use crate::world_sim::{self as ws, TURNED, act, rec};
+    let mut m = Machine::new(package());
+    let (start, len, mode) = ws::route(&mut m, ws::FRONT_ROUTE[0]);
+    assert!(mode != ws::LOOP && len >= 2);
+    // On its last waypoint, standing (no step): done with it, round the end.
+    let (u, v) = ws::waypoint(&mut m, start + len - 1);
+    let r = on_the_road(&mut m, len - 1, (u as f64 + 0.5, v as f64 + 0.5), 0, 4000, 0, act::BACK, TURNED);
+    ws::move_page(&mut m, 4000, -4000, -4000);
+    assert_eq!(m.reu[r + rec::LEG as usize], len, "round the end");
+    assert_ne!(m.reu[r + rec::FLAGS as usize] & TURNED, 0, "still turned back round the end");
+}
+
+/// A retreat falls back to the waypoint behind it, even when a long step (catching up) has just taken
+/// it past that one: it now goes the other way, so that waypoint is ahead, not passed.
+#[test]
+fn retreats_fall_back_to_their_waypoint() {
+    use crate::world_sim::{self as ws, CATCH_UP, act, rec};
+    let mut m = Machine::new(package());
+    let (start, len, mode) = ws::route(&mut m, ws::FRONT_ROUTE[0]);
+    assert!(mode != ws::LOOP && len >= 3);
+    // Bound for waypoint 2, an eighth of this step short of waypoint 1 on the way there: the step takes
+    // it past 1 (within the step, behind it), and then it turns back.
+    let (a, b) = (ws::waypoint(&mut m, start + 1), ws::waypoint(&mut m, start + 2));
+    let (dx, dy) = ((b.0 - a.0) as f64, (b.1 - a.1) as f64);
+    let n = (dx * dx + dy * dy).sqrt();
+    let s = (ws::stats::SPEED[crate::actors::kind::TANK as usize] as u32 * CATCH_UP as u32 / 16) as f64;
+    assert!(n > s, "a leg longer than the step");
+    let at = (a.0 as f64 + 0.5 - dx / n * s / 8.0, a.1 as f64 + 0.5 - dy / n * s / 8.0);
+    let r = on_the_road(&mut m, 2, at, ws::heading(dx as i16, dy as i16), 4000, CATCH_UP, act::RETREAT, 0);
+    ws::move_page(&mut m, 4000, -4000, -4000);
+    // Back along the road (legs len.. in reverse): bound for waypoint 1.
+    let leg = m.reu[r + rec::LEG as usize];
+    assert!(leg >= len, "turned back: leg {leg}");
+    assert_eq!(2 * len - 2 - leg, 1, "bound for waypoint 1 (leg {leg} of a road of {len})");
+}
+
 /// A respawned unit faces its way, not the way it faced when it fell: off the carrier's deck, the deck's
 /// heading (it turns off it on its arc); elsewhere, its first leg.
 #[test]

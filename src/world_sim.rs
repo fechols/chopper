@@ -734,14 +734,14 @@ fn living<H: Hw + ?Sized>(hw: &mut H, side: u8, add: bool) {
 
 /// Waypoint `k` of route `r` (texels), and the route's length and mode.
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
-fn route<H: Hw + ?Sized>(hw: &mut H, r: u8) -> (u8, u8, u8) {
+pub(crate) fn route<H: Hw + ?Sized>(hw: &mut H, r: u8) -> (u8, u8, u8) {
     let mut e = [0u8; ROUTE_ENTRY as usize];
     hw::read_into(hw, ROUTES + (r as u32 & 15) * ROUTE_ENTRY as u32, crate::layout::BOUNCE, &mut e);
     (e[0], e[1], e[2])
 }
 
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
-fn waypoint<H: Hw + ?Sized>(hw: &mut H, k: u8) -> (i16, i16) {
+pub(crate) fn waypoint<H: Hw + ?Sized>(hw: &mut H, k: u8) -> (i16, i16) {
     let mut w = [0u8; 4];
     hw::read_into(hw, WAYPOINTS + k as u32 * 4, crate::layout::BOUNCE, &mut w);
     ((u16::from_le_bytes([w[0], w[1]]) & ((1 << PAD_SHIFT) - 1)) as i16, u16::from_le_bytes([w[2], w[3]]) as i16)
@@ -828,7 +828,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         }
         // A reinforcement due? Respawned (`respawn`), on to its first heading (no step yet).
         let Some(aimed) = respawn(hw, r, id, kind, flags, route_no, now) else { return };
-        (flags, aim, last) = ((flags | ALIVE) & !(NEAR_FLAG | TURNED), aimed, now);
+        (flags, aim, last) = (hw.peek(r + rec::FLAGS), aimed, now);
     }
     let dt = now.wrapping_sub(last).min(CATCH_UP);
     // Its record's head as `live` reads it (since its last step, or since now if it just respawned).
@@ -859,6 +859,8 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         wr(hw, r + rec::V, v);
         let (start, len, mode) = route(hw, route_no);
         let mut leg = hw.peek(r + rec::LEG);
+        // The way it goes (by which a waypoint is passed): its heading, or the other way once turned back.
+        let mut ahead = (heading_now >> 8) as u8;
         if hw.peek(r + rec::ACTION) == act::RETREAT {
             // Turn back along a road: the same waypoint, from the other way.
             if mode != LOOP && len > 1 {
@@ -867,6 +869,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
                 trace::log_id(id, if flags & TURNED != 0 { trace::RESUMED } else { trace::REVERSED });
                 // (Turned back on a retreat, or back to its way once clear.)
                 flags ^= TURNED;
+                ahead ^= 0x80;
             }
             hw.poke(r + rec::ACTION, act::BACK);
         }
@@ -876,24 +879,21 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         let mut yaw = 0;
         // Its waypoint; done with (`done_with`), the next one.
         let reach = reach(kind);
-        for pass in 0..2 {
+        // (Rolled, not unrolled: the overlay's room.)
+        for pass in 0..core::hint::black_box(2u8) {
             let k = if mode == LOOP || leg < len { leg % len } else { (2 * len - 2).wrapping_sub(leg) % len };
             let (tu, tv) = waypoint(hw, start + k);
             let (dx, dy) = (tu - (u >> 4) as i16, tv - (v >> 4) as i16);
             yaw = heading(dx, dy);
-            if pass == 1 || !done_with(dist(dx, dy), reach, step, yaw, (heading_now >> 8) as u8, holding) {
+            if pass == 1 || !done_with(dist(dx, dy), reach, step, yaw, ahead, holding) {
                 break;
             }
             leg = leg.wrapping_add(1);
             if leg >= span {
                 leg = 0;
             }
-            // (Round a road's end: on its way again, retreating or not.)
-            if mode != LOOP && (leg == len || leg == 0) {
-                flags &= !TURNED;
-                #[cfg(test)]
-                trace::log_id(id, trace::CLEAR);
-            }
+            // (Round a road's end, a unit turned back stays so: chased there, it would only turn back and
+            // forth at the end. Clear of foes, it turns back to its way.)
         }
         hw.poke(r + rec::LEG, leg);
         hw.poke(r + rec::COURSE, yaw);
