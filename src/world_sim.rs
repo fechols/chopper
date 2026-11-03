@@ -61,14 +61,16 @@ pub mod rec {
     /// The heading it is turning to (`YAW` is its heading at `LAST`; it turns at its kind's rate,
     /// `stats::TURN`, on an arc).
     pub const COURSE: u16 = 18;
+    /// `YAW`'s fraction (1/65536 of a turn): the heading reached mid-turn, kept whole across steps.
+    pub const YAW_FINE: u16 = 19;
     /// Damage dealt and taken since its last decision (for learning).
-    pub const DEALT: u16 = 19;
-    pub const TAKEN: u16 = 20;
-    pub const SEED: u16 = 21;
+    pub const DEALT: u16 = 20;
+    pub const TAKEN: u16 = 21;
+    pub const SEED: u16 = 22;
     /// Its last two decisions' learn nodes (blob offset u16, 0 none; branch taken u8), newest first.
-    pub const TRAIL: u16 = 22;
+    pub const TRAIL: u16 = 23;
     /// Its sector (`sx | sy << 4`).
-    pub const SECTOR: u16 = 28;
+    pub const SECTOR: u16 = 29;
 }
 pub const ALIVE: u8 = 0x80;
 pub const NEAR_FLAG: u8 = 0x40;
@@ -223,23 +225,23 @@ pub fn live_inline(r: &[u8; CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
     use crate::camera::{cos, sin};
     use crate::fixed::mul14;
     let (mut u, mut v) = (u16::from_le_bytes([r[4], r[5]]), u16::from_le_bytes([r[6], r[7]]));
-    let (yaw0, course) = (r[rec::YAW as usize], r[rec::COURSE as usize]);
-    let a0 = (yaw0 as u16) << 8;
+    let course = r[rec::COURSE as usize];
+    let a0 = u16::from_le_bytes([r[rec::YAW_FINE as usize], r[rec::YAW as usize]]);
     let mut yaw = a0;
     // (A unit with no route stays put, as `move_unit` keeps it, fighting or not.)
     if r[rec::FLAGS as usize] & ALIVE != 0 && r[rec::ACTION as usize] != act::HOLD && r[rec::ROUTE as usize] != 0xFF {
         let dt = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(CATCH_UP);
         let s = *stats::TURN.get(r[rec::KIND as usize] as usize).unwrap_or(&0);
-        let left = course.wrapping_sub(yaw0) as i8;
-        let need = left.unsigned_abs() as u16;
+        let left = ((course as u16) << 8).wrapping_sub(a0) as i16;
+        let need = left.unsigned_abs();
         // Round its turning circle to the heading reached, then straight on along the course for the
-        // rest (once round).
-        let straight = if (dt << s) >> 3 >= need {
+        // rest (once round). It turns 32 << s a tick.
+        let straight = if (dt << s) >= (need + 31) >> 5 {
             yaw = (course as u16) << 8;
             // (The turn's ticks rounded up: never more way made than its speed allows.)
-            dt - (((need << 3) + (1 << s) - 1) >> s)
+            dt - ((need + (32 << s) - 1) >> (5 + s))
         } else {
-            // (Under `need` ≤ 128 units: 1/256 units fit.)
+            // (Under `need` ≤ 32768: `dt << s` < 1024 here, and the product fits.)
             let fine = (dt << s) << 5;
             yaw = if left < 0 { yaw.wrapping_sub(fine) } else { yaw.wrapping_add(fine) };
             0
@@ -290,7 +292,7 @@ pub fn carrier<R: crate::brain::Reu + ?Sized>(reu: &mut R, now: u16) -> Option<D
 }
 
 /// The bytes of the carrier's record [`deck_of`] reads.
-pub const CARRIER_RECORD: usize = 19;
+pub const CARRIER_RECORD: usize = 20;
 
 /// The carrier's record (its first [`CARRIER_RECORD`] bytes): the header's id, then the record.
 #[inline(never)]
@@ -753,6 +755,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         // (Kept on the map: a step past a waypoint by its edge stops there.)
         let (u, v, heading_now) = live(&head, now);
         hw.poke(r + rec::YAW, (heading_now >> 8) as u8);
+        hw.poke(r + rec::YAW_FINE, heading_now as u8);
         wr(hw, r + rec::U, u);
         wr(hw, r + rec::V, v);
         let (start, len, mode) = route(hw, route_no);

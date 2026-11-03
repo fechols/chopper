@@ -1257,8 +1257,8 @@ fn units_turn_on_arcs() {
                 }
                 let now = ws::live(&r, (t + k) as u16);
                 if let Some(was) = last[id as usize] {
-                    // (A unit's own step may land a fraction of a unit back: 1/256 of a turn's slack.)
-                    let rate = ((1u32 << stats::TURN[kind]) << 5) + 256;
+                    // (Its heading kept whole across its steps: no slack for a step landing back.)
+                    let rate = ((1u32 << stats::TURN[kind]) << 5) + 1;
                     let dy = (now.2.wrapping_sub(was.2) as i16).unsigned_abs() as u32;
                     assert!(dy <= rate, "kind {kind} (unit {id}) turned {dy}/65536 in a tick at {}", t + k);
                     let step = (now.0 as i32 - was.0 as i32).abs().max((now.1 as i32 - was.1 as i32).abs());
@@ -1271,6 +1271,48 @@ fn units_turn_on_arcs() {
         t += 15;
     }
     assert!(turned > 1000, "hardly any turning: {turned}");
+}
+
+/// A turn takes as long to the left as to the right, and its heading is kept whole across steps (the
+/// record's `YAW_FINE`): no step lands it back.
+#[test]
+fn turns_are_the_same_both_ways() {
+    use crate::world_sim::{self as ws, ALIVE, act, rec, stats};
+    for kind in 0..stats::TURN.len() as u8 {
+        if stats::SPEED[kind as usize] == 0 {
+            continue;
+        }
+        let ticks = |course: u8| {
+            let mut r = [0u8; ws::CARRIER_RECORD];
+            r[rec::KIND as usize] = kind;
+            r[rec::FLAGS as usize] = ALIVE;
+            r[rec::ACTION as usize] = act::MOVE;
+            r[rec::ROUTE as usize] = 0;
+            r[rec::SPEED as usize] = stats::SPEED[kind as usize];
+            r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&16000u16.to_le_bytes());
+            r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&16000u16.to_le_bytes());
+            r[rec::COURSE as usize] = course;
+            // Stepped every 3 ticks, as a fine heading that must not be lost each time.
+            let mut t = 0u16;
+            loop {
+                let (u, v, yaw) = ws::live(&r, t + 3);
+                t += 3;
+                if yaw == (course as u16) << 8 {
+                    return t;
+                }
+                assert!(t < 4000, "kind {kind} never reached {course}");
+                r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&u.to_le_bytes());
+                r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&v.to_le_bytes());
+                r[rec::YAW as usize] = (yaw >> 8) as u8;
+                r[rec::YAW_FINE as usize] = yaw as u8;
+                r[rec::LAST as usize..rec::LAST as usize + 2].copy_from_slice(&t.to_le_bytes());
+            }
+        };
+        let (right, left) = (ticks(64), ticks(192));
+        assert!(right.abs_diff(left) <= 3, "kind {kind}: right {right} ticks, left {left}");
+        let want = (64u32 << 8) / ((1u32 << stats::TURN[kind as usize]) << 5);
+        assert!((right as u32).abs_diff(want) <= 3, "kind {kind}: a quarter turn in {right} ticks, not {want}");
+    }
 }
 
 /// The carrier: an agent placed on its deck rides it (keeping its place on the deck while the ship
