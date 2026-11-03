@@ -1707,3 +1707,31 @@ fn faces_reaching_behind_the_camera_are_cut_at_the_near_plane() {
         }
     }
 }
+
+/// The waypoint arrow near dead astern: the camera's smallest steps either side of it (the carrier's yaw
+/// steps, as at the start on its deck) keep the arrow on one side; a clear turn moves it across.
+#[test]
+fn the_waypoint_arrow_keeps_its_side_near_dead_astern() {
+    use crate::hud::{S_SHAPES, build, init, shape, slot};
+    let mut m = Machine::new(package());
+    init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    // The waypoint 300 texels due south; the helicopter facing north (yaw 0), so it is dead astern.
+    (a.u, a.v, a.wu, a.wv, a.t) = (1000 << 8, 1000 << 8, 1000, 700, 9000);
+    let arrow = |m: &mut Machine, a: &crate::agent::Agent| {
+        build(m, a, &a.camera().0);
+        m.ram[(S_SHAPES + slot::CARET as u16) as usize]
+    };
+    // Clearly to one side first, then near dead astern.
+    a.yaw = 40 * 256;
+    let first = arrow(&mut m, &a);
+    assert!([shape::ARROW + 2, shape::ARROW + 6].contains(&first), "a side arrow: {first}");
+    for k in 0..40 {
+        a.yaw = if k % 2 == 0 { 0xFF00 } else { 0x0100 };
+        a.u += 3 * (k % 3 - 1) << 4;
+        assert_eq!(arrow(&mut m, &a), first, "flipped at step {k}");
+    }
+    // A clear turn the other way: the arrow crosses over.
+    a.yaw = 0u16.wrapping_sub(40 * 256);
+    assert_ne!(arrow(&mut m, &a), first);
+}

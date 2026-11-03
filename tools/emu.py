@@ -34,6 +34,7 @@ BUFFERS = [0x6000]
 SCREEN = 0x5C00     # layout::BUFFERS[0].screen
 HUD = 0x8B00        # hud::PAGE: READY, FRONT, NEXT, BACK, the lock state (4), the tables from +$10
 HUD_BACK, HUD_LOCK, HUD_BUF, HUD_TABLE = HUD + 3, HUD + 4, HUD + 0x10, 4 * 27
+LOCK_BYTES = 5      # hud::LOCK_BYTES (the lock state, then the waypoint arrow's side)
 HUD_SLOTS = [0x5A80, 0x5AC0, 0x5B00, 0x5B40, 0x5B80, 0x5BC0, 0x7F40, 0x7F80, 0x7FC0]
 TURBO = 64          # CPU cycles per Phi2 tick
 LINE_CYCLES = 65 * TURBO
@@ -406,7 +407,7 @@ def main():
             # The HUD: the table the frame wrote, the sprite blocks, the lock state after it.
             back = HUD_BUF + cpu.mem[HUD_BACK]
             got += bytes(cpu.mem[back:back + HUD_TABLE]) + b''.join(bytes(cpu.mem[a:a + 64]) for a in HUD_SLOTS) + \
-                bytes(cpu.mem[HUD_LOCK:HUD_LOCK + 4])
+                bytes(cpu.mem[HUD_LOCK:HUD_LOCK + LOCK_BYTES])
             # The state after the frame (the next one has not flown yet): the agent, the gauges.
             got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
             got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 1]) + bytes(cpu.reu[WAR:WAR + WAR_LEN]) + \
@@ -415,7 +416,9 @@ def main():
             want = host_frame(args.reu, state, doubled)
             # (The stick and the take-over in the agent are already the next frame's: the main loop reads
             # them before the set-up.)
-            stick = 10688 + 36
+            # (The agent's offset in the compared bytes: bitmap, screen and colour RAM, the HUD table, its
+            # sprite blocks, the lock state.)
+            stick = 8000 + 1000 + 1000 + HUD_TABLE + 64 * len(HUD_SLOTS) + LOCK_BYTES + 36
             got = got[:stick] + want[stick:stick + 2] + got[stick + 2:]
             bad = sum(a != b for a, b in zip(got, want))
             dmas = d1 - d0

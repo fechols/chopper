@@ -60,9 +60,9 @@ fn frame(args: &[String]) -> Result<(), String> {
     let lock = match arg(args, "--lock") {
         Some(h) => {
             let b: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0)).collect();
-            [b[0], b[1], b[2], b[3]]
+            [b[0], b[1], b[2], b[3], b.get(4).copied().unwrap_or(0)]
         }
-        None => [chopper::hud::NONE, 0, 0, 0],
+        None => [chopper::hud::NONE, 0, 0, 0, 0],
     };
     let (m, st) = match arg(args, "--state") {
         Some(p) => {

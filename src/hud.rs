@@ -82,9 +82,12 @@ pub const FRONT: u16 = PAGE + 1;
 pub const NEXT: u16 = PAGE + 2;
 /// u8: the table `update` wrote last (0 or `$80`).
 pub const BACK: u16 = PAGE + 3;
-/// The lock state: target (`NONE`), ticks inside the reticle, the tick of the last update (u16).
+/// The lock state: target (`NONE`), ticks inside the reticle, the tick of the last update (u16); then the
+/// side the waypoint arrow last pointed to (`CARET_SIDE`). Carried from frame to frame.
 pub const LOCK_STATE: u16 = PAGE + 4;
-pub const LOCK_BYTES: usize = 4;
+pub const LOCK_BYTES: usize = 5;
+/// u8: 1 when the waypoint was last to the right (its arrow keeps that side while it is near dead astern).
+pub const CARET_SIDE: u16 = LOCK_STATE + 4;
 pub const NONE: u8 = 0xFF;
 pub const BUF: u16 = PAGE + 0x10;
 pub const ROWS: usize = 4;
@@ -374,9 +377,14 @@ pub fn build<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &FloorCam) {
     if c[2] >= NEAR {
         (x, y) = screen(c);
     }
+    // Its side: the last one kept unless it is clearly to one side (more than a quarter of its depth and
+    // 2 texels off the axis): near dead astern the camera's smallest step would flip the arrow over.
+    let band = (c[2].unsigned_abs() >> 2) as i16 + 8;
+    let right = if c[0] > band { true } else if c[0] < -band { false } else { hw.peek(CARET_SIDE) != 0 };
+    hw.poke(CARET_SIDE, right as u8);
     if c[2] < NEAR || !on_screen(x, y) {
         // Behind: toward its side.
-        let (dx, dy) = if c[2] >= NEAR { (c[0] >> 2, -(c[1] >> 2)) } else { (if c[0] >= 0 { 127 } else { -127 }, 0) };
+        let (dx, dy) = if c[2] >= NEAR { (c[0] >> 2, -(c[1] >> 2)) } else { (if right { 127 } else { -127 }, 0) };
         (s, x, y) = edge(dx.saturating_mul(6), dy.saturating_mul(5));
     }
     hw.poke(S_SHAPES + slot::CARET as u16, s);

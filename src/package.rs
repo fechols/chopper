@@ -170,7 +170,7 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
 
 /// Frame `tick` of the autopilot flight in buffer 0 of a fresh model of `reu`.
 pub fn render(reu: &[u8], tick: u32, doubled: bool) -> (Machine, FloorStats) {
-    render_from(reu, tick, doubled, [crate::hud::NONE, 0, 0, 0])
+    render_from(reu, tick, doubled, [crate::hud::NONE, 0, 0, 0, 0])
 }
 
 /// [`render`], the HUD's lock-on carried on from `lock` (`hud::LOCK_STATE` before the frame: the lock
