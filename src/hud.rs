@@ -73,7 +73,8 @@ pub const fn anchor(shape: u8) -> (i16, i16) {
 
 /// The IRQ's state and tables (`asm/hud.S`): one page, after the relocated `spantext`.
 pub const PAGE: u16 = 0x8B00;
-/// u8: set by the main loop once the frame its table belongs to is on screen; the top IRQ then swaps.
+/// u8: set by the main loop once the frame its table belongs to is on screen; the top IRQ then swaps
+/// (and clears it). The next frame's `prepare` clears it too: a table not yet shown is replaced.
 pub const READY: u16 = PAGE;
 /// u8: the table the IRQ shows (0 or `$80` from `BUF`).
 pub const FRONT: u16 = PAGE + 1;
@@ -345,12 +346,13 @@ pub const S_COUNT: u16 = S_SHAPES + SHAPE_SLOTS as u16;
 pub const SHAPE_SLOTS: usize = 7;
 const _: () = assert!(S_COUNT < crate::layout::STAGE + crate::layout::ROW_STRIDE);
 
-/// The frame's HUD, step 1 (cockpit overlay): wait for the IRQ to have taken the last table, read the
-/// targets.
+/// The frame's HUD, step 1 (cockpit overlay): withdraw the last table if the IRQ has not taken it yet
+/// (so the back table is free to rewrite without waiting for the top border: the frame it belonged to is
+/// gone anyway), read the targets.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.cockpit"))]
 pub fn prepare<H: Hw + ?Sized>(hw: &mut H) {
-    while hw.peek(READY) != 0 {}
+    hw.poke(READY, 0);
     hw::fetch(hw, HUD_TARGETS, S_TARGETS, (1 + TARGETS * TARGET) as u16);
 }
 
