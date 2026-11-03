@@ -100,6 +100,7 @@ SECTIONS {
         .worldtext { *(.text.world .text.world.*) }
         .world2text { *(.text.world2 .text.world2.*) }
         .world3text { *(.text.world3 .text.world3.*) }
+        .world4text { *(.text.world4 .text.world4.*) }
         .combattext { *(.text.combat .text.combat.*) }
         .fxtext { *(.text.fx .text.fx.*) }
     } >window
@@ -144,6 +145,8 @@ __actorstext_size = SIZEOF(.actorstext);
 __worldtext_size = SIZEOF(.worldtext);
 __world2text_size = SIZEOF(.world2text);
 __world3text_size = SIZEOF(.world3text);
+__world4text_size = SIZEOF(.world4text);
+ASSERT(SIZEOF(.world4text) <= 0x1800, "the war director's overlay is larger than its window ($E000-$F7FF)")
 __combattext_size = SIZEOF(.combattext);
 __fxtext_size = SIZEOF(.fxtext);
 __combatlibtext_size = SIZEOF(.combatlibtext);

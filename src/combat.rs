@@ -60,20 +60,28 @@ pub const FX: u16 = 0xB760;
 pub const FX_MAX: u8 = 8;
 pub const FX_ENTRY: u16 = 10;
 const _: () = assert!(FX + FX_MAX as u16 * FX_ENTRY <= 0xB800);
+/// The wrecks near the player smoking (`world_sim::WRECK_TICKS`), listed by `update` for `effects`: a
+/// count, then (u, v, h 1/16 texel, age in ticks) u16 each. (After the mesh buffer, before the HUD's
+/// page.)
+pub const WRECKS: u16 = 0x8AB0;
+pub const WRECK_MAX: u8 = 6;
+pub const WRECK_ENTRY: u16 = 8;
+const _: () = assert!(WRECKS + 1 + WRECK_MAX as u16 * WRECK_ENTRY <= crate::hud::PAGE);
 /// The frame's effects in view, for `geom::push_dynamic`: a count, then [`FXDYN_ENTRY`] bytes each: left
 /// x (multicolour pixels) and y (line) of the anchor (i16 × 2), the frame record's REU address (u24),
-/// the depth key. (After the mesh buffer, before the HUD's page.)
-pub const FXDYN: u16 = 0x8AB0;
+/// the depth key. (After the transform tables, before the reciprocals.)
+pub const FXDYN: u16 = 0x8F84;
 pub const FXDYN_ENTRY: u16 = 8;
-const _: () = assert!(FXDYN + 1 + FX_MAX as u16 * FXDYN_ENTRY <= crate::hud::PAGE);
+pub const FXDYN_MAX: u8 = FX_MAX + WRECK_MAX;
+const _: () = assert!(FXDYN >= crate::layout::XFORM_RAM + 0x84 && FXDYN + 1 + FXDYN_MAX as u16 * FXDYN_ENTRY <= crate::fixed::RECIP);
 /// Effect frames last `1 << FX_TICKS_SHIFT` ticks; looping effects (smoke, a burning wreck) play this
 /// long.
 pub const FX_TICKS_SHIFT: u32 = 2;
 pub const FX_LIFE: u16 = 20 * 60;
 
-/// Start `effect` at (`u`, `v`, `h`) (1/16 texel): a free slot, or the oldest.
+/// Start `effect` at (`u`, `v`, `h`) (1/16 texel): a free slot, or the oldest. (Resident on the C64: the
+/// player's fight and the war's both start effects.)
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
 pub fn spawn<H: Hw + ?Sized>(hw: &mut H, effect: u8, u: u16, v: u16, h: u16, now: u16) {
     let (mut best, mut age) = (0u16, 0u16);
     for k in 0..FX_MAX as u16 {
@@ -103,29 +111,37 @@ pub fn sea<H: Hw + ?Sized>(hw: &mut H, u: u16, v: u16) -> bool {
 fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16) {
     use crate::effects::{FRAMES, HEIGHT_Q4, LOOPS, record, scale_for};
     let mut n = 0u8;
-    for k in 0..FX_MAX as u16 {
-        let e = FX + k * FX_ENTRY;
-        let id = hw.peek(e);
-        if id == 0 {
-            continue;
-        }
-        let effect = (id - 1) % crate::effects::EFFECTS as u8;
-        let age = now.wrapping_sub(rd(hw, e + 2));
-        if age >= 0x8000 {
-            // Not begun yet (a wreck's fire after its explosion).
-            continue;
-        }
-        let frames = FRAMES[effect as usize] as u16;
-        let mut f = age >> FX_TICKS_SHIFT;
-        if f >= frames {
-            if !LOOPS[effect as usize] || age >= FX_LIFE {
-                hw.poke(e, 0);
+    let wrecks = hw.peek(WRECKS).min(WRECK_MAX) as u16;
+    for k in 0..FX_MAX as u16 + wrecks {
+        // The effects playing, then the wrecks' smoke columns.
+        let (effect, f, e) = if k < FX_MAX as u16 {
+            let e = FX + k * FX_ENTRY;
+            let id = hw.peek(e);
+            if id == 0 {
                 continue;
             }
-            // (The looping effects have 8 frames.)
-            f &= 7;
-        }
-        let p = [(rd(hw, e + 4) >> 2) as i16, (rd(hw, e + 8) >> 2) as i16, (rd(hw, e + 6) >> 2) as i16];
+            let effect = (id - 1) % crate::effects::EFFECTS as u8;
+            let age = now.wrapping_sub(rd(hw, e + 2));
+            if age >= 0x8000 {
+                // Not begun yet (a wreck's fire after its explosion).
+                continue;
+            }
+            let frames = FRAMES[effect as usize] as u16;
+            let mut f = age >> FX_TICKS_SHIFT;
+            if f >= frames {
+                if !LOOPS[effect as usize] || age >= FX_LIFE {
+                    hw.poke(e, 0);
+                    continue;
+                }
+                // (The looping effects have 8 frames.)
+                f &= 7;
+            }
+            (effect, f, e + 4)
+        } else {
+            let e = WRECKS + 1 + (k - FX_MAX as u16) * WRECK_ENTRY;
+            (crate::effects::effect::SMOKE, (rd(hw, e + 6) >> FX_TICKS_SHIFT) & 7, e)
+        };
+        let p = [(rd(hw, e) >> 2) as i16, (rd(hw, e + 4) >> 2) as i16, (rd(hw, e + 2) >> 2) as i16];
         let c = crate::hud::to_camera(eye, p);
         if c[2] < crate::hud::NEAR {
             continue;
@@ -257,6 +273,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     // The targets: living enemy units near, where they are now.
     let n = hw.peek(ws::NEAR).min(ws::NEAR_MAX);
     let mut count = 0u8;
+    let mut wrecks = 0u8;
     let mut in_cone = ws::NOBODY;
     let mut cone_z = i16::MAX;
     let mut r = [0u8; 18];
@@ -275,11 +292,23 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
         }
         // Drawn: (mesh, yaw, u, v, h) into the list.
         let o = OBJLIST + 1 + 8 * k;
-        hw.poke(o, crate::actors::mesh_of(r[rec::KIND as usize], flags & SIDE));
+        let kind = r[rec::KIND as usize];
+        hw.poke(o, if alive { crate::actors::mesh_of(kind, flags & SIDE) } else { crate::actors::wreck_of(kind) });
         hw.poke(o + 1, r[rec::YAW as usize]);
         wr(hw, o + 2, u as u16);
         wr(hw, o + 4, v as u16);
         wr(hw, o + 6, (r[rec::H as usize] as u16) << 4);
+        // A wreck: its smoke column, while it lasts.
+        let age = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]]));
+        if !alive && age < ws::WRECK_TICKS && wrecks < WRECK_MAX {
+            let w = WRECKS + 1 + wrecks as u16 * WRECK_ENTRY;
+            wr(hw, w, u as u16);
+            wr(hw, w + 2, v as u16);
+            // (Rising from a texel and a half up: the wreck shows under it.)
+            wr(hw, w + 4, ((r[rec::H as usize] as u16) << 4) + 24);
+            wr(hw, w + 6, age);
+            wrecks += 1;
+        }
         if !alive || flags & SIDE != crate::actors::ENEMY || count as usize >= TARGETS {
             continue;
         }
@@ -299,6 +328,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
         }
     }
     hw.poke(S_TARGETS, count);
+    hw.poke(WRECKS, wrecks);
     hw.poke(OBJLIST, n);
     // The gun.
     let input = a.input;

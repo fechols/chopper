@@ -56,7 +56,7 @@ pub mod rec {
     pub const COOL: u16 = 13;
     /// The unit last fought (u16; `NOBODY`).
     pub const TARGET: u16 = 14;
-    /// The tick of its last step (u16, wrapping).
+    /// The tick of its last step (u16, wrapping); dead, about when it fell (a wreck's age).
     pub const LAST: u16 = 16;
     /// Damage dealt and taken since its last decision (for learning).
     pub const DEALT: u16 = 19;
@@ -126,6 +126,8 @@ pub const FRONT_ROUTE: [u8; 2] = [2, 3];
 pub const PAD_SHIFT: u16 = 12;
 pub const CAPTURE: u8 = 2;
 pub const HOLD_PASSES: u8 = 3;
+/// The allies' home pad (`world::PADS`).
+pub const HOME: usize = 0;
 
 /// Records a page (`COUNT` is a whole number of pages).
 pub const PAGE: u16 = 48;
@@ -146,9 +148,14 @@ pub const PHASE: u16 = NEAR + NEAR_LEN;
 pub const MOVE: u8 = 0;
 pub const DECIDE: u8 = 1;
 pub const FIGHT: u8 = 2;
+/// Once round the page file, a frame of the director's (`.text.world4`) before the next lap.
+pub const DIRECT: u8 = 3;
 const _: () = assert!(PHASE + 1 <= 0xCB00);
 /// Within this many texels of the player (each way).
 pub const NEAR_RANGE: i16 = 320;
+/// The dead stay where they fell this long (ticks; drawn, smoking, near the player), before their slot
+/// can be a reinforcement.
+pub const WRECK_TICKS: u16 = 40 * 60;
 /// Enemies fire on the player within this many texels (|du| + |dv|).
 pub const PLAYER_RANGE: u16 = 200;
 /// The agent's airspeed field (`Agent::to_bytes`: `vf`, u16 at 18).
@@ -261,7 +268,8 @@ pub fn step_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
     match hw.peek(PHASE) {
         MOVE => move_page(hw, now, pu, pv),
         DECIDE => decide_page(hw),
-        _ => fight_page(hw, now, pu, pv),
+        FIGHT => fight_page(hw, now, pu, pv),
+        _ => direct_page(hw, now),
     }
 }
 
@@ -361,19 +369,24 @@ pub fn fight_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
     page(hw, first, false);
     hw.poke(SHOTS, 0);
     for slot in 0..PAGE {
-        fight_unit(hw, first, slot, pu, pv);
+        fight_unit(hw, first, slot, now, pu, pv);
     }
     page(hw, first, true);
-    apply_shots(hw);
+    apply_shots(hw, now);
     let next = if first + PAGE >= COUNT { 0 } else { first + PAGE };
     reu_put16(hw, HEADER + head::CURSOR as u32, next);
-    if next == 0 {
-        director(hw, now);
-    }
+    hw.poke(PHASE, if next == 0 { DIRECT } else { MOVE });
+}
+
+/// The director's phase: then the next lap's first move.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world4"))]
+pub fn direct_page<H: Hw + ?Sized>(hw: &mut H, now: u16) {
+    director(hw, now);
     hw.poke(PHASE, MOVE);
 }
 
-/// The director, once round the whole page file: every `WAVE_TICKS`, the front moves (`front`), then
+/// The director, once round the whole page file (its own phase, `DIRECT`): every `WAVE_TICKS`, the front moves (`front`), then
 /// each side behind its strength gets a wave (budget) of reinforcements, spent as dead slots of its side
 /// come round. Strength and waves grow with the pads the other side holds: a side pushed back fights
 /// nearer its depots (so the front swings both ways rather than one side being wiped out).
@@ -402,7 +415,7 @@ impl Knobs {
 }
 
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world4"))]
 fn director<H: Hw + ?Sized>(hw: &mut H, now: u16) {
     let last = reu_get16(hw, HEADER + head::WAVE as u32);
     if now.wrapping_sub(last) < WAVE_TICKS {
@@ -426,7 +439,7 @@ fn director<H: Hw + ?Sized>(hw: &mut H, now: u16) {
 
 /// The front: pads change hands, then each side's road reaches to the first pad the other side holds.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world4"))]
 fn front<H: Hw + ?Sized>(hw: &mut H) {
     // The owners (and knobs, between), and the pressure on each pad.
     let mut h = [0u8; (head::PRESSURE + PADS - head::OWNER) as usize];
@@ -447,8 +460,9 @@ fn front<H: Hw + ?Sized>(hw: &mut H) {
                 continue;
             }
             let p = pad - 1;
-            // Taken? (Each side's road visits the pads it fights over; once a side, once is enough.)
-            if side == 0 {
+            // Taken? (Each side's road visits the pads it fights over; once a side, once is enough.) Home
+            // is the allies' last stand: never taken.
+            if side == 0 && p != HOME {
                 let sector = (((u & 0x7FF) >> 7) | ((v >> 7) << 4)) as u8;
                 let mut counts = [0u8; 2];
                 hw::read_into(hw, sector_at(sector) + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
@@ -528,16 +542,23 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     let flags = hw.peek(r + rec::FLAGS);
     let side = flags & SIDE;
     let kind = hw.peek(r + rec::KIND) as usize % crate::actors::kind::COUNT as usize;
-    let dt = now.wrapping_sub(rd(hw, r + rec::LAST)).min(255);
-    wr(hw, r + rec::LAST, now);
+    let last = rd(hw, r + rec::LAST);
     let route_no = hw.peek(r + rec::ROUTE);
     if flags & ALIVE == 0 {
-        // A dead slot: respawn at its route's start if its side has reinforcements due.
+        // A wreck for `WRECK_TICKS` (listed near the player, then gone); then a free slot, respawned if its
+        // side has reinforcements due.
+        let fresh = now.wrapping_sub(last) < WRECK_TICKS;
+        let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
+        near_list(hw, id, fresh && (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE);
+        if fresh {
+            return;
+        }
         let budget = HEADER + head::BUDGET as u32 + side as u32;
         let b = reu_get(hw, budget);
         if b == 0 || route_no == 0xFF {
             return;
         }
+        wr(hw, r + rec::LAST, now);
         reu_put(hw, budget, b - 1);
         // At the route's start; on its side's front road, the last waypoint before the front.
         let (start, len, _) = route(hw, route_no);
@@ -555,6 +576,8 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         living(hw, side, true);
         return;
     }
+    let dt = now.wrapping_sub(last).min(255);
+    wr(hw, r + rec::LAST, now);
     let speed = stats::SPEED[kind];
     if speed > 0 && route_no != 0xFF && hw.peek(r + rec::ACTION) != act::HOLD {
         let (start, len, mode) = route(hw, route_no);
@@ -610,7 +633,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
 /// there when it can.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, pu: i16, pv: i16) {
+fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i16, pv: i16) {
     let r = at(slot);
     let id = first + slot;
     let flags = hw.peek(r + rec::FLAGS);
@@ -640,6 +663,8 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, pu: i16, pv: i1
         let fast = rd(hw, crate::layout::AGENT + PLAYER_SPEED) > 6000;
         let odds = stats::HIT[kind] >> (1 + fast as u8);
         hw.poke(r + rec::COOL, stats::RELOAD[kind]);
+        // Its muzzle flash: who is shooting.
+        muzzle(hw, r, now);
         if seed < odds {
             use crate::combat::{PLAYER, player};
             let d = hw.peek(PLAYER + player::DAMAGE).saturating_add(stats::DAMAGE[kind]);
@@ -655,7 +680,7 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, pu: i16, pv: i1
     } else if present && fighting && foe < COUNT {
         let seed = roll(hw.peek(r + rec::SEED));
         hw.poke(r + rec::SEED, seed);
-        if fight(hw, first, id, kind, foe, seed) {
+        if fight(hw, first, id, kind, foe, seed, now) {
             hw.poke(r + rec::COOL, stats::RELOAD[kind]);
         }
     }
@@ -677,18 +702,28 @@ const _: () = assert!(1 + 3 * PAGE <= crate::layout::ROW_STRIDE);
 /// damage (listed, to be applied after the page is written back). Whether it fired.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16, dice: u8) -> bool {
+fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16, dice: u8, now: u16) -> bool {
     let base = UNITS + foe as u32 * RECORD as u32;
-    let mut kf = [0u8; 2];
-    hw::read_into(hw, base + rec::KIND as u32, crate::layout::BOUNCE, &mut kf);
-    let (air, foe_flags) = (kf[rec::KIND as usize] == stats::AIR, kf[rec::FLAGS as usize]);
+    // The foe's kind, flags and where it is, in one.
+    let mut f = [0u8; rec::H as usize + 1];
+    hw::read_into(hw, base, crate::layout::BOUNCE, &mut f);
+    let (air, foe_flags) = (f[rec::KIND as usize] == stats::AIR, f[rec::FLAGS as usize]);
     if foe_flags & ALIVE == 0 || stats::TARGETS[kind] & if air { 2 } else { 1 } == 0 {
         return false;
     }
     let me = at(id.wrapping_sub(first));
     wr(hw, me + rec::TARGET, foe);
+    // Near the player, the fire is seen: the shot, and the hit.
+    let seen = (hw.peek(me + rec::FLAGS) | foe_flags) & NEAR_FLAG != 0;
+    if seen {
+        muzzle(hw, me, now);
+    }
     if dice >= stats::HIT[kind] {
         return true;
+    }
+    if seen {
+        let p = |k: u16| u16::from_le_bytes([f[k as usize], f[k as usize + 1]]);
+        crate::combat::spawn(hw, crate::effects::effect::IMPACT, p(rec::U), p(rec::V), (f[rec::H as usize] as u16 + 1) << 4, now);
     }
     let dmg = stats::DAMAGE[kind];
     let dealt = hw.peek(me + rec::DEALT).saturating_add(dmg);
@@ -705,7 +740,7 @@ fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16,
 /// bookkeeping.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn apply_shots<H: Hw + ?Sized>(hw: &mut H) {
+fn apply_shots<H: Hw + ?Sized>(hw: &mut H, now: u16) {
     let n = hw.peek(SHOTS).min(PAGE as u8);
     for k in 0..n as u16 {
         let foe = rd(hw, SHOTS + 1 + 3 * k);
@@ -724,6 +759,12 @@ fn apply_shots<H: Hw + ?Sized>(hw: &mut H) {
         hw.poke(b + rec::TAKEN, taken);
         if hp == 0 {
             hw.poke(b + rec::FLAGS, flags & !(ALIVE | NEAR_FLAG));
+            if flags & NEAR_FLAG != 0 {
+                // Killed in sight: it blows up, then burns.
+                let (u, v, h) = (rd(hw, b + rec::U), rd(hw, b + rec::V), (hw.peek(b + rec::H) as u16) << 4);
+                crate::combat::spawn(hw, crate::effects::effect::EXPLOSION, u, v, h, now);
+                crate::combat::spawn(hw, crate::effects::effect::WRECK_FIRE, u, v, h, now.wrapping_add(40));
+            }
         }
         let sector = hw.peek(b + rec::SECTOR);
         hw::stash(hw, b, base, RECORD);
@@ -732,6 +773,14 @@ fn apply_shots<H: Hw + ?Sized>(hw: &mut H) {
             living(hw, flags & SIDE, false);
         }
     }
+}
+
+/// A muzzle flash at the unit whose page record is at `r` (a little above it).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
+fn muzzle<H: Hw + ?Sized>(hw: &mut H, r: u16, now: u16) {
+    let (u, v, h) = (rd(hw, r + rec::U), rd(hw, r + rec::V), (hw.peek(r + rec::H) as u16 + 1) << 4);
+    crate::combat::spawn(hw, crate::effects::effect::MUZZLE, u, v, h, now);
 }
 
 /// Keep unit `id` in the near list or out of it.

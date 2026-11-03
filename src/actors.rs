@@ -42,6 +42,11 @@ pub const fn mesh_of(kind: u8, side: u8) -> u8 {
     kind * 2 + (side & 1)
 }
 
+/// A kind's wreck's mesh (after both sides' meshes, `scene::vehicles`).
+pub const fn wreck_of(kind: u8) -> u8 {
+    kind::COUNT * 2 + kind % kind::COUNT
+}
+
 /// The mesh table's records: blob offset u16, blob length u16, vertices, faces, shift, radius.
 pub const MESH_RECORD: usize = 8;
 
@@ -70,7 +75,7 @@ const _: () = assert!(DYN >= crate::hud::S_COUNT + 1);
 /// pages, before the HUD's page).
 pub const MESHBUF: u16 = 0x8A10;
 pub const MESHBUF_LEN: u16 = 0xA0;
-const _: () = assert!(MESHBUF + MESHBUF_LEN <= crate::combat::FXDYN);
+const _: () = assert!(MESHBUF + MESHBUF_LEN <= crate::combat::WRECKS);
 
 /// An object in the world: mesh, yaw (256 a turn), position in 1/16 texel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

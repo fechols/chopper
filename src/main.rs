@@ -371,6 +371,54 @@ fn effects(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Wrecks and the living side by side ahead of a hovering camera, drawn at a few ages of the wrecks
+/// (`world_sim::WRECK_TICKS`): output/wrecks-<seconds>.png.
+fn wrecks(args: &[String]) -> Result<(), String> {
+    use chopper::actors::{ENEMY, kind};
+    use chopper::layout::{AGENT, CLOCK};
+    use chopper::world_sim::{self as ws, ALIVE, NEAR, RECORD, rec};
+    let reu = std::fs::read(arg(args, "--reu").unwrap_or("dist/chopper.reu".into())).map_err(|e| e.to_string())?;
+    let out = PathBuf::from(arg(args, "--out").unwrap_or("output/wrecks".into()));
+    let mut a = chopper::agent::Agent::new();
+    let t0 = 20_000u32;
+    (a.u, a.v, a.h, a.grounded, a.mode, a.t) = (1024 << 8, (num(args, "--v", 1112.0) as i32) << 8, (num(args, "--h", 5.0) as i32) << 8, 0, chopper::agent::MODE_PLAYER, t0);
+    a.pitch = num(args, "--pitch", -2000.0) as i16;
+    // A row ahead: (kind, alive) pairs, ids 200 on.
+    let row = [(kind::TANK, false), (kind::TANK, true), (kind::APC, false), (kind::TRUCK, false), (kind::AA, false), (kind::GUNSHIP, false)];
+    for age in [1u32, 12, 35] {
+        let died = (t0 - age * 60) as u16;
+        let mut units = Vec::new();
+        for (j, &(k, alive)) in row.iter().enumerate() {
+            let mut r = vec![0u8; RECORD as usize];
+            r[rec::KIND as usize] = k;
+            r[rec::FLAGS as usize] = ENEMY | if alive { ALIVE } else { 0 };
+            r[rec::HP as usize] = 20;
+            r[rec::ACTION as usize] = ws::act::HOLD;
+            r[rec::YAW as usize] = (j * 40) as u8;
+            let (u, v) = (1024 - 25 + 10 * j as u16, 1130 + 6 * (j as u16 % 2));
+            r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&(u << 4).to_le_bytes());
+            r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&(v << 4).to_le_bytes());
+            r[rec::LAST as usize..rec::LAST as usize + 2].copy_from_slice(&died.to_le_bytes());
+            units.push((ws::UNITS + (200 + j as u32) * RECORD as u32, r));
+        }
+        let mut near = vec![row.len() as u8];
+        for j in 0..row.len() as u16 {
+            near.extend((200 + j).to_le_bytes());
+        }
+        let snap = chopper::snapshot::Snapshot {
+            ram: vec![(AGENT, a.to_bytes().to_vec()), (CLOCK, t0.to_le_bytes().to_vec()), (NEAR, near), (ws::PHASE, vec![ws::DECIDE])],
+            reu: units,
+        };
+        let (m, _) = package::render_snapshot(&reu, &snap, false)?;
+        let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
+        chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
+        let p = PathBuf::from(format!("{}-{age:02}s.png", out.display()));
+        png::save_wide(&p, 160, &rgb)?;
+        println!("{}", p.display());
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -384,6 +432,7 @@ fn main() -> Result<(), String> {
         Some("cockpit") => cockpit(&args),
         Some("war") => war(&args),
         Some("effects") => effects(&args),
+        Some("wrecks") => wrecks(&args),
         _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR]".into()),
     }
 }

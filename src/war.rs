@@ -191,6 +191,10 @@ pub fn bake(w: &World) -> Vec<u8> {
         r[rec::ROUTE as usize] = un.route;
         r[rec::LEG as usize] = leg;
         r[rec::TARGET as usize..rec::TARGET as usize + 2].copy_from_slice(&ws::NOBODY.to_le_bytes());
+        // The reinforcement slots: free from the start (no wreck to wait out).
+        if !un.alive {
+            r[rec::LAST as usize..rec::LAST as usize + 2].copy_from_slice(&0u16.wrapping_sub(ws::WRECK_TICKS).to_le_bytes());
+        }
         seed = seed.wrapping_mul(29).wrapping_add(17);
         r[rec::SEED as usize] = seed;
         let sector = ((u16_ >> 11) & 15) as u8 | (((v16 >> 11) & 15) as u8) << 4;

@@ -20,7 +20,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -88,6 +88,7 @@ unsafe extern "C" {
     static __worldtext_size: u8;
     static __world2text_size: u8;
     static __world3text_size: u8;
+    static __world4text_size: u8;
     static __combattext_size: u8;
     static __fxtext_size: u8;
     static __combatlibtext_size: u8;
@@ -401,6 +402,7 @@ pub extern "C" fn main() -> i16 {
         let (ovl, size) = match peek(chopper::world_sim::PHASE) {
             chopper::world_sim::MOVE => (OVERLAY_WORLD, unsafe { &raw const __worldtext_size } as u16),
             chopper::world_sim::DECIDE => (OVERLAY_WORLD3, unsafe { &raw const __world3text_size } as u16),
+            chopper::world_sim::DIRECT => (OVERLAY_WORLD4, unsafe { &raw const __world4text_size } as u16),
             _ => (OVERLAY_WORLD2, unsafe { &raw const __world2text_size } as u16),
         };
         hw::fetch(c, ovl, WORK, size);

@@ -89,6 +89,7 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".worldtext", OVERLAY_WORLD, OVERLAY_MAX),
         (".world2text", OVERLAY_WORLD2, OVERLAY_MAX),
         (".world3text", OVERLAY_WORLD3, OVERLAY_MAX),
+        (".world4text", OVERLAY_WORLD4, OVERLAY_MAX),
         (".combattext", OVERLAY_COMBAT, OVERLAY_MAX),
         (".fxtext", OVERLAY_FX, OVERLAY_MAX),
         (".combatlibtext", OVERLAY_COMBATLIB, OVERLAY2_MAX),

@@ -28,6 +28,8 @@ pub enum Material {
     Allied,
     /// Tracers and missiles: light blue throughout.
     Bright,
+    /// Wrecks: charred, brown and blue checks to blue.
+    Wreck,
 }
 
 impl Material {
@@ -41,6 +43,7 @@ impl Material {
             Material::Enemy => [2, 8, 13, 3],
             Material::Allied => [1, 5, 11, 2],
             Material::Bright => [1, 1, 1, 1],
+            Material::Wreck => [8, 8, 3, 3],
         }
     }
 }
@@ -329,7 +332,8 @@ pub fn objects(world: &crate::world::World) -> Vec<Object> {
 }
 
 /// The moving objects' meshes (`actors::kind`), each in the enemy's colours then the allies'
-/// (`actors::mesh_of`): modelled facing +v (yaw 0 is north), in texels, at most 16 faces each.
+/// (`actors::mesh_of`), then each kind's wreck (`actors::wreck_of`): modelled facing +v (yaw 0 is north),
+/// in texels, at most 16 faces each.
 pub fn vehicles() -> Vec<Mesh> {
     use crate::actors::kind;
     let mut out = Vec::new();
@@ -338,7 +342,38 @@ pub fn vehicles() -> Vec<Mesh> {
             out.push(vehicle(k, mat));
         }
     }
+    for k in 0..kind::COUNT {
+        out.push(wreck(k));
+    }
     out
+}
+
+/// A kind's wreck: its model charred, slumped and listing, what stood on top knocked aside; ships settle
+/// by the stern, a gunship lies on the ground.
+fn wreck(k: u8) -> Mesh {
+    use crate::actors::kind;
+    let mut m = vehicle(k, Material::Wreck);
+    let ship = matches!(k, kind::GUNBOAT | kind::MISSILE_BOAT | kind::DESTROYER | kind::CARRIER);
+    let floor = m.verts.iter().map(|v| v[2]).fold(f32::MAX, f32::min);
+    for v in m.verts.iter_mut() {
+        let [x, y, z] = *v;
+        let z = z - floor;
+        let (mut nx, mut nz) = (x + 0.4 * (z - 0.45).max(0.0), 0.55 * z + 0.12 * x);
+        if ship {
+            // Down by the stern, half under.
+            nz = 0.8 * z - 0.35 + 0.08 * y;
+            nx = x;
+        }
+        *v = [nx, y, nz];
+    }
+    // Charred all over: the lit parts (sights, rotors, launchers) too.
+    let dark = Material::Wreck.ramp();
+    for (_, shade) in m.faces.iter_mut() {
+        if !dark.contains(shade) {
+            *shade = dark[2];
+        }
+    }
+    m
 }
 
 fn vehicle(k: u8, mat: Material) -> Mesh {

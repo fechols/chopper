@@ -1238,6 +1238,40 @@ fn effect_scale_follows_the_projected_height() {
     assert_eq!(scale_for(1 << 20, h), 0);
 }
 
+/// Wrecks: a unit dead near the player is drawn as its kind's wreck with a smoke column (placed with the
+/// effects, no effect slot) for `WRECK_TICKS`, then no longer.
+#[test]
+fn wrecks_smoke_then_go() {
+    use crate::agent::{Agent, MODE_PLAYER};
+    use crate::combat::{self, FXDYN, OBJLIST, WRECKS};
+    use crate::world_sim::{self as ws, NEAR, RECORD, WRECK_TICKS, rec};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = Agent::new();
+    (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
+    let at = ws::UNITS as usize + 7 * RECORD as usize;
+    let r = &mut m.reu[at..at + RECORD as usize];
+    r.fill(0);
+    r[rec::KIND as usize] = crate::actors::kind::TANK;
+    r[rec::FLAGS as usize] = crate::actors::ENEMY;
+    r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&(1024u16 << 4).to_le_bytes());
+    r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&(1150u16 << 4).to_le_bytes());
+    r[rec::LAST as usize..rec::LAST as usize + 2].copy_from_slice(&1000u16.to_le_bytes());
+    for (i, b) in [1u8, 7, 0].into_iter().enumerate() {
+        m.ram[NEAR as usize + i] = b;
+    }
+    let cam = camera_at(1024.0, 1100.0, 10.0, 0, -11, 0);
+    a.t = 1300;
+    combat::update(&mut m, &a, &cam);
+    assert_eq!(m.ram[OBJLIST as usize + 1], crate::actors::wreck_of(crate::actors::kind::TANK), "drawn as a wreck");
+    assert_eq!(m.ram[WRECKS as usize], 1, "smoking");
+    combat::fx(&mut m, &a, &cam);
+    assert_eq!(m.ram[FXDYN as usize], 1, "its smoke column placed");
+    a.t = 1000 + WRECK_TICKS as u32;
+    combat::update(&mut m, &a, &cam);
+    assert_eq!(m.ram[WRECKS as usize], 0, "burnt out");
+}
+
 /// The player's fight: an enemy unit held in the gun's cone is hit (dust kicked up) until it explodes and
 /// burns, counted as a kill; a locked missile flies to another, hits and explodes; the effects playing are
 /// placed and reach the depth buckets as sprites.

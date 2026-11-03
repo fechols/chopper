@@ -783,7 +783,7 @@ pub fn push_dynamic<H: Hw + ?Sized>(hw: &mut H, w: &mut Work, v: &mut Verts) {
     }
     // The effects (`combat::FXDYN`, placed in the set-up): each frame's sprite, its phase for its x.
     use crate::format::frame;
-    let n = hw.peek(crate::combat::FXDYN).min(crate::combat::FX_MAX);
+    let n = hw.peek(crate::combat::FXDYN).min(crate::combat::FXDYN_MAX);
     let mut rec = [0u8; crate::format::FRAME_RECORD as usize];
     for i in 0..n as u16 {
         let at = crate::combat::FXDYN + 1 + i * crate::combat::FXDYN_ENTRY;
