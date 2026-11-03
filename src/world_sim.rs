@@ -238,11 +238,21 @@ pub const DECK_HALF: (i16, i16) = (27, 104);
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
 pub fn carrier<R: crate::brain::Reu + ?Sized>(reu: &mut R, now: u16) -> Option<Deck> {
+    deck_of(&carrier_record(reu), now)
+}
+
+/// The bytes of the carrier's record [`deck_of`] reads.
+pub const CARRIER_RECORD: usize = 18;
+
+/// The carrier's record (its first [`CARRIER_RECORD`] bytes): the header's id, then the record.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+pub fn carrier_record<R: crate::brain::Reu + ?Sized>(reu: &mut R) -> [u8; CARRIER_RECORD] {
     let mut id = [0u8; 2];
     reu.read(HEADER + head::CARRIER as u32, &mut id);
-    let mut r = [0u8; 18];
+    let mut r = [0u8; CARRIER_RECORD];
     reu.read(UNITS + u16::from_le_bytes(id) as u32 * RECORD as u32, &mut r);
-    deck_of(&r, now)
+    r
 }
 
 /// The deck at tick `now` from the carrier's record's first 18 bytes, if it is the carrier and afloat.

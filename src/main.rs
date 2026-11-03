@@ -170,10 +170,11 @@ fn agent(args: &[String]) -> Result<(), String> {
     let at = num(args, "--at", 0.0) as u32;
     if let Some(every) = arg(args, "--trace") {
         let every: u32 = every.parse().map_err(|_| "--trace N")?;
-        let mut a = chopper::agent::Agent::new();
+        let mut a = chopper::agent::Agent::boot();
         let mut r: &[u8] = &reu;
         while a.t < at {
-            a.step(&mut r);
+            let t = a.t + 1;
+            a.fly(&mut r, t);
             if a.t % every == 0 {
                 println!(
                     "t {:6} {:8} u {:7.1} v {:7.1} h {:5.1} yaw {:5.1} wp ({}, {})",

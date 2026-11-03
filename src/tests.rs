@@ -805,7 +805,14 @@ fn the_gauge_frames_are_baked_and_move() {
 fn the_attitude_gauge_banks_with_the_view() {
     use crate::cockpit::{ATT_PITCHES, gauge, readings};
     let reu = package();
-    let f = flight();
+    // The reference flight `package::render` draws (from the carrier's deck), every tick.
+    let mut f = vec![crate::agent::Agent::boot()];
+    while f.len() < FLIGHT as usize {
+        let mut a = *f.last().unwrap();
+        let t = a.t + 1;
+        a.fly(&mut &reu[..], t);
+        f.push(a);
+    }
     for want_right in [true, false] {
         let a = f.iter().filter(|a| a.grounded == 0).max_by_key(|a| if want_right { a.roll } else { -a.roll }).unwrap();
         let (m, _) = crate::package::render(reu, a.t, false);
@@ -1231,6 +1238,64 @@ fn the_deck_carries_the_helicopter_until_it_lifts_off() {
     }
     assert_eq!((a.deck, a.grounded), (0, 0));
     assert!(a.h > crate::agent::EYE + DECK_TOP + (8 << 8), "only {} up", a.h >> 8);
+}
+
+/// A hit that takes the damage to `DOWN` downs the player even landed at a base (where it is repaired a
+/// point a frame): the repair comes after the check.
+#[test]
+fn a_lethal_hit_on_the_pad_downs_the_player() {
+    use crate::combat::{DOWN, PLAYER, player};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let a = crate::agent::Agent::new();
+    assert_eq!(a.grounded, 1);
+    m.ram[(PLAYER + player::DAMAGE) as usize] = DOWN - 1;
+    assert!(!crate::combat::update(&mut m, &a, &a.camera().0), "not down yet");
+    assert_eq!(m.ram[(PLAYER + player::DAMAGE) as usize], DOWN - 2, "repaired on the pad");
+    m.ram[(PLAYER + player::DAMAGE) as usize] = DOWN;
+    assert!(crate::combat::update(&mut m, &a, &a.camera().0), "down on the pad");
+}
+
+/// Going down: the agent stays where it went down until its next flight (the frame drawn after is the
+/// crash), then it is on the carrier's deck or at home, in turn.
+#[test]
+fn going_down_keeps_the_crash_spot_for_a_frame() {
+    use crate::agent::{Agent, HOME, ON_DECK, PLACE_CARRIER, PLACE_HOME};
+    let reu = package();
+    let mut crash = Agent::new();
+    (crash.u, crash.v, crash.h, crash.yaw, crash.grounded) = (300 << 8, 400 << 8, 20 << 8, 0x1234, 0);
+    for (t, place) in [(4096 * 2 + 10, PLACE_CARRIER), (4096 * 3 + 10, PLACE_HOME)] {
+        crash.t = t;
+        let mut a = crash;
+        a.reset();
+        assert_eq!((a.u, a.v, a.h, a.yaw, a.deck), (crash.u, crash.v, crash.h, crash.yaw, place));
+        a.fly(&mut &reu[..], t + 1);
+        if place == PLACE_CARRIER {
+            assert_eq!(a.deck, ON_DECK, "on the deck");
+        } else {
+            assert_eq!((a.deck, a.at()), (0, (HOME.0 as i16, HOME.1 as i16)), "at home");
+        }
+    }
+}
+
+/// The host's reference flight starts as the C64 does: on the carrier's deck.
+#[test]
+fn the_reference_starts_on_the_carrier() {
+    let a = crate::agent::at(package(), 1);
+    assert_eq!((a.deck, a.grounded), (crate::agent::ON_DECK, 1));
+}
+
+/// Half the map away from the carrier on one axis (the offset at `i16::MIN`), low: not over its deck.
+#[test]
+fn far_from_the_deck_is_not_over_it() {
+    use crate::agent::{Agent, EYE};
+    use crate::world_sim::{DECK_TOP, carrier};
+    let reu = package();
+    let d = carrier(&mut &reu[..], 100).unwrap();
+    let mut a = Agent::new();
+    (a.t, a.u, a.v, a.h) = (100, ((d.u as i32) + 0x8000) << 4, (d.v as i32) << 4, EYE);
+    a.fly(&mut &reu[..], 101);
+    assert!(a.h < EYE + DECK_TOP, "lifted onto a deck 2048 texels away");
 }
 
 /// Landing: hovering with the stick back settles the player onto the deck when over it (riding it), into

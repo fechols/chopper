@@ -19,7 +19,7 @@ use crate::camera::{Matrix14, QUARTER_TURN, sin};
 use crate::floor::FloorCam;
 use crate::fixed::mul;
 use crate::format::{AI_TREES, HAZARD, HAZARD_CELLS, HAZARD_SHIFT};
-use crate::world_sim::{DECK_HALF, DECK_TOP, Deck, carrier};
+use crate::world_sim::{CARRIER_RECORD, DECK_HALF, DECK_TOP, Deck, carrier_record, deck_of};
 
 /// On the pad until the rotor is at full power: the sound's 1:20 (`digital::ROTOR_LOOP_START`).
 pub const LIFT: u32 = 80 * 60;
@@ -133,8 +133,8 @@ pub struct Agent {
     pub input: u8,
     pub mode: u8,
     pub throttle: u8,
-    /// On the carrier's deck (`ON_DECK`), to be placed on it (`PLACE_CARRIER`), or ditched in the sea
-    /// (`DITCHED`, for `combat`); 0 otherwise.
+    /// On the carrier's deck (`ON_DECK`), to be placed on it or at home (`PLACE_CARRIER`, `PLACE_HOME`), or
+    /// ditched in the sea (`DITCHED`, for `combat`); 0 otherwise.
     pub deck: u8,
     /// On the deck: where (1/16 texel across and along it) and the heading, relative to the carrier's.
     pub du: i16,
@@ -147,6 +147,7 @@ pub struct Agent {
 pub const ON_DECK: u8 = 1;
 pub const DITCHED: u8 = 2;
 pub const PLACE_CARRIER: u8 = 3;
+pub const PLACE_HOME: u8 = 4;
 
 /// The stick (active high; the main loop reads joystick 2 and button 2 into `Agent::input`).
 pub mod input {
@@ -258,26 +259,34 @@ impl Agent {
         }
     }
 
-    /// After going down at tick `t`: back at home, or on the carrier (in turn, every 4096 ticks; placed
-    /// there at the next `fly`, from the AI overlay).
-    pub const fn reset(t: u32) -> Self {
+    /// At boot: on the carrier's deck (placed there at the first `fly`). The C64 and the host's reference
+    /// flight ([`at`]) both start so.
+    pub const fn boot() -> Self {
         let mut a = Self::new();
-        a.t = t;
-        if (t >> 12) & 1 == 0 {
-            a.deck = PLACE_CARRIER;
-        }
+        a.deck = PLACE_CARRIER;
         a
     }
 
-    /// Put a `PLACE_CARRIER` agent on the carrier's deck: aft, facing the bow, still (or at home if the
-    /// carrier is gone).
+    /// After going down: back at home, or on the carrier, in turn every 4096 ticks. Placed there (and
+    /// started afresh) at the next `fly`, in the deck's overlay; until then still where it went down, so
+    /// the frame drawn after it is the crash, not the new place. (One byte: resident on the C64.)
+    #[inline(always)]
+    pub fn reset(&mut self) {
+        self.deck = if (self.t >> 12) & 1 == 0 { PLACE_CARRIER } else { PLACE_HOME };
+    }
+
+    /// Put a placed agent (`PLACE_HOME`, `PLACE_CARRIER`) at home, or on the carrier's deck: aft, facing
+    /// the bow, still (at home if the carrier is gone).
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
     fn place<R: Reu + ?Sized>(&mut self, reu: &mut R) {
-        self.deck = 0;
-        if let Some(d) = carrier(reu, self.t as u16) {
-            (self.deck, self.du, self.dv, self.dyaw) = (ON_DECK, 0, -(4 << 4), 0);
-            self.ride(&d);
+        let on_carrier = self.deck == PLACE_CARRIER;
+        *self = Agent { t: self.t, ..Self::new() };
+        if on_carrier {
+            if let Some(d) = deck_of(&carrier_record(reu), self.t as u16) {
+                (self.deck, self.du, self.dv, self.dyaw) = (ON_DECK, 0, -(4 << 4), 0);
+                self.ride(&d);
+            }
         }
     }
 
@@ -424,6 +433,15 @@ impl Agent {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     pub fn step<R: Reu + ?Sized>(&mut self, reu: &mut R) {
+        let rec = carrier_record(reu);
+        self.step_with(reu, &rec);
+    }
+
+    /// [`Agent::step`] with the carrier's record (`world_sim::carrier_record`, read once a `fly`: the war
+    /// does not move while the agent catches up).
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
+    fn step_with<R: Reu + ?Sized>(&mut self, reu: &mut R, rec: &[u8; CARRIER_RECORD]) {
         if self.t % THINK == 0 {
             self.think(reu);
         }
@@ -463,7 +481,7 @@ impl Agent {
         self.u += (sin7(self.yaw) * speed >> 7) as i32;
         self.v += (sin7(self.yaw.wrapping_add(QUARTER_TURN)) * speed >> 7) as i32;
         self.h += self.climb as i32;
-        self.settle(reu);
+        self.settle(reu, rec);
         self.t += 1;
     }
 
@@ -471,12 +489,12 @@ impl Agent {
     /// Settling onto it: the deck (riding it from now), the sea (ditched) or the ground.
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
-    fn settle<R: Reu + ?Sized>(&mut self, reu: &mut R) {
-        let deck = if self.deck == ON_DECK || self.h < EYE + DECK_TOP + 512 { carrier(reu, self.t as u16) } else { None };
+    fn settle<R: Reu + ?Sized>(&mut self, reu: &mut R, rec: &[u8; CARRIER_RECORD]) {
+        let deck = if self.deck == ON_DECK || self.h < EYE + DECK_TOP + 512 { deck_of(rec, self.t as u16) } else { None };
         let mut over = None;
         if let Some(d) = &deck {
             let (du, dv) = (((self.u >> 4) as u16).wrapping_sub(d.u) as i16, ((self.v >> 4) as u16).wrapping_sub(d.v) as i16);
-            if du.abs() < 256 && dv.abs() < 256 {
+            if du.unsigned_abs() < 256 && dv.unsigned_abs() < 256 {
                 let (x, y) = turn(du, dv, d.yaw, false);
                 if x.abs() <= DECK_HALF.0 && y.abs() <= DECK_HALF.1 {
                     over = Some((x, y, d.yaw));
@@ -514,11 +532,12 @@ impl Agent {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     pub fn fly<R: Reu + ?Sized>(&mut self, reu: &mut R, clock: u32) {
-        if self.deck == PLACE_CARRIER {
+        if self.deck >= PLACE_CARRIER {
             self.place(reu);
         }
+        let rec = carrier_record(reu);
         while self.t < clock {
-            self.step(reu);
+            self.step_with(reu, &rec);
         }
     }
 
@@ -588,9 +607,7 @@ impl Agent {
 
 /// The agent after `t` ticks from boot, on a baked image (host: the reference the C64 must match).
 pub fn at(mut reu: &[u8], t: u32) -> Agent {
-    let mut a = Agent::new();
-    while a.t < t {
-        a.step(&mut reu);
-    }
+    let mut a = Agent::boot();
+    a.fly(&mut reu, t);
     a
 }

@@ -414,22 +414,23 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     // Hit flash fades; down at full damage.
     let flash = hw.peek(PLAYER + player::FLASH);
     hw.poke(PLAYER + player::FLASH, flash.saturating_sub(dt));
-    // Landed at a base (home's pad, the carrier's deck): rearmed, and repaired a point a frame.
-    let home = (a.u >> 8) as i16 - crate::agent::HOME.0 as i16;
-    let homev = (a.v >> 8) as i16 - crate::agent::HOME.1 as i16;
-    if a.grounded != 0 && (a.deck == crate::agent::ON_DECK || home.abs() <= 10 && homev.abs() <= 10) {
-        hw.poke(PLAYER + player::MISSILES, MISSILES);
-        let d = hw.peek(PLAYER + player::DAMAGE);
-        hw.poke(PLAYER + player::DAMAGE, d.saturating_sub(1));
-    }
-    // Ditched in the sea (`agent::DITCHED`): down too, with a splash.
+    // Down at full damage; ditched in the sea (`agent::DITCHED`) too, with a splash. (Before any repair:
+    // a hit that downs it on the pad still does.)
     let ditched = a.deck == crate::agent::DITCHED;
-    if ditched || hw.peek(PLAYER + player::DAMAGE) >= DOWN {
+    let damage = hw.peek(PLAYER + player::DAMAGE);
+    if ditched || damage >= DOWN {
         init(hw);
         if ditched {
             spawn(hw, crate::effects::effect::SPLASH, (a.u >> 4) as u16, (a.v >> 4) as u16, 0, now);
         }
         return true;
+    }
+    // Landed at a base (home's pad, the carrier's deck): rearmed, and repaired a point a frame.
+    let home = (a.u >> 8) as i16 - crate::agent::HOME.0 as i16;
+    let homev = (a.v >> 8) as i16 - crate::agent::HOME.1 as i16;
+    if a.grounded != 0 && (a.deck == crate::agent::ON_DECK || home.abs() <= 10 && homev.abs() <= 10) {
+        hw.poke(PLAYER + player::MISSILES, MISSILES);
+        hw.poke(PLAYER + player::DAMAGE, damage.saturating_sub(1));
     }
     false
 }

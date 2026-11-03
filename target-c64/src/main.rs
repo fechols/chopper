@@ -360,9 +360,8 @@ pub extern "C" fn main() -> i16 {
     // is set).
     let mut seen = frames_elapsed();
     let agent = unsafe { &mut *(AGENT as *mut Agent) };
-    *agent = Agent::new();
     // (On the carrier's deck, placed at the first flight.)
-    agent.deck = chopper::agent::PLACE_CARRIER;
+    *agent = Agent::boot();
     unsafe { write_volatile(CLOCK as *mut u32, seen as u32) };
     let (ai_size, hud_size, geom_size, actors_size) = overlay_sizes();
     let (cockpit_at, cockpit_size) = cockpit_overlay();
@@ -419,7 +418,7 @@ pub extern "C" fn main() -> i16 {
         hw::fetch(c, OVERLAY_COMBATLIB, chopper::layout::BAND_RAM, unsafe { &raw const __combatlibtext_size } as u16);
         hw::fetch(c, OVERLAY_COMBAT, WORK, unsafe { &raw const __combattext_size } as u16);
         if chopper::combat::update(c, agent, &cam) {
-            *agent = Agent::reset(agent.t);
+            agent.reset();
         }
         hw::fetch(c, OVERLAY_FX, WORK, unsafe { &raw const __fxtext_size } as u16);
         let (cam, _) = agent.camera();
