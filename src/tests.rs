@@ -1246,9 +1246,11 @@ fn decisions_as_acted_on() {
     assert_eq!(chosen(unit::RETREAT, false, false, false, false, false), (act::RETREAT, true));
     assert_eq!(chosen(unit::RETREAT, true, false, false, false, false), (act::BACK, true));
     assert_eq!(chosen(unit::ATTACK, true, false, false, false, false), (act::FIGHT, true));
-    // Clear of foes, turned back: it holds until friends gather, then back to its way, once.
+    // Clear of foes, turned back: it holds until friends gather (or it tires of waiting: `rally` either
+    // way), then back to its way, once, not learned from.
     assert_eq!(chosen(unit::ADVANCE, true, true, false, false, false), (act::HOLD, false));
-    assert_eq!(chosen(unit::ADVANCE, true, true, true, false, false), (act::RETREAT, true));
+    assert_eq!(chosen(unit::ADVANCE, true, true, true, false, false), (act::RETREAT, false));
+    assert_eq!(chosen(unit::ATTACK, true, true, true, false, false), (act::RETREAT, false));
     assert_eq!(chosen(unit::ADVANCE, false, true, false, false, false), (act::MOVE, true));
     assert_eq!(chosen(unit::RETREAT, false, false, false, true, false), (act::MOVE, false));
     assert_eq!(chosen(unit::RETREAT, true, false, false, true, false), (act::MOVE, false));
@@ -1282,6 +1284,41 @@ fn retreats_do_not_see_saw() {
     }
     assert!(reversals > 0, "no retreats to judge");
     assert_eq!(again, 0, "{again} of {reversals} turns back came with foes near all along since the last");
+}
+
+/// A straggler goes back in: fallen back (turned), clear of foes and alone, it holds a while for friends
+/// to gather, but not for good.
+#[test]
+fn stragglers_go_back_in() {
+    use crate::world_sim::{self as ws, ALIVE, RECORD, TURNED, act, rec};
+    let mut m = Machine::new(package());
+    // The first mobile unit of the first page, fallen back into an empty sector of its own.
+    let at = |id: usize| ws::UNITS as usize + id * RECORD as usize;
+    let id = (0..ws::PAGE as usize)
+        .find(|&id| {
+            let r = &m.reu[at(id)..];
+            let k = r[rec::KIND as usize] as usize % crate::actors::kind::COUNT as usize;
+            r[rec::FLAGS as usize] & ALIVE != 0 && ws::stats::SPEED[k] > 0 && r[rec::ROUTE as usize] != 0xFF && k != crate::actors::kind::CARRIER as usize
+        })
+        .expect("a mobile unit");
+    let r = at(id);
+    m.reu[r + rec::FLAGS as usize] |= TURNED;
+    m.reu[r + rec::ACTION as usize] = act::HOLD;
+    let side = (m.reu[r + rec::FLAGS as usize] & ws::SIDE) as usize;
+    let sector = m.reu[r + rec::SECTOR as usize] as usize;
+    let s = ws::SECTORS as usize + sector * ws::SECTOR as usize;
+    let mut counts = [0u8; 2];
+    counts[side] = 1;
+    // Decisions until it goes back in (about 8 on average).
+    let held = (0..200)
+        .take_while(|_| {
+            m.reu[s..s + 2].copy_from_slice(&counts);
+            ws::decide_page(&mut m);
+            m.reu[r + rec::ACTION as usize] == act::HOLD
+        })
+        .count();
+    assert!(held < 100, "a straggler held through {held} decisions");
+    assert_eq!(m.reu[r + rec::ACTION as usize], act::RETREAT, "back in, on its way");
 }
 
 /// A respawned unit faces its way, not the way it faced when it fell: off the carrier's deck, the deck's

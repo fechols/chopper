@@ -520,9 +520,12 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
         seed = roll(seed);
         *x = seed;
     }
+    // (And whether, fallen back and alone, it tires of waiting.)
+    seed = roll(seed);
+    let bored = seed < BORED;
     hw.poke(r + rec::SEED, seed);
     let (mv, node, took) = crate::brain::walk_learn(hw, crate::layout::BRAIN_RAM, kind, &f);
-    let (action, own) = chosen(mv, flags & TURNED != 0, foes == 0, friends >= RALLY, kind == crate::actors::kind::CARRIER, f[unit::MOBILE] == 0);
+    let (action, own) = chosen(mv, flags & TURNED != 0, foes == 0, friends >= RALLY || bored, kind == crate::actors::kind::CARRIER, f[unit::MOBILE] == 0);
     // The trail: this decision's learn node first (none when not acted on), the last one's after it.
     for i in 0..3 {
         let b = hw.peek(t + i);
@@ -535,17 +538,20 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
 
 /// Friends in its sector (itself among them) a unit fallen back waits for before it goes back in.
 pub const RALLY: u8 = 4;
+/// Its chance in 256, each decision (about every 31 frames: a lap of the page file), of going back in
+/// without them: about 1 in 8, so a straggler alone waits about 30 s, not for good.
+pub const BORED: u8 = 32;
 
 /// A decision (`brain::unit`) as acted on (`act`), and whether as the brain chose it (to learn from). A
 /// retreat turns a unit back once (`turned`: it has since) and it falls back until `clear` of foes,
-/// then holds there until enough friends have gathered (`rally`) and turns back to its way with them.
-/// The carrier keeps its station (its escorts fight): a flagship does not turn tail, and does not learn
+/// then holds there until enough friends have gathered or it tires of waiting (`rally`), and turns back
+/// to its way (not learned from: its brain did not choose it). The carrier keeps its station (its escorts fight): a flagship does not turn tail, and does not learn
 /// from the retreat it did not make.
 #[inline(always)]
 pub(crate) fn chosen(mv: u8, turned: bool, clear: bool, rally: bool, carrier: bool, static_: bool) -> (u8, bool) {
     use crate::brain::unit;
     match mv {
-        _ if turned && clear && !static_ => if rally { (act::RETREAT, true) } else { (act::HOLD, false) },
+        _ if turned && clear && !static_ => if rally { (act::RETREAT, false) } else { (act::HOLD, false) },
         unit::ATTACK => (act::FIGHT, true),
         unit::RETREAT if carrier => (act::MOVE, false),
         unit::RETREAT if turned => (act::BACK, true),
