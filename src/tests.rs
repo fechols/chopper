@@ -1231,7 +1231,7 @@ fn the_deck_carries_the_helicopter_until_it_lifts_off() {
     let (du, dv) = ((a.u >> 4) - d.u as i32, (a.v >> 4) - d.v as i32);
     let back = (crate::camera::sin(d.yaw) * -64 >> 14, crate::camera::cos(d.yaw) * -64 >> 14);
     assert!((du - back.0).abs() <= 2 && (dv - back.1).abs() <= 2, "on the deck at ({du}, {dv}), not ({}, {})", back.0, back.1);
-    assert_eq!((a.yaw, a.h), (d.yaw, crate::agent::EYE + DECK_TOP));
+    assert_eq!((a.yaw, a.h), (d.yaw, crate::agent::DECK_EYE + DECK_TOP));
     // The rotor up to speed: off it and away.
     while t < LIFT + 30 * 60 {
         let (pu, pv) = a.at();
@@ -1240,7 +1240,7 @@ fn the_deck_carries_the_helicopter_until_it_lifts_off() {
         a.fly(&mut &m.reu[..], t);
     }
     assert_eq!((a.deck, a.grounded), (0, 0));
-    assert!(a.h > crate::agent::EYE + DECK_TOP + (8 << 8), "only {} up", a.h >> 8);
+    assert!(a.h > crate::agent::DECK_EYE + DECK_TOP + (8 << 8), "only {} up", a.h >> 8);
 }
 
 /// The soft boundary at sea: flying straight out east with the fire button held, the SEA lamp lights

@@ -30,6 +30,10 @@ pub enum Material {
     Bright,
     /// Wrecks: charred, brown and blue checks to blue.
     Wreck,
+    /// The carrier's flight deck: brown planking, and brown and green checks (no blue: it must not read
+    /// as the sea or the sky).
+    Deck,
+    DeckCheck,
 }
 
 impl Material {
@@ -44,6 +48,8 @@ impl Material {
             Material::Allied => [1, 5, 11, 2],
             Material::Bright => [1, 1, 1, 1],
             Material::Wreck => [8, 8, 3, 3],
+            Material::Deck => [2, 2, 2, 2],
+            Material::DeckCheck => [6, 6, 6, 6],
         }
     }
 }
@@ -333,7 +339,7 @@ pub fn objects(world: &crate::world::World) -> Vec<Object> {
 
 /// The moving objects' meshes (`actors::kind`), each in the enemy's colours then the allies'
 /// (`actors::mesh_of`), then each kind's wreck (`actors::wreck_of`): modelled facing +v (yaw 0 is north),
-/// in texels, at most 16 faces each.
+/// in texels, at most 18 faces each (the carrier's hull and island).
 pub fn vehicles() -> Vec<Mesh> {
     use crate::actors::kind;
     let mut out = Vec::new();
@@ -356,7 +362,7 @@ fn deck() -> Mesh {
     let mut m = Mesh::default();
     for k in 0..7 {
         let (y0, y1) = (-7.0 + 2.0 * k as f32, -5.0 + 2.0 * k as f32);
-        let mat = if k % 2 == 0 { Material::Marker } else { Material::Wreck };
+        let mat = if k % 2 == 0 { Material::Deck } else { Material::DeckCheck };
         m.quad([[-2.0, y0, 1.2], [2.0, y0, 1.2], [2.0, y1, 1.2], [-2.0, y1, 1.2]], [0.0, 0.0, 1.0], mat);
     }
     m
@@ -439,9 +445,9 @@ fn vehicle(k: u8, mat: Material) -> Mesh {
             m.quad([[-1.2, -1.2, 1.0], [1.2, -1.2, 1.0], [1.2, 1.2, 1.0], [-1.2, 1.2, 1.0]], [0.0, 0.0, 1.0], Material::Bright);
         }
         kind::CARRIER => {
-            // The hull (its flight deck is `deck()`, drawn with it) and the island to starboard.
+            // The hull (its flight deck is `deck()`, drawn with it) and the island to starboard: a box.
             m.cuboid([-2.0, -7.0, 0.0], [2.0, 7.0, 1.2], mat, None);
-            m.add(&pyramid(0.6, 1.4, mat), [1.4, 1.0, 1.2]);
+            m.cuboid([1.0, 0.0, 1.2], [1.8, 2.2, 3.0], mat, Some(mat));
         }
         kind::DESTROYER => {
             m.cuboid([-0.7, -2.5, 0.0], [0.7, 2.5, 0.5], mat, Some(mat));
@@ -479,7 +485,7 @@ pub fn vehicle_bank() -> Vec<u8> {
     let ms = vehicles();
     let mut out = vec![0u8; ms.len() * MESH_RECORD];
     for (k, m) in ms.iter().enumerate() {
-        assert!(m.faces.len() <= 16, "vehicle mesh {k}: {} faces", m.faces.len());
+        assert!(m.faces.len() <= 18, "vehicle mesh {k}: {} faces", m.faces.len());
         let (shift, r, verts, faces) = encode(m);
         let blob = [verts, faces].concat();
         assert!(blob.len() <= MESHBUF_LEN as usize, "vehicle mesh {k}: {} bytes", blob.len());

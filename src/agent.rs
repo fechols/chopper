@@ -25,6 +25,10 @@ use crate::world_sim::{CARRIER_RECORD, DECK_HALF, DECK_TOP, Deck, carrier_record
 pub const LIFT: u32 = 80 * 60;
 /// Eye height on the pad: half a texel (8.8).
 pub const EYE: i32 = 128;
+/// Eye height over the carrier's deck (8.8): over 1 texel, so the deck at the 2-texel near plane is
+/// below the view's bottom edge and the deck fills the view down to it (the pad is floor texture, drawn
+/// to the edge at any height).
+pub const DECK_EYE: i32 = 288;
 /// The home pad (`world::PADS[0]`), texels.
 pub const HOME: (i32, i32) = (1024, 760);
 /// The soft boundary at sea, texels beyond the map's edge: the caution lamp (`cockpit::lamp::SEA`) past
@@ -304,7 +308,7 @@ impl Agent {
         self.v = (d.v.wrapping_add(dv as u16) as i32) << 4;
         self.yaw = d.yaw.wrapping_add((self.dyaw as u16) << 8);
         self.vf = 0;
-        self.h = self.h.max(EYE + DECK_TOP);
+        self.h = self.h.max(DECK_EYE + DECK_TOP);
     }
 
     /// Airspeed, 8.8 texels a tick.
@@ -509,7 +513,7 @@ impl Agent {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
     fn settle<R: Reu + ?Sized>(&mut self, reu: &mut R, rec: &[u8; CARRIER_RECORD]) {
-        let deck = if self.deck == ON_DECK || self.h < EYE + DECK_TOP + 512 { deck_of(rec, self.t as u16) } else { None };
+        let deck = if self.deck == ON_DECK || self.h < DECK_EYE + DECK_TOP + 512 { deck_of(rec, self.t as u16) } else { None };
         let mut over = None;
         if let Some(d) = &deck {
             let (du, dv) = (((self.u >> 4) as u16).wrapping_sub(d.u) as i16, ((self.v >> 4) as u16).wrapping_sub(d.v) as i16);
@@ -520,7 +524,7 @@ impl Agent {
                 }
             }
         }
-        let floor = EYE + if over.is_some() { DECK_TOP } else { 0 };
+        let floor = if over.is_some() { DECK_EYE + DECK_TOP } else { EYE };
         if self.h < floor {
             self.h = floor;
             self.climb = self.climb.max(0);
