@@ -141,6 +141,10 @@ pub const OVERLAYS: u32 = 108 << 16;
 pub const OVERLAY_AI: u32 = OVERLAYS;
 pub const OVERLAY_COCKPIT: u32 = OVERLAYS + 0x2000;
 pub const OVERLAY_HUD: u32 = OVERLAYS + 0x4000;
+/// The near-plane clipping's (`geom::clip`), in the main window's top above the triangle work.
+pub const OVERLAY_CLIP: u32 = OVERLAYS + 0x3000;
+pub const OVERLAY3_MAX: u32 = 0x07F0;
+const _: () = assert!(OVERLAY_COCKPIT + OVERLAY2_MAX <= OVERLAY_CLIP && OVERLAY_CLIP + OVERLAY3_MAX <= OVERLAY_HUD);
 pub const OVERLAY_GEOM: u32 = OVERLAYS + 0x6000;
 pub const OVERLAY_ACTORS: u32 = OVERLAYS + 0x8000;
 pub const OVERLAY_DYN: u32 = OVERLAYS + 0xA000;

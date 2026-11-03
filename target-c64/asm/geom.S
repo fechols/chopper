@@ -4,7 +4,7 @@
 ;
 ;   geo_xform():  one object's vertices -> camera space and screen (VERTS arrays)
 ;   geo_faces():  one object's faces -> backface cull, depth key, push into the buckets (WORK);
-;                 faces straddling the near plane are listed in WORK.clip for Rust
+;                 faces straddling the near plane are listed in WORK.clip and cut by Rust `geo_clip`
 ;   geo_bin() / geo_activate(band) / geo_draw(band): the buckets in painter's order, band by band
 ;                 (per-triangle set-up when its first band comes, then tri_row per band)
 ; Arguments in GEO_ARGS ($C7C0, `geom::geo_args`); shade patterns at PATS ($C7E0, even[16], odd[16]).
@@ -1135,7 +1135,11 @@ floop:
     lda F
     cmp NF
     bcc 1f
-    rts
+    ; Faces straddling the near plane: cut at it and pushed (Rust `geo_clip`, in the second window).
+    lda WNCLIP
+    beq 5f
+    jmp geo_clip
+5:  rts
 1:  ldy #0
     lda (FP),y
     sta IA
@@ -1186,6 +1190,9 @@ front:
 1:  inc CNT
 2:  rts
 
+; One triangle of vertices IA, IB, IC with shade SHD (Rust `geom::clip`'s cuts).
+.globl geo_tri
+geo_tri:
 tryface:
     ldx IA
     lda SXL,x

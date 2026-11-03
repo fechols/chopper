@@ -103,6 +103,9 @@ pub const WORK: u16 = 0xE000;
 pub const BRAIN_RAM: u16 = 0xF800 - crate::brain::UNIT_BYTES as u16;
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= 0xFFFA);
 const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= WORK as u32 + crate::format::OVERLAY_MAX);
+/// The clipping overlay's place (`format::OVERLAY_CLIP`): above the triangle work, below `$F800`.
+pub const CLIP_RAM: u16 = 0xF010;
+const _: () = assert!(WORK as u32 + core::mem::size_of::<crate::geom::Work>() as u32 <= CLIP_RAM as u32 && CLIP_RAM as u32 + crate::format::OVERLAY3_MAX <= 0xF800);
 /// `asm/geom.S`'s arguments (`geom::geo_args`), and a row of the object directory being streamed
 /// (`geom::draw`), after the sprite scratch.
 pub const GEO_ARGS: u16 = 0x8E00;

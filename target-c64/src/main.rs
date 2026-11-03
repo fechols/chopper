@@ -20,7 +20,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_DECK, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_DECK, OVERLAY_CLIP, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -96,6 +96,7 @@ unsafe extern "C" {
     static __cocktext_size: u8;
     static __dyntext_size: u8;
     static __decktext_size: u8;
+    static __cliptext_size: u8;
 }
 
 fn cockpit_overlay() -> (u16, u16) {
@@ -165,7 +166,7 @@ impl Hw for C64 {
         }
         unsafe { geo_xform() }
     }
-    fn faces(&mut self, _scene: &[u8], o: &Obj, _v: &Verts, _w: &mut Work) {
+    fn faces(&mut self, _scene: &[u8], o: &Obj, _v: &mut Verts, _w: &mut Work) {
         poke16(GEO_ARGS + geo_args::FPTR, SCENE_RAM + o.faces);
         poke(GEO_ARGS + geo_args::NF, o.nf);
         unsafe { geo_faces() }
@@ -181,6 +182,20 @@ fn peek(addr: u16) -> u8 {
 #[inline(always)]
 fn poke(addr: u16, value: u8) {
     C64.poke(addr, value)
+}
+
+/// `asm/geom.S` `geo_faces`'s tail call when it listed faces straddling the near plane (`WORK.clip`):
+/// they are cut at the plane and pushed (`geom::clip`). In its own overlay (`format::OVERLAY_CLIP`), above
+/// the triangle work, loaded before the walk.
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.clip")]
+pub extern "C" fn geo_clip() {
+    let fptr = peek(GEO_ARGS + geo_args::FPTR) as u16 | (peek(GEO_ARGS + geo_args::FPTR + 1) as u16) << 8;
+    let nf = peek(GEO_ARGS + geo_args::NF) as usize;
+    let faces = unsafe { core::slice::from_raw_parts(fptr as *const u8, nf * geom::scene::FACE) };
+    let verts = unsafe { &mut *(chopper::layout::VERTS as *mut Verts) };
+    let work = unsafe { &mut *(WORK as *mut Work) };
+    geom::clip(faces, verts, work);
 }
 
 fn poke16(addr: u16, value: u16) {
@@ -447,6 +462,8 @@ pub extern "C" fn main() -> i16 {
         stopwatch_start();
         geom::walk_args(c, WALK_ARGS, &View { cam, pop: peek(STATUS + status::POP) });
         work.clear();
+        // The near-plane clipping `geo_faces` calls (`geo_clip`), above the triangle work.
+        hw::fetch(c, OVERLAY_CLIP, chopper::layout::CLIP_RAM, unsafe { &raw const __cliptext_size } as u16);
         unsafe { geo_walk() };
         let verts = unsafe { &mut *(chopper::layout::VERTS as *mut Verts) };
         // The moving objects into the buckets (their overlay over the spent band state).

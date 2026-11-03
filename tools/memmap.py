@@ -61,7 +61,7 @@ DATA = [
     (0xE000, 0xF800, 'Work = window 1'),
     (0xFFFA, 0x10000, 'vectors'),
 ]
-WINDOWS = {0xE000: ('window 1', 0x1800), 0xA000: ('window 2', 0x0F00)}
+WINDOWS = {0xE000: ('window 1', 0x1800), 0xA000: ('window 2', 0x0F00), 0xF010: ('window 3', 0x07F0)}
 
 
 def sections(elf):

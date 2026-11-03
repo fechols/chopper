@@ -463,7 +463,7 @@ fn vehicle(k: u8, mat: Material) -> Mesh {
 /// quarter texels `>> shift`) and the faces (3 indices, winding reversed for the camera's mirrored axes,
 /// and the shade).
 pub fn encode(m: &Mesh) -> (u8, u8, Vec<u8>, Vec<u8>) {
-    assert!(m.verts.len() <= crate::geom::MAX_VERTS && m.faces.len() <= 255);
+    assert!(m.verts.len() <= crate::geom::CLIP_VERTS && m.faces.len() <= 255);
     let extent = m.verts.iter().flat_map(|v| v.iter()).fold(0f32, |a, &c| a.max(c.abs()));
     let shift = (0..=4u8).find(|&s| extent * 4.0 / (1 << s) as f32 <= 127.0).expect("mesh too large");
     let verts = m.verts.iter().flat_map(|v| v.map(|c| (c * 4.0 / (1 << shift) as f32).round() as i8 as u8)).collect();
@@ -514,7 +514,7 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
     out[fmt::N_MESHES] = meshes.len() as u8;
     let mut radius = Vec::new();
     for (k, m) in meshes.iter().enumerate() {
-        assert!(m.verts.len() <= crate::geom::MAX_VERTS && m.faces.len() <= 255);
+        assert!(m.verts.len() <= crate::geom::CLIP_VERTS && m.faces.len() <= 255);
         let extent = m.verts.iter().flat_map(|v| v.iter()).fold(0f32, |a, &c| a.max(c.abs()));
         let shift = (0..=4u8).find(|&s| extent * 4.0 / (1 << s) as f32 <= 127.0).expect("mesh too large");
         let r = m.radius();

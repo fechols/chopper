@@ -1647,3 +1647,63 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
     let hp = m.reu[ws::UNITS as usize + 9 * RECORD as usize + rec::HP as usize];
     assert!(hp < hp0, "the missile missed: hp {hp0} -> {hp}");
 }
+
+/// Near-plane clipping: a face reaching behind the camera is cut at the plane and still drawn, one
+/// triangle with one corner in front, two with two; the cut corners land where the exact projection of
+/// the edge's crossing does (to the plane's Q4 precision).
+#[test]
+fn faces_reaching_behind_the_camera_are_cut_at_the_near_plane() {
+    use crate::geom::{NEAR, Verts, Work, clip, vert};
+    let q = 16.0f64; // Q4
+    let proj = |x: f64, y: f64, z: f64| (80.0 * 16.0 + 1280.0 * x / z, 68.0 * 16.0 - 2128.0 * y / z);
+    // Camera space, texels: corners at depth 10, 6 and −4 (behind).
+    let corners = [(-3.0f64, -1.0f64, 10.0f64), (4.0, -1.5, 6.0), (1.0, -2.0, -4.0)];
+    for (behind, want) in [(1usize, 2u8), (2, 1)] {
+        let mut v = Verts::new();
+        let mut c = corners;
+        if behind == 2 {
+            c[1].2 = -3.0;
+        }
+        for (i, &(x, y, z)) in c.iter().enumerate() {
+            v.set(vert::X, i, (x * q) as i16);
+            v.set(vert::Y, i, (y * q) as i16);
+            v.set(vert::Z, i, (z * q) as i16);
+            if z * q >= NEAR as f64 {
+                let (sx, sy) = proj(x, y, z);
+                v.set(vert::SX, i, sx as i16);
+                v.set(vert::SY, i, sy as i16);
+            }
+        }
+        let mut w = Work::new();
+        w.clear();
+        w.clip[0] = 0;
+        w.nclip = 1;
+        // Both windings: one of them faces the camera.
+        for face in [[0u8, 1, 2, 7], [0, 2, 1, 7]] {
+            clip(&face, &mut v, &mut w);
+        }
+        assert_eq!(w.n, want, "{behind} corner(s) behind: triangles pushed");
+        // Every pushed corner is a corner in front or an exact crossing of the near plane.
+        let near = NEAR as f64 / q;
+        let mut points = Vec::new();
+        for (i, &(x, y, z)) in c.iter().enumerate() {
+            if z >= near {
+                points.push(proj(x, y, z));
+            }
+            let (x2, y2, z2) = c[(i + 1) % 3];
+            if (z >= near) != (z2 >= near) {
+                let t = (z - near) / (z - z2);
+                points.push(proj(x + (x2 - x) * t, y + (y2 - y) * t, near));
+            }
+        }
+        for k in 0..w.n {
+            let tri = w.tri(k);
+            for j in 0..3 {
+                let (sx, sy) = (tri.x[j] as f64, tri.y[j] as f64);
+                // (A cut corner is a Q4 camera-space point: at the 2-texel plane one Q4 step is 2.5
+                // pixels across, 66.5/16 down.)
+                assert!(points.iter().any(|&(px, py)| (px - sx).abs() <= 48.0 && (py - sy).abs() <= 80.0), "corner ({sx}, {sy}) not on the cut face: {points:?}");
+            }
+        }
+    }
+}

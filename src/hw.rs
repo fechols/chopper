@@ -47,7 +47,7 @@ pub trait Hw {
         crate::geom::xform(scene, o, v);
     }
     /// Cull and sort one object's faces (`geom::faces`; the C64 runs `asm/geom.S`).
-    fn faces(&mut self, scene: &[u8], o: &crate::geom::Obj, v: &crate::geom::Verts, w: &mut crate::geom::Work) {
+    fn faces(&mut self, scene: &[u8], o: &crate::geom::Obj, v: &mut crate::geom::Verts, w: &mut crate::geom::Work) {
         crate::geom::faces(scene, o, v, w);
     }
     /// Profiling hook: charge the time since the previous mark to `slot`.

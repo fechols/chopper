@@ -487,7 +487,7 @@ fn key(v: &Verts, idx: [usize; 3]) -> u8 {
 
 /// One object's faces (`asm/geom.S` `geo_faces`): faces wholly in front of the near plane are culled and
 /// pushed; faces straddling it are listed in `w.clip` (and left out).
-pub fn faces(scene: &[u8], o: &Obj, v: &Verts, w: &mut Work) {
+pub fn faces(scene: &[u8], o: &Obj, v: &mut Verts, w: &mut Work) {
     w.nclip = 0;
     for f in 0..o.nf {
         let at = o.faces as usize + f as usize * scene::FACE;
@@ -501,6 +501,142 @@ pub fn faces(scene: &[u8], o: &Obj, v: &Verts, w: &mut Work) {
             w.clip[w.nclip as usize] = f;
             w.nclip += 1;
         }
+    }
+    if w.nclip > 0 {
+        clip(&scene[o.faces as usize..], v, w);
+    }
+}
+
+/// The two spare vertices [`clip`] writes its cuts into (meshes keep below them).
+pub const CLIP_VERTS: usize = MAX_VERTS - 2;
+
+/// The faces `faces` listed in `w.clip` (straddling the near plane): each cut at `z = NEAR` and pushed,
+/// a triangle (one corner in front) or two (two in front), so a big face reaching behind the camera (a
+/// mountain passed close by, the deck underfoot) stays drawn up to the plane. The cuts are vertices
+/// `CLIP_VERTS..`, so the C64 pushes them with `asm/geom.S`'s own `tryface` (`geo_tri`). (`geo_faces`
+/// calls it on the C64, from its own overlay over the main window's top: `format::OVERLAY_CLIP`.)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.clip"))]
+pub fn clip(faces: &[u8], v: &mut Verts, w: &mut Work) {
+    let mut k = 0;
+    while k < w.nclip {
+        let at = w.clip[k as usize] as usize * scene::FACE;
+        k += 1;
+        let byte = |i: usize| {
+            // (The baked faces are in range: no bounds checks in the C64's overlay.)
+            #[cfg(target_arch = "mos")]
+            unsafe {
+                *faces.get_unchecked(at + i)
+            }
+            #[cfg(not(target_arch = "mos"))]
+            faces[at + i]
+        };
+        clip_face(v, w, [byte(0), byte(1), byte(2)], byte(3));
+    }
+}
+
+/// One straddling face (corners `idx`, `shade`): its corners in front and its crossings of the plane,
+/// in order round it (so the winding holds), pushed as one triangle or two.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.clip"))]
+fn clip_face(v: &mut Verts, w: &mut Work, idx: [u8; 3], shade: u8) {
+    let (mut ring, mut n, mut spare) = ([0u8; 4], 0u8, CLIP_VERTS as u8);
+    let mut e = 0;
+    while e < 3 {
+        let a = idx[e] & (MAX_VERTS as u8 - 1);
+        let b = idx[if e == 2 { 0 } else { e + 1 }] & (MAX_VERTS as u8 - 1);
+        e += 1;
+        let fa = in_front(v, a);
+        if fa {
+            ring[(n & 3) as usize] = a;
+            n += 1;
+        }
+        if fa != in_front(v, b) {
+            if fa { cut(v, a, b, spare) } else { cut(v, b, a, spare) }
+            ring[(n & 3) as usize] = spare;
+            n += 1;
+            spare += 1;
+        }
+    }
+    tri(v, w, ring[0], ring[1], ring[2], shade);
+    if n == 4 {
+        tri(v, w, ring[0], ring[2], ring[3], shade);
+    }
+}
+
+#[inline(always)]
+fn in_front(v: &Verts, i: u8) -> bool {
+    v.get(vert::Z, i as usize) >= NEAR as i16
+}
+
+/// Vertex `s`: where the edge from `f` (in front) to `g` (behind) crosses `z = NEAR`, projected. 16-bit
+/// throughout (the C64's code stays small).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.clip"))]
+fn cut(v: &mut Verts, f: u8, g: u8, s: u8) {
+    let (f, g, s) = (f as usize, g as usize, s as usize);
+    let zf = v.get(vert::Z, f);
+    // The fraction (zf − NEAR) / (zf − zg) of the way, Q16 (below 1): shift and subtract, both halved
+    // until the difference fits 15 bits.
+    let (mut den, mut rem) = (zf.wrapping_sub(v.get(vert::Z, g)) as u16, zf.wrapping_sub(NEAR as i16) as u16);
+    while den >= 0x8000 {
+        den >>= 1;
+        rem >>= 1;
+    }
+    let mut t = 0u16;
+    for _ in 0..16 {
+        rem <<= 1;
+        t <<= 1;
+        if rem >= den {
+            rem -= den;
+            t |= 1;
+        }
+    }
+    let x = lerp(v, vert::X, f, g, t);
+    let y = lerp(v, vert::Y, f, g, t);
+    v.set(vert::X, s, x);
+    v.set(vert::Y, s, y);
+    v.set(vert::Z, s, NEAR as i16);
+    // `project` at z = NEAR (2 texels): 80 + 80·X/Z and 68 − 133·Y/Z in Q4, i.e. 1280 + 40·x and
+    // 1088 − 66.5·y, from inputs clamped to stay inside the ±LIMIT corners.
+    v.set(vert::SX, s, 80 * 16 + x.clamp(-432, 368) * 40);
+    v.set(vert::SY, s, 68 * 16 - (y.clamp(-224, 225) * 133 >> 1));
+}
+
+/// Coordinate `c` the fraction `t` (Q16) of the way from vertex `f` to `g`: the high half of a 16 × 16
+/// product, no 32-bit shifts.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.clip"))]
+fn lerp(v: &Verts, c: usize, f: usize, g: usize, t: u16) -> i16 {
+    let p = v.get(c, f);
+    let d = v.get(c, g).wrapping_sub(p);
+    let q = (fixed::umul(d.unsigned_abs(), t) >> 16) as i16;
+    p.wrapping_add(if d < 0 { -q } else { q })
+}
+
+/// Push the triangle of vertices `a, b, c` (`asm/geom.S` `tryface` on the C64, the same sum).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.clip"))]
+fn tri(v: &Verts, w: &mut Work, a: u8, b: u8, c: u8, shade: u8) {
+    #[cfg(target_arch = "mos")]
+    {
+        let _ = (v, w);
+        unsafe extern "C" {
+            fn geo_tri();
+        }
+        // `tryface`'s corner indices and shade (its zero page: IA, IB, IC, SHD).
+        unsafe {
+            core::ptr::write_volatile(0xE7 as *mut u8, a);
+            core::ptr::write_volatile(0xE8 as *mut u8, b);
+            core::ptr::write_volatile(0xE9 as *mut u8, c);
+            core::ptr::write_volatile(0xEA as *mut u8, shade);
+            geo_tri();
+        }
+    }
+    #[cfg(not(target_arch = "mos"))]
+    {
+        let idx = [a as usize, b as usize, c as usize];
+        push(w, idx.map(|i| v.get(vert::SX, i)), idx.map(|i| v.get(vert::SY, i)), shade, key(v, idx));
     }
 }
 

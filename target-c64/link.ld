@@ -57,6 +57,8 @@ MEMORY {
     /* The REU overlays' windows: see `.aitext` and `.cocktext`. */
     window (rx) : ORIGIN = 0xE000, LENGTH = 0x1800
     window2 (rx) : ORIGIN = 0xA000, LENGTH = 0x0F00
+    /* The top of the main window above the triangle work (geom::Work ends at $F003), during geometry. */
+    window3 (rx) : ORIGIN = 0xF010, LENGTH = 0x07F0
 }
 
 /* Matched before commodore.ld's catch-all .text (first match wins). */
@@ -114,6 +116,10 @@ SECTIONS {
         .combatlibtext { *(.text.combatlib .text.combatlib.*) }
         .decktext { *(.text.deck .text.deck.*) }
     } >window2
+    /* `.text.clip`: the near-plane clipping (geom::clip, geo_clip), from the walk to push_dynamic. */
+    OVERLAY 0xF010 : AT (0x28000) {
+        .cliptext { *(.text.clip .text.clip.*) }
+    } >window3
     .audiotext : {
         *(.text.audio_boot)
     } >audio
@@ -165,6 +171,8 @@ ASSERT(SIZEOF(.hudtext) <= 0x1800, "the HUD overlay is larger than its window ($
 __cocktext_size = SIZEOF(.cocktext);
 __dyntext_size = SIZEOF(.dyntext);
 __decktext_size = SIZEOF(.decktext);
+__cliptext_size = SIZEOF(.cliptext);
+ASSERT(SIZEOF(.cliptext) <= 0x07F0, "the clipping overlay is larger than its window ($F010-$F7FF)")
 ASSERT(SIZEOF(.decktext) <= 0x0F00, "the deck's overlay is larger than its window ($A000-$AEFF)")
 ASSERT(SIZEOF(.cocktext) <= 0x0F00, "the cockpit overlay is larger than its window ($A000-$AEFF)")
 ASSERT(SIZEOF(.dyntext) <= 0x0F00, "the moving objects' overlay is larger than its window ($A000-$AEFF)")
