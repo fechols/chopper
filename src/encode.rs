@@ -50,6 +50,12 @@ pub fn pixel_shift(k: u16) -> u16 {
 
 /// Encode phase `p` (pixels shifted right by `p`) as a block.
 pub fn encode_block(img: &SpriteImage, p: u16) -> Block {
+    encode_block_banded(img, p, bands(img.h).0)
+}
+
+/// [`encode_block`] with `2^shift`-line bands (`BAND_SHIFT_ONE`: one band), for sprites whose columns
+/// would not fit `layout::SPRITE_CHUNK_LEN` per band otherwise (`sprite::sprite_band` takes any shift).
+pub fn encode_block_banded(img: &SpriteImage, p: u16, shift: u8) -> Block {
     assert!(p < 4);
     let wb = (img.w + p).div_ceil(4);
     let h = img.h as usize;
@@ -66,7 +72,7 @@ pub fn encode_block(img: &SpriteImage, p: u16) -> Block {
             }
         }
     }
-    let (shift, nbands) = bands(img.h);
+    let nbands = if img.h <= 1 << shift { 1 } else { img.h.div_ceil(1 << shift) };
     let band_h = 1usize << shift;
     // Band table, then the bands.
     let mut bytes = vec![0u8; (nbands as usize + 1) * 3];

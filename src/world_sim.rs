@@ -129,6 +129,10 @@ pub const FIGHT: u8 = 2;
 const _: () = assert!(PHASE + 1 <= 0xCB00);
 /// Within this many texels of the player (each way).
 pub const NEAR_RANGE: i16 = 320;
+/// Enemies fire on the player within this many texels (|du| + |dv|).
+pub const PLAYER_RANGE: u16 = 200;
+/// The agent's airspeed field (`Agent::to_bytes`: `vf`, u16 at 18).
+const PLAYER_SPEED: u16 = 18;
 
 /// Per kind: hit points, speed (1/16 texel a tick), the chance of a hit a second (of 256) and its damage,
 /// the reload (ticks), and what it can hit (bit 0 ground, bit 1 air).
@@ -204,7 +208,8 @@ pub fn heading(dx: i16, dy: i16) -> u8 {
     let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
     // The angle from the nearer axis, in 32nds of a quarter turn, from the ratio (0..=32 over an octant).
     let (lo, hi) = if ax < ay { (ax, ay) } else { (ay, ax) };
-    let r = if hi == 0 { 0 } else { ((lo as u32 * 32) / hi as u32) as u8 };
+    // 32 lo / hi in 16 bits (offsets on the map are under 2048 texels).
+    let r = if hi == 0 { 0 } else { (lo.min(2047) * 32 / hi) as u8 };
     let a = if ax < ay { r } else { 64 - r };
     // Into the quadrant: north is +v (dy > 0), east +u.
     match (dx >= 0, dy >= 0) {
@@ -234,7 +239,7 @@ pub fn step_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
     match hw.peek(PHASE) {
         MOVE => move_page(hw, now, pu, pv),
         DECIDE => decide_page(hw),
-        _ => fight_page(hw, now),
+        _ => fight_page(hw, now, pu, pv),
     }
 }
 
@@ -324,14 +329,16 @@ pub fn move_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
 /// The fight phase over the same page, then on to the next.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-pub fn fight_page<H: Hw + ?Sized>(hw: &mut H, now: u16) {
+pub fn fight_page<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16) {
     let first = reu_get16(hw, HEADER + head::CURSOR as u32);
     page(hw, first, false);
+    hw.poke(SHOTS, 0);
     for slot in 0..PAGE {
-        fight_unit(hw, first, slot);
+        fight_unit(hw, first, slot, pu, pv);
     }
     page(hw, first, true);
-    let next = (first + PAGE) % COUNT;
+    apply_shots(hw);
+    let next = if first + PAGE >= COUNT { 0 } else { first + PAGE };
     reu_put16(hw, HEADER + head::CURSOR as u32, next);
     if next == 0 {
         director(hw, now);
@@ -492,7 +499,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
 /// there when it can.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16) {
+fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, pu: i16, pv: i16) {
     let r = at(slot);
     let id = first + slot;
     let flags = hw.peek(r + rec::FLAGS);
@@ -507,9 +514,30 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16) {
     let them = 1 - side;
     let foe = reu_get16(hw, s + sec::REP as u32 + 2 * them as u32);
     let present = reu_get(hw, s + sec::COUNT as u32 + them as u32) > 0;
+    let fighting = hw.peek(r + rec::ACTION) == act::FIGHT;
+    // The player, if near and in range of an enemy that can hit aircraft and chose to fight: fired on with
+    // human aim (the odds halved, and halved again when the player is fast).
+    let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
+    let range = (u - pu).unsigned_abs() + (v - pv).unsigned_abs();
+    if cool == 0 && fighting && side == crate::actors::ENEMY && flags & NEAR_FLAG != 0 && stats::TARGETS[kind] & 2 != 0 && range < PLAYER_RANGE {
+        let seed = roll(hw.peek(r + rec::SEED));
+        hw.poke(r + rec::SEED, seed);
+        let fast = rd(hw, crate::layout::AGENT + PLAYER_SPEED) > 6000;
+        let odds = stats::HIT[kind] >> (1 + fast as u8);
+        hw.poke(r + rec::COOL, stats::RELOAD[kind]);
+        if seed < odds {
+            use crate::combat::{PLAYER, player};
+            let d = hw.peek(PLAYER + player::DAMAGE).saturating_add(stats::DAMAGE[kind]);
+            hw.poke(PLAYER + player::DAMAGE, d);
+            hw.poke(PLAYER + player::FLASH, 12);
+            let dealt = hw.peek(r + rec::DEALT).saturating_add(stats::DAMAGE[kind]);
+            hw.poke(r + rec::DEALT, dealt);
+        }
+        return;
+    }
     if cool > 0 {
         hw.poke(r + rec::COOL, cool - 1);
-    } else if present && hw.peek(r + rec::ACTION) == act::FIGHT && foe < COUNT {
+    } else if present && fighting && foe < COUNT {
         let seed = roll(hw.peek(r + rec::SEED));
         hw.poke(r + rec::SEED, seed);
         if fight(hw, first, id, kind, foe, seed) {
@@ -525,19 +553,19 @@ fn sector_of<H: Hw + ?Sized>(hw: &mut H, r: u16) -> u8 {
     ((u >> 11) & 15) as u8 | (((v >> 11) & 15) as u8) << 4
 }
 
+/// The fight phase's hits, applied once its page is back in the REU: a count, then (unit u16, damage u8)
+/// each (the band stage, free during the set-up).
+pub const SHOTS: u16 = crate::layout::STAGE;
+const _: () = assert!(1 + 3 * PAGE <= crate::layout::ROW_STRIDE);
+
 /// Unit `id` (of `kind`) fires at `foe` if it can hit its kind: a hit with the kind's chance, for its
-/// damage; the foe dies at 0. Whether it fired.
+/// damage (listed, to be applied after the page is written back). Whether it fired.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
 fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16, dice: u8) -> bool {
-    // The foe's record: in the page, or in the REU.
-    let in_page = foe.wrapping_sub(first) < PAGE;
     let base = UNITS + foe as u32 * RECORD as u32;
-    let fr = at(foe.wrapping_sub(first));
-    let get = |hw: &mut H, o: u16| if in_page { hw.peek(fr + o) } else { reu_get(hw, base + o as u32) };
-    let foe_flags = get(hw, rec::FLAGS);
-    let foe_kind = get(hw, rec::KIND);
-    let air = foe_kind == stats::AIR;
+    let foe_flags = reu_get(hw, base + rec::FLAGS as u32);
+    let air = reu_get(hw, base + rec::KIND as u32) == stats::AIR;
     if foe_flags & ALIVE == 0 || stats::TARGETS[kind] & if air { 2 } else { 1 } == 0 {
         return false;
     }
@@ -547,20 +575,47 @@ fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16,
         return true;
     }
     let dmg = stats::DAMAGE[kind];
-    let hp = get(hw, rec::HP).saturating_sub(dmg);
-    let taken = get(hw, rec::TAKEN).saturating_add(dmg);
     let dealt = hw.peek(me + rec::DEALT).saturating_add(dmg);
     hw.poke(me + rec::DEALT, dealt);
-    let put = |hw: &mut H, o: u16, v: u8| if in_page { hw.poke(fr + o, v) } else { reu_put(hw, base + o as u32, v) };
-    put(hw, rec::HP, hp);
-    put(hw, rec::TAKEN, taken);
-    if hp == 0 {
-        put(hw, rec::FLAGS, foe_flags & !(ALIVE | NEAR_FLAG));
-        let sector = get(hw, rec::SECTOR);
-        census(hw, sector, foe_flags & SIDE, false);
-        living(hw, foe_flags & SIDE, false);
-    }
+    let n = hw.peek(SHOTS);
+    let at = SHOTS + 1 + 3 * n as u16;
+    wr(hw, at, foe);
+    hw.poke(at + 2, dmg);
+    hw.poke(SHOTS, n + 1);
     true
+}
+
+/// The listed hits into the REU: hit points down, damage taken up (for learning), dead at 0 with the
+/// bookkeeping.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
+fn apply_shots<H: Hw + ?Sized>(hw: &mut H) {
+    let n = hw.peek(SHOTS).min(PAGE as u8);
+    for k in 0..n as u16 {
+        let foe = rd(hw, SHOTS + 1 + 3 * k);
+        let dmg = hw.peek(SHOTS + 3 + 3 * k);
+        // The foe's record in one, back in one (through the bounce buffer).
+        let base = UNITS + foe as u32 * RECORD as u32;
+        let b = crate::layout::BOUNCE;
+        hw::fetch(hw, base, b, RECORD);
+        let flags = hw.peek(b + rec::FLAGS);
+        if flags & ALIVE == 0 {
+            continue;
+        }
+        let hp = hw.peek(b + rec::HP).saturating_sub(dmg);
+        hw.poke(b + rec::HP, hp);
+        let taken = hw.peek(b + rec::TAKEN).saturating_add(dmg);
+        hw.poke(b + rec::TAKEN, taken);
+        if hp == 0 {
+            hw.poke(b + rec::FLAGS, flags & !(ALIVE | NEAR_FLAG));
+        }
+        let sector = hw.peek(b + rec::SECTOR);
+        hw::stash(hw, b, base, RECORD);
+        if hp == 0 {
+            census(hw, sector, flags & SIDE, false);
+            living(hw, flags & SIDE, false);
+        }
+    }
 }
 
 /// Keep unit `id` in the near list or out of it.
@@ -581,31 +636,4 @@ fn near_list<H: Hw + ?Sized>(hw: &mut H, id: u16, near: bool) {
         wr(hw, NEAR + 1 + 2 * k as u16, last);
         hw.poke(NEAR, n - 1);
     }
-}
-
-/// The units near the player as objects to draw, each moved on from its last step by its heading and
-/// speed (they step about once a second; drawn every frame). Dead ones stay where they fell.
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
-pub fn near_objects<H: Hw + ?Sized>(hw: &mut H, now: u16, out: &mut [crate::actors::Object]) -> usize {
-    let n = (hw.peek(NEAR).min(NEAR_MAX) as usize).min(out.len());
-    let mut r = [0u8; 18];
-    for (k, o) in out.iter_mut().enumerate().take(n) {
-        let id = hw.peek(NEAR + 1 + 2 * k as u16) as u16 | (hw.peek(NEAR + 2 + 2 * k as u16) as u16) << 8;
-        hw::read_into(hw, UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut r);
-        let kind = r[rec::KIND as usize];
-        let alive = r[rec::FLAGS as usize] & ALIVE != 0;
-        let yaw = r[rec::YAW as usize];
-        let mut u = u16::from_le_bytes([r[4], r[5]]) as i32;
-        let mut v = u16::from_le_bytes([r[6], r[7]]) as i32;
-        if alive && r[rec::ACTION as usize] != act::HOLD {
-            let dt = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(120) as i32;
-            let d = r[rec::SPEED as usize] as i32 * dt;
-            let a = (yaw as u16) << 8;
-            u += crate::camera::sin(a) * d >> 14;
-            v += crate::camera::cos(a) * d >> 14;
-        }
-        *o = crate::actors::Object { mesh: crate::actors::mesh_of(kind, r[1] & SIDE), yaw, u: u as u16, v: v as u16, h: (r[rec::H as usize] as u16) << 4 };
-    }
-    n
 }

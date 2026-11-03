@@ -25,7 +25,7 @@
 
 use crate::agent::Agent;
 use crate::floor::FloorCam;
-use crate::format::{HUD_SHAPES, HUD_TARGETS};
+use crate::format::HUD_SHAPES;
 use crate::hw::{self, Hw};
 
 /// Sprite blocks in VIC bank 1 (64 bytes each): after the resident program, and after the bitmap.
@@ -348,12 +348,11 @@ const _: () = assert!(S_COUNT < crate::layout::STAGE + crate::layout::ROW_STRIDE
 
 /// The frame's HUD, step 1 (cockpit overlay): withdraw the last table if the IRQ has not taken it yet
 /// (so the back table is free to rewrite without waiting for the top border: the frame it belonged to is
-/// gone anyway), read the targets.
+/// gone anyway). The targets are in `S_TARGETS` already (`combat::update`: the enemy units near).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.cockpit"))]
 pub fn prepare<H: Hw + ?Sized>(hw: &mut H) {
     hw.poke(READY, 0);
-    hw::fetch(hw, HUD_TARGETS, S_TARGETS, (1 + TARGETS * TARGET) as u16);
 }
 
 /// Step 2 (HUD overlay): the sprites and shapes into the scratch RAM, the lock state advanced. No REU

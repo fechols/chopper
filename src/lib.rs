@@ -10,7 +10,9 @@ pub mod agent;
 pub mod brain;
 pub mod camera;
 pub mod cockpit;
+pub mod combat;
 pub mod cost;
+pub mod effects;
 pub mod fixed;
 pub mod format;
 pub mod geom;
@@ -26,6 +28,8 @@ pub mod world_sim;
 pub mod digital;
 #[cfg(feature = "host")]
 pub mod elf;
+#[cfg(feature = "host")]
+pub mod effects_bake;
 #[cfg(feature = "host")]
 pub mod encode;
 #[cfg(feature = "host")]

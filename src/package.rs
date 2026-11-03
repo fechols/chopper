@@ -61,6 +61,7 @@ pub fn bake(world: &World) -> Vec<u8> {
     for (at, v) in [(H_SEG_GROUPS, (d.per_segment / crate::digital::GROUP) as u16), (H_SEG_LONG, d.long)] {
         reu[h + at as usize..][..2].copy_from_slice(&v.to_le_bytes());
     }
+    crate::effects_bake::install(&mut reu);
     reu
 }
 
@@ -88,6 +89,9 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".worldtext", OVERLAY_WORLD, OVERLAY_MAX),
         (".world2text", OVERLAY_WORLD2, OVERLAY_MAX),
         (".world3text", OVERLAY_WORLD3, OVERLAY_MAX),
+        (".combattext", OVERLAY_COMBAT, OVERLAY_MAX),
+        (".fxtext", OVERLAY_FX, OVERLAY_MAX),
+        (".combatlibtext", OVERLAY_COMBATLIB, OVERLAY2_MAX),
     ] {
         let code = crate::elf::section(elf, name)?;
         if code.len() as u32 > max {
@@ -181,7 +185,7 @@ pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::
         m.poke(crate::hud::LOCK_STATE + i as u16, b);
     }
     crate::hud::update(&mut m, &agent, &cam);
-    crate::actors::update(&mut m, agent.t as u16, &cam);
+    crate::actors::update(&mut m, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)
@@ -208,10 +212,20 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     agent.fly(&mut &reu_now[..], clock);
     let (pu, pv) = agent.at();
     crate::world_sim::step_page(&mut m, agent.t as u16, pu, pv);
+    let (cam0, _) = agent.camera();
+    if crate::combat::update(&mut m, &agent, &cam0) {
+        let t = agent.t;
+        agent = crate::agent::Agent::new();
+        agent.t = t;
+    }
+    crate::combat::fx(&mut m, &agent, &agent.camera().0);
     for (i, b) in agent.to_bytes().iter().enumerate() {
         m.poke(layout::AGENT + i as u16, *b);
     }
     // The gauges: all drawn (the C64 redraws only those that changed, to the same bytes).
+    for (i, b) in agent.to_bytes().iter().enumerate() {
+        m.poke(layout::AGENT + i as u16, *b);
+    }
     let mut gauges = [0xFF; crate::cockpit::gauge::COUNT];
     crate::cockpit::update(&mut m, &agent, &mut gauges);
     for (i, &g) in gauges.iter().enumerate() {
@@ -224,7 +238,7 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
         m.poke(crate::hud::LOCK_STATE + i as u16, b);
     }
     crate::hud::update(&mut m, &agent, &cam);
-    crate::actors::update(&mut m, agent.t as u16, &cam);
+    crate::actors::update(&mut m, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     Ok((m, st))

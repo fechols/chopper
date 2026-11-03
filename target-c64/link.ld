@@ -86,7 +86,8 @@ SECTIONS {
      * - `.text.geomsetup`: geom::walk_args (the grids' set-up for asm/geom.S geo_walk), before Work::clear;
      * - `.text.actors`: the frame's moving objects (actors);
      * - `.text.world`, `.text.world3`, `.text.world2`: the war's move, decide and fight phases, one a frame
-     *   in turn (world_sim). */
+     *   in turn (world_sim);
+     * - `.text.combat`: the player's fight: targets, gun, missiles, projectiles, damage (combat). */
     OVERLAY 0xE000 : AT (0x10000) {
         .aitext { *(.text.ai .text.ai.*) }
         .hudtext { *(.text.hud .text.hud.*) }
@@ -95,6 +96,8 @@ SECTIONS {
         .worldtext { *(.text.world .text.world.*) }
         .world2text { *(.text.world2 .text.world2.*) }
         .world3text { *(.text.world3 .text.world3.*) }
+        .combattext { *(.text.combat .text.combat.*) }
+        .fxtext { *(.text.fx .text.fx.*) }
     } >window
     /* The second window, over the band state at $A000 (layout::BAND_RAM: spent from the last band to
      * geo_bin), REU overlays too:
@@ -103,6 +106,7 @@ SECTIONS {
     OVERLAY 0xA000 : AT (0x20000) {
         .cocktext { *(.text.cockpit .text.cockpit.*) }
         .dyntext { *(.text.dyn .text.dyn.*) }
+        .combatlibtext { *(.text.combatlib .text.combatlib.*) }
     } >window2
     .audiotext : {
         *(.text.audio_boot)
@@ -136,6 +140,12 @@ __actorstext_size = SIZEOF(.actorstext);
 __worldtext_size = SIZEOF(.worldtext);
 __world2text_size = SIZEOF(.world2text);
 __world3text_size = SIZEOF(.world3text);
+__combattext_size = SIZEOF(.combattext);
+__fxtext_size = SIZEOF(.fxtext);
+__combatlibtext_size = SIZEOF(.combatlibtext);
+ASSERT(SIZEOF(.fxtext) <= 0x1100, "the effects overlay is larger than its window ($E000-$F0FF)")
+ASSERT(SIZEOF(.combatlibtext) <= 0x0F00, "the combat library overlay is larger than its window ($A000-$AEFF)")
+ASSERT(SIZEOF(.combattext) <= 0x1100, "the combat overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.world3text) <= 0x1100, "the world's decide overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.world2text) <= 0x1100, "the world's fight overlay is larger than its window ($E000-$F0FF)")
 ASSERT(SIZEOF(.worldtext) <= 0x1100, "the world overlay is larger than its window ($E000-$F0FF)")

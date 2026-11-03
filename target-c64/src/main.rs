@@ -20,7 +20,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -88,6 +88,9 @@ unsafe extern "C" {
     static __worldtext_size: u8;
     static __world2text_size: u8;
     static __world3text_size: u8;
+    static __combattext_size: u8;
+    static __fxtext_size: u8;
+    static __combatlibtext_size: u8;
     /// The second window's overlays (`.text.cockpit`, `.text.dyn`, run at `BAND_RAM`).
     static __cocktext_size: u8;
     static __dyntext_size: u8;
@@ -363,6 +366,7 @@ pub extern "C" fn main() -> i16 {
     *gauges = [0xFF; cockpit::gauge::COUNT];
     poke(chopper::world_sim::NEAR, 0);
     poke(chopper::world_sim::PHASE, chopper::world_sim::MOVE);
+    chopper::combat::init(c);
 
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);
@@ -402,6 +406,19 @@ pub extern "C" fn main() -> i16 {
         hw::fetch(c, ovl, WORK, size);
         let (pu, pv) = agent.at();
         chopper::world_sim::step_page(c, t as u16, pu, pv);
+        // The player's fight (combat overlay, its library over the spent band state): down, the autopilot
+        // takes over again at home. Then the effects pass (its own overlay).
+        hw::fetch(c, OVERLAY_COMBATLIB, chopper::layout::BAND_RAM, unsafe { &raw const __combatlibtext_size } as u16);
+        hw::fetch(c, OVERLAY_COMBAT, WORK, unsafe { &raw const __combattext_size } as u16);
+        if chopper::combat::update(c, agent, &cam) {
+            let t = agent.t;
+            *agent = Agent::new();
+            agent.t = t;
+        }
+        hw::fetch(c, OVERLAY_FX, WORK, unsafe { &raw const __fxtext_size } as u16);
+        let (cam, _) = agent.camera();
+        chopper::combat::fx(c, agent, &cam);
+        poke(0xD020, if peek(chopper::combat::PLAYER + chopper::combat::player::FLASH) != 0 { 2 } else { 0 });
         // The gauges whose readings changed, from their overlay over the (spent) band state.
         hw::fetch(c, OVERLAY_COCKPIT, cockpit_at, cockpit_size);
         cockpit::update(c, agent, gauges);
@@ -413,7 +430,7 @@ pub extern "C" fn main() -> i16 {
         chopper::hud::finish(c);
         // The moving objects (actors overlay, over the HUD's).
         hw::fetch(c, OVERLAY_ACTORS, WORK, actors_size);
-        chopper::actors::update(c, t as u16, &cam);
+        chopper::actors::update(c, &cam);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };

@@ -17,6 +17,7 @@
 //! | 115 | the HUD: sprite shapes, demo targets (`hud`) |
 //! | 116-117 | the living world: units and sectors, the roles' trees and learned bytes |
 //! | 118 | the moving objects' meshes (`actors`) |
+//! | 119, 120-145 | the effect sprites: frame directory, blocks (`effects`) |
 //! | `$BFFF60`-`$D9C0FF` | not in the image: the rotor sound decoded to 8-bit PCM at boot |
 
 /// 16 MiB REU (C64 Ultimate).
@@ -147,6 +148,9 @@ pub const OVERLAY_WORLD: u32 = OVERLAYS + 0xC000;
 pub const OVERLAY_WORLD2: u32 = OVERLAYS + 0xE000;
 /// (Bank 108 is full: the decide phase's overlay is after the brains, in bank 117.)
 pub const OVERLAY_WORLD3: u32 = TREES + 0x8000;
+pub const OVERLAY_COMBAT: u32 = TREES + 0xA000;
+pub const OVERLAY_FX: u32 = TREES + 0xC000;
+pub const OVERLAY_COMBATLIB: u32 = TREES + 0xE000;
 /// The second window's overlays (`layout::BAND_RAM`, while the band state is spent).
 pub const OVERLAY2_MAX: u32 = 0x0F00;
 /// The largest REU overlay (its window: `layout::WORK` to the multiply tables).
@@ -167,8 +171,15 @@ pub const WORLD: u32 = 116 << 16;
 pub const TREES: u32 = 117 << 16;
 pub const VEHICLES: u32 = 118 << 16;
 
+/// The effect sprites (`effects`, baked by `effects_bake`): the frame directory (`FRAME_RECORD` bytes per
+/// frame, `effects::record`) in bank 119, the blocks from bank 120 (each inside one 512 KiB region).
+pub const EFFECTS_DIR: u32 = 119 << 16;
+pub const EFFECTS_BLOCKS: u32 = 120 << 16;
+pub const EFFECTS_BLOCKS_END: u32 = 146 << 16;
+const _: () = assert!(VEHICLES + 0x10000 <= EFFECTS_DIR && EFFECTS_DIR + 0x10000 <= EFFECTS_BLOCKS);
+
 /// The image ends here: upload only this much.
-pub const IMAGE_END: u32 = VEHICLES + 0x10000;
+pub const IMAGE_END: u32 = EFFECTS_BLOCKS_END;
 const _: () = assert!(IMAGE_END <= AUDIO_PCM - HAAS);
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);

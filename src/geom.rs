@@ -325,6 +325,7 @@ pub fn depth_key(s: i32) -> u8 {
 }
 
 /// Append a sprite to depth bucket `key` (an item the band pipeline draws in painter's order).
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.dyn"))]
 pub fn push_sprite(w: &mut Work, left: i16, top: i16, h: u16, wb: u8, block: u32, shift: u8, key: u8) {
     if w.n as usize >= MAX_TRIS {
         w.dropped = w.dropped.saturating_add(1);
@@ -773,16 +774,36 @@ pub fn push_dynamic<H: Hw + ?Sized>(hw: &mut H, w: &mut Work, v: &mut Verts) {
         let ob = Obj { verts: base, nv, faces: base + 3 * nv as u16, nf: hw.peek(at + dyn_entry::NF), t: 2 + hw.peek(at + dyn_entry::SHIFT), org, m };
         // (The host's 3D reads the mesh from a slice laid out as C64 RAM from `SCENE_RAM`; the C64's reads
         // RAM itself.)
-        #[cfg(not(target_arch = "mos"))]
+        #[cfg(feature = "host")]
         let mem: alloc_vec::Vec<u8> = (0..base + len).map(|i| hw.peek(SCENE_RAM.wrapping_add(i))).collect();
-        #[cfg(target_arch = "mos")]
+        #[cfg(not(feature = "host"))]
         let mem: [u8; 0] = [];
         hw.xform(&mem, &ob, v);
         hw.faces(&mem, &ob, v, w);
     }
+    // The effects (`combat::FXDYN`, placed in the set-up): each frame's sprite, its phase for its x.
+    use crate::format::frame;
+    let n = hw.peek(crate::combat::FXDYN).min(crate::combat::FX_MAX);
+    let mut rec = [0u8; crate::format::FRAME_RECORD as usize];
+    for i in 0..n as u16 {
+        let at = crate::combat::FXDYN + 1 + i * crate::combat::FXDYN_ENTRY;
+        let (x, y) = (rd(hw, at), rd(hw, at + 2));
+        let addr = rd(hw, at + 4) as u16 as u32 | (hw.peek(at + 6) as u32) << 16;
+        crate::hw::read_into(hw, addr, crate::layout::BOUNCE, &mut rec);
+        let h = u16::from_le_bytes([rec[frame::H], rec[frame::H + 1]]);
+        if h == 0 {
+            continue;
+        }
+        let left = x - rec[frame::AX] as i16;
+        let top = y - rec[frame::AY] as i16;
+        let p = if rec[frame::PHASE_COUNT] == 4 { (left & 3) as usize } else { 0 };
+        let ph = frame::PHASES + p * frame::PHASE_LEN;
+        let block = rec[ph + 1] as u32 | (rec[ph + 2] as u32) << 8 | (rec[ph + 3] as u32) << 16;
+        push_sprite(w, left, top, h, rec[ph], block, rec[frame::BAND_SHIFT], hw.peek(at + 7));
+    }
 }
 
-#[cfg(not(target_arch = "mos"))]
+#[cfg(feature = "host")]
 mod alloc_vec {
     pub use std::vec::Vec;
 }

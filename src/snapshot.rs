@@ -17,6 +17,8 @@ pub const REU: u8 = 1;
 pub const STATE_RAM: &[(u16, u16)] = &[
     (layout::AGENT, crate::world_sim::PHASE + 1 - layout::AGENT),
     (crate::hud::LOCK_STATE, crate::hud::LOCK_BYTES as u16),
+    (crate::combat::STATE, crate::combat::STATE_LEN),
+    (crate::combat::FX, crate::combat::FX_MAX as u16 * crate::combat::FX_ENTRY),
 ];
 /// REU ranges the game writes as it plays: the war.
 pub const STATE_REU: &[(u32, u32)] = &[(crate::world_sim::STATE, crate::world_sim::STATE_LEN), (crate::world_sim::BRAINS, crate::world_sim::BRAINS_LEN)];

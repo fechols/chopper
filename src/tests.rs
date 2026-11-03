@@ -899,11 +899,12 @@ fn the_hud_projects_where_the_view_draws() {
 /// angle; 0 north) and level, the waypoint at (1024, 1200).
 fn hud_run(yaw: u16, frames: u32) -> (Machine, Vec<crate::hud::Sprite>) {
     use crate::hud::*;
-    let mut reu = package().clone();
-    let t = crate::format::HUD_TARGETS as usize;
-    reu[t..t + 6].copy_from_slice(&[1, 0, 4, 132, 3, 3]);
-    let mut m = Machine::new(&reu);
+    let mut m = Machine::new(package());
     init(&mut m);
+    // (The frame's targets, as `combat::update` lists them.)
+    for (i, b) in [1u8, 0, 4, 132, 3, 3].into_iter().enumerate() {
+        m.ram[S_TARGETS as usize + i] = b;
+    }
     let mut a = crate::agent::Agent::new();
     (a.u, a.v, a.h, a.wu, a.wv) = (1024 << 8, 800 << 8, 10 << 8, 1024, 1200);
     let cam = camera_at(1024.0, 800.0, 10.0, yaw, 0, 0);
@@ -1139,4 +1140,155 @@ fn the_war_teaches_the_brains() {
         moved += (now != blob[o + 1]) as usize;
     }
     assert!(moved >= 3, "only {moved} learn nodes moved");
+}
+
+/// The effect sprites' directory: every frame's record is the sprite format's (`format::frame`), its four
+/// phase blocks lie in `EFFECTS_BLOCKS..EFFECTS_BLOCKS_END`, each inside one 512 KiB REU region, no band
+/// fetches more than `SPRITE_CHUNK_LEN`, and the slots past an effect's frames are empty.
+#[test]
+fn effect_records_point_inside_their_blocks() {
+    use crate::effects::{EFFECTS, FRAMES, MAX_FRAMES, SCALES, lines};
+    use crate::effects_bake::{band_chunk, read_record};
+    use crate::format::{EFFECTS_BLOCKS, EFFECTS_BLOCKS_END, FRAME_RECORD, MAX_SPRITE_SIZE, REU_BANK};
+    let reu = package();
+    for e in 0..EFFECTS as u8 {
+        for s in 0..SCALES as u8 {
+            for f in 0..MAX_FRAMES as u8 {
+                let at = crate::effects::record(e, s, f) as usize;
+                if f >= FRAMES[e as usize] {
+                    assert!(reu[at..at + FRAME_RECORD as usize].iter().all(|&b| b == 0), "effect {e} scale {s}: slot {f} not empty");
+                    continue;
+                }
+                let r = read_record(reu, e, s, f);
+                assert_eq!(r.h, lines(s), "effect {e} scale {s} frame {f}");
+                assert!(r.w >= 1 && r.w <= MAX_SPRITE_SIZE && r.w <= 160 && r.h <= MAX_SPRITE_SIZE);
+                assert!((r.ax as u16) < r.w && (r.ay as u16) < r.h);
+                assert_eq!(r.phases, 4);
+                let nbands = if r.h <= 1 << r.shift { 1 } else { r.h.div_ceil(1 << r.shift) };
+                assert_eq!(r.bands as u16, nbands);
+                for (p, &(wb, block, len)) in r.phase.iter().enumerate() {
+                    assert_eq!(wb as u16, (r.w + p as u16).div_ceil(4));
+                    let end = block + len as u32;
+                    assert!(block >= EFFECTS_BLOCKS && end <= EFFECTS_BLOCKS_END, "effect {e} scale {s} frame {f} phase {p}: ${block:06X}");
+                    assert_eq!(block / REU_BANK, (end - 1) / REU_BANK, "effect {e} scale {s} frame {f} phase {p} crosses a 512 KiB region");
+                    let bytes = &reu[block as usize..end as usize];
+                    for b in 0..nbands as usize {
+                        assert!(band_chunk(bytes, b) <= crate::layout::SPRITE_CHUNK_LEN as u32);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every phase of every effect frame, drawn back out of the image by the C64's sprite code, is exactly
+/// the code map `tools/effects.py` made.
+#[test]
+fn effect_frames_draw_back_exactly() {
+    use crate::effects::{EFFECTS, SCALES};
+    let mut m = Machine::new(package());
+    let src = crate::effects_bake::load();
+    for e in 0..EFFECTS {
+        for s in 0..SCALES {
+            for (f, want) in src[e][s].frames.iter().enumerate() {
+                for p in 0..4 {
+                    let got = crate::effects_bake::draw_back(&mut m, e as u8, s as u8, f as u8, p);
+                    assert_eq!((got.w, got.h), (want.w, want.h));
+                    assert!(got.pixels == want.pixels, "effect {e} scale {s} frame {f} phase {p}");
+                }
+            }
+        }
+    }
+}
+
+/// `effects::scale_for` picks the scale nearest the projected height, clamped, nearer meaning bigger.
+#[test]
+fn effect_scale_follows_the_projected_height() {
+    use crate::effects::{MAX_LINES, MIN_LINES, SCALES, lines, scale_for};
+    let h = 48u16;
+    for z in (16..20_000).step_by(7) {
+        let want = (h as f64 * 133.0 / z as f64).clamp(MIN_LINES as f64, MAX_LINES as f64);
+        let got = lines(scale_for(z, h)) as f64;
+        assert!((got - want).abs() <= 1.0 + 1e-9, "z {z}: {got} lines for {want}");
+        assert!(scale_for(z + 7, h) <= scale_for(z, h));
+    }
+    assert_eq!(scale_for(0, h), SCALES as u8 - 1);
+    assert_eq!(scale_for(1 << 20, h), 0);
+}
+
+/// The player's fight: an enemy unit held in the gun's cone is hit (dust kicked up) until it explodes and
+/// burns, counted as a kill; a locked missile flies to another, hits and explodes; the effects playing are
+/// placed and reach the depth buckets as sprites.
+#[test]
+fn the_gun_and_missiles_hit_and_the_effects_play() {
+    use crate::agent::{Agent, MODE_PLAYER, input};
+    use crate::combat::{self, FX, FXDYN, PLAYER, player};
+    use crate::world_sim::{self as ws, ALIVE, NEAR, RECORD, rec};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    // Two enemy tanks ahead (north) of a player 10 texels up at (1024, 1100), hovering, facing north.
+    let mut a = Agent::new();
+    (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
+    let put = |m: &mut Machine, id: u16, u: u16, v: u16| {
+        let at = ws::UNITS as usize + id as usize * RECORD as usize;
+        let r = &mut m.reu[at..at + RECORD as usize];
+        r.fill(0);
+        r[rec::KIND as usize] = crate::actors::kind::TANK;
+        r[rec::FLAGS as usize] = ALIVE | crate::actors::ENEMY;
+        r[rec::HP as usize] = 20;
+        r[rec::ACTION as usize] = ws::act::HOLD;
+        r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&(u << 4).to_le_bytes());
+        r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&(v << 4).to_le_bytes());
+    };
+    put(&mut m, 7, 1024, 1150);
+    put(&mut m, 9, 1080, 1180);
+    for (i, b) in [2u8, 7, 0, 9, 0].into_iter().enumerate() {
+        m.ram[NEAR as usize + i] = b;
+    }
+    // Nose down 11° (the cruise attitude): the tank 50 texels ahead on the ground sits in the cone.
+    let cam = camera_at(1024.0, 1100.0, 10.0, 0, -11, 0);
+    a.input = input::FIRE;
+    let mut spawned = std::collections::HashSet::new();
+    for f in 0..200u32 {
+        a.t = 1000 + 4 * f;
+        combat::update(&mut m, &a, &cam);
+        combat::fx(&mut m, &a, &cam);
+        for k in 0..combat::FX_MAX as usize {
+            let id = m.ram[FX as usize + 10 * k];
+            if id != 0 {
+                spawned.insert(id - 1);
+            }
+        }
+        if m.reu[ws::UNITS as usize + 7 * RECORD as usize + rec::FLAGS as usize] & ALIVE == 0 {
+            break;
+        }
+    }
+    assert_eq!(m.reu[ws::UNITS as usize + 7 * RECORD as usize + rec::FLAGS as usize] & ALIVE, 0, "the tank in the cone survived the gun");
+    assert_eq!(m.ram[(PLAYER + player::KILLS) as usize], 1);
+    use crate::effects::effect::{EXPLOSION, IMPACT, WRECK_FIRE};
+    assert!(spawned.contains(&IMPACT) && spawned.contains(&EXPLOSION) && spawned.contains(&WRECK_FIRE), "{spawned:?}");
+    // The effects in view are placed, and become sprites in the buckets.
+    assert!(m.ram[FXDYN as usize] > 0, "no effect placed");
+    let mut w = Box::new(crate::geom::Work::new());
+    let mut v = Box::new(crate::geom::Verts::new());
+    crate::geom::walk_args(&mut m, crate::layout::WALK_ARGS, &crate::geom::View { cam, pop: 0 });
+    m.ram[crate::actors::DYN as usize] = 0;
+    crate::geom::push_dynamic(&mut m, &mut w, &mut v);
+    assert!((0..w.n).any(|i| w.tri(i).shade & crate::geom::SPRITE != 0), "no sprite pushed");
+    // The other tank: locked (target 0 of the list, the first living enemy), fire 2.
+    m.ram[crate::hud::LOCK_STATE as usize] = 0;
+    m.ram[crate::hud::LOCK_STATE as usize + 1] = crate::hud::LOCK_TICKS;
+    a.input = input::FIRE2;
+    combat::update(&mut m, &a, &cam);
+    assert_eq!(m.ram[(PLAYER + player::MISSILES) as usize], combat::MISSILES - 1, "no missile");
+    a.input = 0;
+    let hp0 = m.reu[ws::UNITS as usize + 9 * RECORD as usize + rec::HP as usize];
+    for f in 0..200u32 {
+        a.t += 4;
+        let _ = f;
+        combat::update(&mut m, &a, &cam);
+        combat::fx(&mut m, &a, &cam);
+    }
+    let hp = m.reu[ws::UNITS as usize + 9 * RECORD as usize + rec::HP as usize];
+    assert!(hp < hp0, "the missile missed: hp {hp0} -> {hp}");
 }

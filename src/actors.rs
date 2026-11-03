@@ -69,8 +69,8 @@ const _: () = assert!(DYN >= crate::hud::S_COUNT + 1);
 /// One mesh at a time, streamed from the REU for the object being drawn (after the relocated `spantext`
 /// pages, before the HUD's page).
 pub const MESHBUF: u16 = 0x8A10;
-pub const MESHBUF_LEN: u16 = 0xF0;
-const _: () = assert!(MESHBUF + MESHBUF_LEN <= crate::hud::PAGE);
+pub const MESHBUF_LEN: u16 = 0xA0;
+const _: () = assert!(MESHBUF + MESHBUF_LEN <= crate::combat::FXDYN);
 
 /// An object in the world: mesh, yaw (256 a turn), position in 1/16 texel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,13 +86,18 @@ pub struct Object {
 /// static object (its bounding sphere against the view, and out past its pop-in distance).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
-pub fn prepare<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam, objects: &[Object]) {
+pub fn prepare<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam, list: u16) {
     use crate::hud::mul16;
     let mut n = 0u8;
-    for o in objects {
+    let count = hw.peek(list);
+    for k in 0..count as u16 {
         if n >= DYN_MAX {
             break;
         }
+        // Object `k` of the list (mesh, yaw, u, v, h): read in place, not copied onto the stack.
+        let at = list + 1 + 8 * k;
+        let rd = |hw: &mut H, a: u16| hw.peek(a) as u16 | (hw.peek(a + 1) as u16) << 8;
+        let o = Object { mesh: hw.peek(at), yaw: hw.peek(at + 1), u: rd(hw, at + 2), v: rd(hw, at + 4), h: rd(hw, at + 6) };
         let mut rec = [0u8; MESH_RECORD];
         crate::hw::read_into(hw, crate::format::VEHICLES + o.mesh as u32 * MESH_RECORD as u32, crate::layout::BOUNCE, &mut rec);
         let rad = rec[7];
@@ -133,14 +138,14 @@ pub fn prepare<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam, objects
 /// How far out moving objects are drawn (Q4: 200 texels).
 pub const FAR: i32 = 200 * 16;
 
-/// The frame's moving objects: the war's units near the player (`world_sim::NEAR`), moved on from their
-/// last step, ready to draw.
+/// The frame's moving objects (`combat::OBJLIST`: the war's units near the player moved on from their
+/// last step, and the projectiles), ready to draw.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
-pub fn update<H: Hw + ?Sized>(hw: &mut H, now: u16, cam: &crate::floor::FloorCam) {
-    let mut objects = [Object::default(); crate::world_sim::NEAR_MAX as usize];
-    let n = crate::world_sim::near_objects(hw, now, &mut objects);
-    prepare(hw, cam, &objects[..n]);
+pub fn update<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam) {
+    let n = hw.peek(crate::combat::OBJLIST).min(crate::combat::OBJLIST_MAX);
+    hw.poke(crate::combat::OBJLIST, n);
+    prepare(hw, cam, crate::combat::OBJLIST);
 }
 
 /// The demo's loop round the home pad: centre and radius (texels).
@@ -169,5 +174,13 @@ pub fn demo<H: Hw + ?Sized>(hw: &mut H, t: u32, cam: &crate::floor::FloorCam) {
     let u = (DEMO_CENTRE.0 << 4) + (c * (DEMO_RADIUS + 20) >> 10);
     let v = (DEMO_CENTRE.1 << 4) + (s * (DEMO_RADIUS + 20) >> 10);
     objects[5] = Object { mesh: mesh_of(kind::GUNSHIP, ALLIED), yaw: (0x8000u16.wrapping_sub(a) >> 8) as u8, u: u as u16, v: v as u16, h: 12 << 4 };
-    prepare(hw, cam, &objects);
+    let list = crate::combat::OBJLIST;
+    hw.poke(list, objects.len() as u8);
+    for (k, o) in objects.iter().enumerate() {
+        let at = list + 1 + 8 * k as u16;
+        for (i, x) in [o.mesh, o.yaw, o.u as u8, (o.u >> 8) as u8, o.v as u8, (o.v >> 8) as u8, o.h as u8, (o.h >> 8) as u8].into_iter().enumerate() {
+            hw.poke(at + i as u16, x);
+        }
+    }
+    prepare(hw, cam, list);
 }

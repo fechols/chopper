@@ -16,6 +16,9 @@
 //! - `chopper pcm [--out O]`: the rotor sound decoded.
 //! - `chopper cockpit [--out DIR]`: contact sheets of every gauge's frames, the panel, and the tach's
 //!   spool curve measured from the sound.
+//! - `chopper effects [--out DIR]`: contact sheets of the effect sprites (`effects`), one per effect: every
+//!   3rd scale down, its frames across, each drawn back out of the baked image by the C64's sprite code,
+//!   on the grass, pixels doubled across and zoomed 2x.
 
 use chopper::format::COLORS;
 use chopper::layout::BUFFERS;
@@ -94,6 +97,11 @@ fn frame(args: &[String]) -> Result<(), String> {
     bin.extend_from_slice(&m.reu[war..war + chopper::world_sim::STATE_LEN as usize]);
     let brains = chopper::world_sim::BRAINS as usize;
     bin.extend_from_slice(&m.reu[brains..brains + chopper::world_sim::BRAINS_LEN as usize]);
+    // The player's fight and the effects playing.
+    let fight = chopper::combat::STATE as usize;
+    bin.extend_from_slice(&m.ram[fight..fight + chopper::combat::STATE_LEN as usize]);
+    let fx = chopper::combat::FX as usize;
+    bin.extend_from_slice(&m.ram[fx..fx + (chopper::combat::FX_MAX as u16 * chopper::combat::FX_ENTRY) as usize]);
     std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
         "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
@@ -304,6 +312,57 @@ fn pcm(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Contact sheets of the effect sprites as baked: scales 0, 3, .. 30 down, frames across.
+fn effects(args: &[String]) -> Result<(), String> {
+    use chopper::effects::{EFFECTS, FRAMES, NAMES, SCALES};
+    use chopper::effects_bake::{draw_back, read_record};
+    let dir = PathBuf::from(arg(args, "--out").unwrap_or("output/effects".into()));
+    let reu = package::bake(&world::generate(SEED));
+    let u = chopper::effects_bake::install(&mut reu.clone());
+    println!(
+        "{} frames, 4 phases each: {} bytes of blocks, {} of padding, ${:06X}-${:06X}; largest block {}, largest band chunk {}",
+        u.frames,
+        u.blocks,
+        u.padding,
+        chopper::format::EFFECTS_BLOCKS,
+        u.end,
+        u.max_block,
+        u.max_chunk
+    );
+    let mut m = chopper::model::Machine::new(&reu);
+    let grass = PALETTE[COLORS[0] as usize];
+    let gap = [40u8, 40, 40];
+    let rows: Vec<u8> = (0..SCALES as u8).step_by(3).collect();
+    for e in 0..EFFECTS as u8 {
+        let nf = FRAMES[e as usize];
+        let wmax = rows.iter().map(|&s| read_record(&m.reu, e, s, 0).w as usize).max().unwrap();
+        let cw = 2 * wmax + 4;
+        let (w, h) = (4 + nf as usize * cw, 4 + rows.iter().map(|&s| read_record(&m.reu, e, s, 0).h as usize + 4).sum::<usize>());
+        let mut rgb = vec![gap; w * h];
+        let mut y0 = 4;
+        for &s in &rows {
+            for f in 0..nf {
+                let img = draw_back(&mut m, e, s, f, 0);
+                let x0 = 4 + f as usize * cw;
+                for y in 0..img.h {
+                    for x in 0..img.w {
+                        let c = img.get(x, y).map_or(grass, |c| PALETTE[COLORS[c as usize] as usize]);
+                        let at = (y0 + y as usize) * w + x0 + 2 * x as usize;
+                        rgb[at] = c;
+                        rgb[at + 1] = c;
+                    }
+                }
+            }
+            y0 += read_record(&m.reu, e, s, 0).h as usize + 4;
+        }
+        let zoom: Vec<[u8; 3]> = (0..2 * h).flat_map(|y| (0..2 * w).map(move |x| (x, y))).map(|(x, y)| rgb[(y / 2) * w + x / 2]).collect();
+        let out = dir.join(format!("{}.png", NAMES[e as usize]));
+        png::save(&out, 2 * w as u32, 2 * h as u32, &zoom)?;
+        println!("{}: {nf} frames x {SCALES} scales", out.display());
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -316,6 +375,7 @@ fn main() -> Result<(), String> {
         Some("brain") => brain(),
         Some("cockpit") => cockpit(&args),
         Some("war") => war(&args),
-        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR]".into()),
+        Some("effects") => effects(&args),
+        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR]".into()),
     }
 }
