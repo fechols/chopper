@@ -964,3 +964,50 @@ fn the_waypoint_caret_tracks_the_waypoint() {
     let (m, _) = hud_run(0x4000, 1);
     assert_eq!(m.ram[(S_SHAPES + slot::CARET as u16) as usize], shape::ARROW + 6);
 }
+
+/// The player's stick: no lift before the rotor is up to speed; forward lifts off and speeds up; left
+/// turns left; the height looks after itself (never into a mountain, whatever the stick does); hovering
+/// with the stick back settles onto the ground.
+#[test]
+fn the_player_flies_with_one_stick() {
+    use crate::agent::{Agent, LIFT, MODE_PLAYER, THROTTLE_MAX, input};
+    let mut reu: &[u8] = package();
+    let mut a = Agent::new();
+    a.mode = MODE_PLAYER;
+    let run = |a: &mut Agent, reu: &mut &[u8], stick: u8, ticks: u32| {
+        a.input = stick;
+        for _ in 0..ticks {
+            a.step(reu);
+        }
+    };
+    run(&mut a, &mut reu, input::UP, LIFT - 60);
+    assert_eq!((a.grounded, a.h), (1, crate::agent::EYE), "lifted before the rotor was up to speed");
+    run(&mut a, &mut reu, input::UP, 600);
+    assert_eq!(a.grounded, 0, "no lift-off");
+    assert_eq!(a.throttle, THROTTLE_MAX);
+    assert!(a.speed() > 100, "speed {}", a.speed());
+    let yaw = a.yaw;
+    run(&mut a, &mut reu, input::LEFT, 120);
+    let turned = a.yaw.wrapping_sub(yaw) as i16;
+    assert!(turned < -2000, "turned {turned}");
+    // A long, random stick: never below a mountain's top within its footprint.
+    let mountains = crate::goap::mountains(&crate::world::generate(1983));
+    let mut rng = Rng(0x57_1C);
+    for _ in 0..200 {
+        let stick = [0, input::UP, input::LEFT, input::RIGHT, input::UP | input::LEFT, input::UP | input::RIGHT][rng.below(6) as usize];
+        for _ in 0..60 {
+            run(&mut a, &mut reu, stick, 1);
+            let (u, v, h) = (a.u as f64 / 256.0, a.v as f64 / 256.0, a.h as f64 / 256.0);
+            for &(mu, mv, mr, mh) in &mountains {
+                let d = ((u - mu).powi(2) + (v - mv).powi(2)).sqrt();
+                if d < mr {
+                    let top = mh * (1.0 - d / mr);
+                    assert!(h > top, "tick {}: inside a mountain at ({u:.0}, {v:.0}), {h:.1} under {top:.1}", a.t);
+                }
+            }
+        }
+    }
+    // Slow to a hover, then hold back: down onto the ground.
+    run(&mut a, &mut reu, input::DOWN, 600);
+    assert_eq!(a.grounded, 1, "did not land: h {} speed {}", a.h, a.speed());
+}

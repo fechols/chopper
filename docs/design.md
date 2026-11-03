@@ -155,6 +155,27 @@ Two kinds of overlay:
 - **Overlay size:** each is at most 4 KB (its window).
 - **Timing:** their results carry a tick stamp, so the every-frame code can extrapolate.
 
+## The living world
+
+A real war, not a stage set around the player:
+- **Units:** both sides' units, 512 in all, live in the REU as 32-byte records. Each has a kind, side, health, position, route, orders, target and its own learning trail.
+- **Paging:** they are paged into RAM 32 a frame, round-robin, so each steps and decides about **once a second**. That is a human reaction time, chosen on purpose: no perfect aim, from near or far.
+- **Away from the player:**
+  - units travel along roads, sea lanes and air patrols;
+  - they fight by dice against the enemies in their 128-texel sector;
+  - reinforcements arrive from the enemy beachhead on the north shore and from home base;
+  - sectors change hands, and wrecks stay where they fell.
+- **Near the player:** units within 320 texels are promoted into 16 active actors. Those are drawn, flown or driven every frame, boxed on the HUD, and they shoot with human aim: time to acquire, lead error that grows with crossing speed, burst spread.
+- **Missions:** the eight missions are objectives over the real war, such as the actual convoy or the actual SAM sites. The war goes on between and during them.
+
+## Learned behaviour
+
+Each role's decision tree is planned offline by GOAP and baked into the REU, as the autopilot's is.
+- **Learn nodes:** where two first actions are nearly as good, the tree holds a **learn node**: a byte giving the odds of one branch, as in Impact.
+- **Rewards:** every decision is scored on the damage dealt minus the damage taken, plus a kill or a death. The last two decisions' learn nodes are nudged toward what worked.
+- **Shared weights:** all units of a kind share one set of learned bytes (every gunship, every SAM site), so the REU cost stays fixed while the whole army keeps adapting. Allies learn the same way against them.
+- **The attract-mode pilot** is a full combatant. It drives the same stick and buttons the player does, from its own learned tree: it hunts targets, masks from SAMs behind mountains, fires and goes home to refuel.
+
 ## Mission data (in the REU)
 
 - **Briefing:** text, in screen codes.
@@ -168,7 +189,7 @@ Two kinds of overlay:
 |---|---|
 | P0 | This design. |
 | P1 | The HUD multiplexer over the attract flight: boresight, the waypoint caret and readout, target boxes and the lock-on diamond demoed on static targets. |
-| P2 | Player flight: joystick cyclic, keys for the collective. Recorded input keeps the emulator gate byte-exact. |
+| P2 | Player flight: one stick (turn, speed), assisted altitude and landing. Recorded input keeps the emulator gate byte-exact. |
 | P3 | Moving objects (a dynamic list after the cell walk) and the enemy agents, roles and meshes. |
 | P4 | Weapons (the gun with tracers on button 1, missiles with auto-lock on button 2), hits, damage, explosions, the SAM warning. |
 | P5 | Missions: the tables, objectives, briefing and debrief, landing, fuel. |

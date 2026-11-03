@@ -27,7 +27,7 @@ from native_cpu import B, I, U, Cpu, KernelError  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = 0xCA80
 AGENT = 0xCAA0      # layout::AGENT (agent::Agent::BYTES), then CLOCK
-AGENT_BYTES = 36
+AGENT_BYTES = 40
 SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
 SCREEN = 0x5C00     # layout::BUFFERS[0].screen
@@ -133,6 +133,7 @@ class C64(Cpu):
         self.last_d012 = None
         self.raster = 0
         self.irqs = 0
+        self.stick = 0      # agent::input bits (active high), as joystick 2 and its POT X button read
 
     def t(self):
         return self.cycles // TURBO
@@ -148,6 +149,10 @@ class C64(Cpu):
             if address in (0xD011, 0xD012):
                 line = (self.cycles // LINE_CYCLES) % LINES
                 return (self.io[0x011] & 0x7F) | (0x80 if line > 255 else 0) if address == 0xD011 else line & 0xFF
+            if address == 0xDC00:
+                return 0xFF ^ (self.stick & 0x1F)
+            if address == 0xD419:
+                return 0x00 if self.stick & 0x20 else 0xFF
             if 0xDC00 <= address < 0xDE00:
                 return self.cia[(address >> 8) & 1].read(address & 0xF, self.t())
             if 0xDF00 <= address < 0xDF10:
@@ -282,8 +287,8 @@ def host_agent(reu, tick):
 
 # The C64 state carried across frames (snapshot::STATE_RAM): the agent, its clock and the gauges; the
 # HUD's lock state.
-STATE_RAM = [(AGENT, 0x28 + 7), (HUD + 4, 4)]
-GAUGES = AGENT + 0x28
+STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7), (HUD + 4, 4)]
+GAUGES = AGENT + AGENT_BYTES + 4
 
 
 def snapshot(cpu):
@@ -316,6 +321,8 @@ def main():
     ap.add_argument('--frames', type=int, default=4)
     ap.add_argument('--doubled-after', type=int, default=2, help='switch MODE to doubled after this many frames')
     ap.add_argument('--start', type=int, help='start the flight at this tick: poke the host agent and clock')
+    ap.add_argument('--input', default='', help='the stick by frame: "FRAME:BITS,..." (agent::input bits: up 1, '
+                    'down 2, left 4, right 8, fire 16, fire2 32), each from that frame on')
     ap.add_argument('--leap', type=int, default=0, help='and the clock this many ticks further on (the first '
                     'frame runs them all through the AI overlay)')
     args = ap.parse_args()
@@ -333,6 +340,7 @@ def main():
     cpu.push(0xFF)
     cpu.push(0xFE)
 
+    script = sorted((int(f), int(b)) for f, b in (p.split(':') for p in args.input.split(',') if p))
     failures, checked, done = 0, 0, 0
     state_before = None
     steps = 0
@@ -364,6 +372,10 @@ def main():
             modes.append(cpu.mem[STATUS + 7] & 1)
         elif k == 0 and cpu.mem[STATUS] == 0xC1:
             done += 1
+            # The stick for the next frame (the main loop reads it before the frame's set-up).
+            for f, bits in script:
+                if done >= f:
+                    cpu.stick = bits
             pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3], state_before)
             if done == args.doubled_after:
                 cpu.mem[STATUS + 7] = 1
@@ -387,6 +399,10 @@ def main():
             # The state after the frame (the next one has not flown yet): the agent, the gauges.
             got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
             want = host_frame(args.reu, state, doubled)
+            # (The stick and the take-over in the agent are already the next frame's: the main loop reads
+            # them before the set-up.)
+            stick = 10688 + 36
+            got = got[:stick] + want[stick:stick + 2] + got[stick + 2:]
             bad = sum(a != b for a, b in zip(got, want))
             dmas = d1 - d0
             print(f'frame {checked}: tick {tick}, {"doubled" if doubled else "full"}: {bad} mismatched bytes; '
@@ -396,7 +412,7 @@ def main():
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
                 if i >= 10688:
-                    print(f'  state byte {i - 10688} (agent 0-35, gauges 36-42): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    print(f'  state byte {i - 10688} (agent 0-39, gauges 40-46): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10000:
                     print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')

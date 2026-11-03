@@ -127,7 +127,30 @@ pub struct Agent {
     pub steer: i16,
     pub action: u8,
     pub grounded: u8,
+    /// The stick this frame (`input` bits), who flies (`MODE_*`), the player's speed setting (0..=64).
+    pub input: u8,
+    pub mode: u8,
+    pub throttle: u8,
+    pub spare: u8,
 }
+
+/// The stick (active high; the main loop reads joystick 2 and button 2 into `Agent::input`).
+pub mod input {
+    pub const UP: u8 = 1;
+    pub const DOWN: u8 = 2;
+    pub const LEFT: u8 = 4;
+    pub const RIGHT: u8 = 8;
+    pub const FIRE: u8 = 16;
+    pub const FIRE2: u8 = 32;
+}
+/// Who flies: the attract-mode autopilot, or the player (from the first press of fire: the main loop
+/// switches `Agent::mode` as it reads the stick).
+pub const MODE_AUTO: u8 = 0;
+pub const MODE_PLAYER: u8 = 1;
+/// The player's stick: full throttle (64 ticks from a hover), the bank of a turn, the flare when slowing.
+pub const THROTTLE_MAX: u8 = 64;
+const PLAYER_BANK: i16 = 25 * DEG;
+const FLARE: i16 = 768;
 
 impl Default for Agent {
     fn default() -> Self {
@@ -180,7 +203,7 @@ fn cell<R: Reu + ?Sized>(reu: &mut R, u: i16, v: i16) -> u8 {
 }
 
 impl Agent {
-    pub const BYTES: usize = 36;
+    pub const BYTES: usize = 40;
 
     /// On the home pad, facing the island's centre, engine off.
     pub const fn new() -> Self {
@@ -200,6 +223,10 @@ impl Agent {
             steer: 0,
             action: action::IDLE,
             grounded: 1,
+            input: 0,
+            mode: MODE_AUTO,
+            throttle: 0,
+            spare: 0,
         }
     }
 
@@ -299,6 +326,24 @@ impl Agent {
     fn think<R: Reu + ?Sized>(&mut self, reu: &mut R) {
         let mut f = [0u8; feature::BLOCK];
         self.features(reu, &mut f);
+        if self.mode == MODE_PLAYER {
+            // The player steers and sets the speed; the helicopter keeps its height: over what is ahead,
+            // down to cruise, onto the ground when hovering with the stick held back, off it with the
+            // stick forward once the rotor is up to speed.
+            use feature::*;
+            let blocked = f[HAZ_NEAR] >= 128 || f[HAZ_FAR] >= 128;
+            let hover = self.throttle == 0 && self.vf < 256;
+            self.action = if self.grounded != 0 {
+                if self.t >= LIFT && self.input & input::UP != 0 { action::LIFT } else { action::IDLE }
+            } else if blocked || f[ALT] < 126 && !(hover && self.input & input::DOWN != 0) {
+                action::CLIMB
+            } else if f[ALT] >= 131 || hover && self.input & input::DOWN != 0 {
+                action::DESCEND
+            } else {
+                action::FORWARD
+            };
+            return;
+        }
         let mut a = brain::walk(reu, AI_TREES, brain::PILOT, &f);
         if a == action::NEXT_WP {
             self.next_waypoint(reu);
@@ -322,15 +367,31 @@ impl Agent {
         // The controls' targets.
         // (Tables of 16 and `& 15`: no bounds checks in the overlay.)
         let k = self.action as usize & 15;
-        let bank = match self.action {
-            action::TURN_L => -self.steer.abs().max(TURN_BANK_MIN),
-            action::TURN_R => self.steer.abs().max(TURN_BANK_MIN),
-            action::FORWARD => self.steer,
-            _ => TARGET_BANK[k],
+        let (bank, pitch) = if self.mode == MODE_PLAYER {
+            // The stick: the bank of a turn; the speed setting up and down, the nose down to hold it, up
+            // to slow (a flare). On the ground, still.
+            let i = self.input;
+            if i & input::UP != 0 && self.throttle < THROTTLE_MAX {
+                self.throttle += 1;
+            }
+            if i & input::DOWN != 0 && self.throttle > 0 {
+                self.throttle -= 1;
+            }
+            let bank = if self.grounded != 0 { 0 } else if i & input::LEFT != 0 { -PLAYER_BANK } else if i & input::RIGHT != 0 { PLAYER_BANK } else { 0 };
+            let want = -((self.throttle as i16) << 5);
+            (bank, if self.grounded != 0 { 0 } else if self.vf > (-want << 2) + 512 { FLARE } else { want })
+        } else {
+            let bank = match self.action {
+                action::TURN_L => -self.steer.abs().max(TURN_BANK_MIN),
+                action::TURN_R => self.steer.abs().max(TURN_BANK_MIN),
+                action::FORWARD => self.steer,
+                _ => TARGET_BANK[k],
+            };
+            (bank, TARGET_PITCH[k])
         };
         // The attitude follows, lagged and rate-limited; the bank turns, the pitch drives the speed.
         follow(&mut self.roll, bank, ROLL_RATE);
-        follow(&mut self.pitch, TARGET_PITCH[k], PITCH_RATE);
+        follow(&mut self.pitch, pitch, PITCH_RATE);
         ease(&mut self.climb, TARGET_CLIMB[k], EASE_CLIMB);
         self.yaw = self.yaw.wrapping_add((self.roll >> TURN_SHIFT) as u16);
         // Thrust along the tilt against drag: vf settles at −4 × pitch (32-tick time constant).
@@ -342,6 +403,11 @@ impl Agent {
         if self.h < EYE {
             self.h = EYE;
             self.climb = self.climb.max(0);
+            if self.mode == MODE_PLAYER && self.action == action::DESCEND {
+                // Settled onto the ground.
+                self.grounded = 1;
+                self.vf = 0;
+            }
         }
         if self.h >= LIFTED {
             self.grounded = 0;
@@ -385,6 +451,10 @@ impl Agent {
             steer: w(8) as i16,
             action: b[34],
             grounded: b[35],
+            input: b[36],
+            mode: b[37],
+            throttle: b[38],
+            spare: b[39],
         }
     }
 
@@ -402,6 +472,10 @@ impl Agent {
         }
         b[34] = self.action;
         b[35] = self.grounded;
+        b[36] = self.input;
+        b[37] = self.mode;
+        b[38] = self.throttle;
+        b[39] = self.spare;
         b
     }
 }

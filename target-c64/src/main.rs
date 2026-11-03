@@ -9,7 +9,8 @@
 //! `../mode7/target-c64/src/main.rs`.
 //!
 //! Needs the matching `chopper.reu` at REU address 0; until it appears the border flashes, so it may be
-//! uploaded after starting. Fire on joystick 2 (or `STATUS+MODE`) toggles full / line-doubled.
+//! uploaded after starting. Fire on joystick 2 takes over from the autopilot (`STATUS+MODE` toggles
+//! full / line-doubled).
 //! Performance is in the status block at `$CA80` (`layout::status`).
 
 #![no_std]
@@ -305,6 +306,9 @@ fn boot(c: &mut C64) -> u16 {
     }
     // The HUD: hires sprites in light green in front of the view, multiplexed by asm/hud.S from an
     // empty table until the first frame's is ready.
+    // Joystick 2's second button on POT X: CIA 1 port A bits 7/6 select the paddle pair (%10: port 2).
+    poke(0xDC02, 0xC0);
+    poke(0xDC00, 0x80);
     poke(0xD015, 0);
     poke(0xD017, 0);
     poke(0xD01B, 0);
@@ -363,7 +367,6 @@ pub extern "C" fn main() -> i16 {
 
     let mut frames = 0u16;
     let (mut window, mut in_window) = (frames_elapsed(), 0u8);
-    let mut fire_was = false;
     let args = unsafe { &mut *(RAYS as *mut SpanArgs) };
     loop {
         let now = frames_elapsed();
@@ -373,6 +376,13 @@ pub extern "C" fn main() -> i16 {
             unsafe { write_volatile(CLOCK as *mut u32, clock) };
         }
         seen = now;
+        // The stick (joystick 2, button 2 on POT X), into the agent before its frame (the snapshot holds it).
+        let joy = !peek(0xDC00) & 0x1F;
+        agent.input = joy | if peek(0xD419) < 0x80 { chopper::agent::input::FIRE2 } else { 0 };
+        if joy & chopper::agent::input::FIRE != 0 {
+            // The player takes over from the autopilot.
+            agent.mode = chopper::agent::MODE_PLAYER;
+        }
         // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry, the bands.
         stopwatch_start();
         // The agent catches up with the clock, from its overlay over the (spent) triangles at WORK.
@@ -458,12 +468,6 @@ pub extern "C" fn main() -> i16 {
             in_window = 0;
         }
 
-        // Fire on joystick 2 toggles full / line-doubled.
-        let fire = peek(0xDC00) & 0x10 == 0;
-        if fire && !fire_was {
-            poke(STATUS + status::MODE, doubled ^ 1);
-        }
-        fire_was = fire;
     }
 }
 
