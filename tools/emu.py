@@ -185,6 +185,8 @@ class C64(Cpu):
             if address == 0xD018:
                 self.check_vic()
             return
+        if address >= 0xFFFA and self.mem[STATUS] == 0xC1:
+            raise KernelError(f'write ${value:02X} to the vector at ${address:04X} from PC ${self.pc:04X}')
         self.mem[address] = value
 
     def poll_irq(self):
@@ -241,6 +243,8 @@ class C64(Cpu):
                 else:
                     raise KernelError(f'DMA into I/O ${c64:04X}')
             else:
+                if c64 >= 0xFFFA and self.mem[STATUS] == 0xC1:
+                    raise KernelError(f'DMA into the vector at ${c64:04X} (REU ${addr:06X}), PC ${self.pc:04X}')
                 self.mem[c64] = v
             if not r[0xA] & 0x80:
                 c64 = (c64 + 1) & 0xFFFF

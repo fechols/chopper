@@ -90,8 +90,12 @@ class Device:
                 sock.sendall(struct.pack('<HH', 0xff1f, len(secret)) + secret)
                 if receive(sock, 1) != b'\x01':
                     raise RuntimeError('DMA authentication failed')
-            # The chunk holding the image header (its magic, `format::HEADER`) goes last: a booting PRG
-            # must never see a header before the rest has arrived (it would load a scene not yet there).
+            # The old header is wiped first, then the chunk holding the new one (its magic, `format::HEADER`)
+            # goes last: a booting PRG must never see a valid header before the rest has arrived (it would
+            # load a scene not yet there, or, with an image left from the same build, start at once and
+            # run its REU DMAs while these writes land: found on the C64U, a corrupted IRQ vector).
+            wipe = (address + HEADER).to_bytes(3, 'little') + bytes(64)
+            sock.sendall(struct.pack('<HH', 0xff07, len(wipe)) + wipe)
             offsets = list(range(0, len(data), 32768))
             last = [o for o in offsets if o <= HEADER < o + 32768] or offsets[:1]
             for offset in [o for o in offsets if o not in last] + last:
