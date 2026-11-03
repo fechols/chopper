@@ -195,6 +195,13 @@ pub fn bake(w: &World) -> Vec<u8> {
         r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&u16_.to_le_bytes());
         r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&v16.to_le_bytes());
         r[rec::H as usize] = un.h;
+        // Heading for its leg's waypoint (already turned to it).
+        if un.route != route::NONE {
+            let pts = &rs[un.route as usize].0;
+            let (wu, wv) = pts[(leg as usize).min(pts.len() - 1)];
+            let yaw = ws::heading((wu - u) as i16, (wv - v) as i16);
+            (r[rec::YAW as usize], r[rec::COURSE as usize]) = (yaw, yaw);
+        }
         r[rec::SPEED as usize] = stats::SPEED[un.kind as usize];
         r[rec::ROUTE as usize] = un.route;
         r[rec::LEG as usize] = leg;

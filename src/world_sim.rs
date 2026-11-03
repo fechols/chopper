@@ -58,6 +58,9 @@ pub mod rec {
     pub const TARGET: u16 = 14;
     /// The tick of its last step (u16, wrapping); dead, about when it fell (a wreck's age).
     pub const LAST: u16 = 16;
+    /// The heading it is turning to (`YAW` is its heading at `LAST`; it turns at its kind's rate,
+    /// `stats::TURN`, on an arc).
+    pub const COURSE: u16 = 18;
     /// Damage dealt and taken since its last decision (for learning).
     pub const DEALT: u16 = 19;
     pub const TAKEN: u16 = 20;
@@ -196,32 +199,70 @@ pub mod stats {
     pub const TARGETS: [u8; COUNT as usize] = [0, 1, 1, 2, 2, 0, 7, 6, 7, 0, 0, 2, 7, 0, 0];
     /// Each kind's class: ground 1, air 2, sea 4.
     pub const CLASS: [u8; COUNT as usize] = [1, 1, 1, 1, 1, 1, 4, 4, 2, 1, 1, 4, 4, 0, 0];
+    /// How fast each kind turns: 2^TURN eighths of 1/256 of a turn a tick. With its speed, a turning
+    /// circle of about speed · 20 / 2^TURN texels in radius: the carrier's about 20 (half its length's
+    /// 1.5 again: a U-turn in 17 s), a destroyer's 10, a boat's 5, a vehicle's 1-3, a gunship's 4.
+    pub const TURN: [u8; COUNT as usize] = [4, 4, 4, 4, 0, 0, 3, 3, 5, 0, 0, 0, 2, 0, 0];
     /// Kinds that fly.
     pub const AIR: u8 = crate::actors::kind::GUNSHIP;
 }
 
-/// Where a unit is now (1/16 texel): moved on from its last step along its heading (the dead and the
-/// holding stay put). `r`: its record's first 18 bytes. (On the C64 in the deck's overlay, with the
-/// AI's and the war's move phase; the player's fight has its own copy, `live_inline`.)
+/// Where a unit is now (1/16 texel) and its heading (1/65536 of a turn): moved on from its last step,
+/// turning from `YAW` toward `COURSE` at its kind's rate round its turning circle, then on along the
+/// course once round; the dead, the holding and those with no route stay put. `r`: its record's head. (On the C64 in the deck's overlay, with the
+/// AI's and the war's move phase; the combat pass has its own copy in its library, `combat::live`.)
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
-pub fn live(r: &[u8], now: u16) -> (u16, u16) {
+pub fn live(r: &[u8; CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
     live_inline(r, now)
 }
 
 /// [`live`], inlined where it is called.
 #[inline(always)]
-pub fn live_inline(r: &[u8], now: u16) -> (u16, u16) {
+pub fn live_inline(r: &[u8; CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
+    use crate::camera::{cos, sin};
+    use crate::fixed::mul14;
     let (mut u, mut v) = (u16::from_le_bytes([r[4], r[5]]), u16::from_le_bytes([r[6], r[7]]));
-    if r[rec::FLAGS as usize] & ALIVE != 0 && r[rec::ACTION as usize] != act::HOLD {
+    let (yaw0, course) = (r[rec::YAW as usize], r[rec::COURSE as usize]);
+    let a0 = (yaw0 as u16) << 8;
+    let mut yaw = a0;
+    // (A unit with no route stays put, as `move_unit` keeps it, fighting or not.)
+    if r[rec::FLAGS as usize] & ALIVE != 0 && r[rec::ACTION as usize] != act::HOLD && r[rec::ROUTE as usize] != 0xFF {
+        let dt = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(CATCH_UP);
+        let s = *stats::TURN.get(r[rec::KIND as usize] as usize).unwrap_or(&0);
+        let left = course.wrapping_sub(yaw0) as i8;
+        let need = left.unsigned_abs() as u16;
+        // Round its turning circle to the heading reached, then straight on along the course for the
+        // rest (once round).
+        let straight = if (dt << s) >> 3 >= need {
+            yaw = (course as u16) << 8;
+            // (The turn's ticks rounded up: never more way made than its speed allows.)
+            dt - (((need << 3) + (1 << s) - 1) >> s)
+        } else {
+            // (Under `need` ≤ 128 units: 1/256 units fit.)
+            let fine = (dt << s) << 5;
+            yaw = if left < 0 { yaw.wrapping_sub(fine) } else { yaw.wrapping_add(fine) };
+            0
+        };
+        let speed = r[rec::SPEED as usize] as i16;
+        // The circle's radius (1/16 texel): speed over the turn rate, 2^s/8 · 2π/256 a tick.
+        let rad = ((speed as u16 * 326) >> s) as i16;
+        // Heading clockwise from north (+v), east +u: turning right, u gains R (cos a0 - cos a), v R (sin a
+        // - sin a0); turning left, the opposite.
+        let (s1, c1) = (sin(yaw) as i16, cos(yaw) as i16);
+        let (mut du, mut dv) = (mul14(rad, cos(a0) as i16) - mul14(rad, c1), mul14(rad, s1) - mul14(rad, sin(a0) as i16));
+        if left < 0 {
+            (du, dv) = (-du, -dv);
+        }
         // (At most `CATCH_UP` ticks: the products fit the 16 × 16 multiply.)
-        let d = (r[rec::SPEED as usize] as u16 * now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(CATCH_UP)) as i16;
-        let yaw = (r[rec::YAW as usize] as u16) << 8;
+        let d = speed * straight as i16;
+        du = du.wrapping_add(mul14(s1, d));
+        dv = dv.wrapping_add(mul14(c1, d));
         // (Kept on the map, as `move_unit` keeps it: the same sum.)
-        u = (u as i16).wrapping_add((crate::fixed::mul(crate::camera::sin(yaw) as i16, d) >> 14) as i16).clamp(0, EDGE) as u16;
-        v = (v as i16).wrapping_add((crate::fixed::mul(crate::camera::cos(yaw) as i16, d) >> 14) as i16).clamp(0, EDGE) as u16;
+        u = (u as i16).wrapping_add(du).clamp(0, EDGE) as u16;
+        v = (v as i16).wrapping_add(dv).clamp(0, EDGE) as u16;
     }
-    (u, v)
+    (u, v, yaw)
 }
 
 /// The carrier's deck now: its centre (1/16 texel) and heading.
@@ -245,7 +286,7 @@ pub fn carrier<R: crate::brain::Reu + ?Sized>(reu: &mut R, now: u16) -> Option<D
 }
 
 /// The bytes of the carrier's record [`deck_of`] reads.
-pub const CARRIER_RECORD: usize = 18;
+pub const CARRIER_RECORD: usize = 19;
 
 /// The carrier's record (its first [`CARRIER_RECORD`] bytes): the header's id, then the record.
 #[inline(never)]
@@ -261,12 +302,12 @@ pub fn carrier_record<R: crate::brain::Reu + ?Sized>(reu: &mut R) -> [u8; CARRIE
 /// The deck at tick `now` from the carrier's record's first 18 bytes, if it is the carrier and afloat.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
-pub fn deck_of(r: &[u8], now: u16) -> Option<Deck> {
+pub fn deck_of(r: &[u8; CARRIER_RECORD], now: u16) -> Option<Deck> {
     if r[rec::FLAGS as usize] & ALIVE == 0 || r[rec::KIND as usize] != crate::actors::kind::CARRIER {
         return None;
     }
-    let (u, v) = live(r, now);
-    Some(Deck { u, v, yaw: (r[rec::YAW as usize] as u16) << 8 })
+    let (u, v, yaw) = live(r, now);
+    Some(Deck { u, v, yaw })
 }
 
 /// A record's byte or word in the page.
@@ -664,7 +705,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         if route_no == CARRIER_AIR {
             // Off the carrier's deck, wherever it is (when afloat).
             let id = reu_get16(hw, HEADER + head::CARRIER as u32);
-            let mut c = [0u8; 18];
+            let mut c = [0u8; CARRIER_RECORD];
             hw::read_into(hw, UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut c);
             if let Some(d) = deck_of(&c, now) {
                 (u, v) = (d.u, d.v);
@@ -685,6 +726,12 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         last = now;
     }
     let dt = now.wrapping_sub(last).min(CATCH_UP);
+    // Its record's head as `live` reads it (since its last step, or since now if it just respawned).
+    let mut head = [0u8; CARRIER_RECORD];
+    for (i, b) in head.iter_mut().enumerate() {
+        *b = hw.peek(r + i as u16);
+    }
+    head[rec::LAST as usize..rec::LAST as usize + 2].copy_from_slice(&last.to_le_bytes());
     wr(hw, r + rec::LAST, now);
     // The carrier's damage control: a hit point back about every fourth lap.
     if kind == crate::actors::kind::CARRIER as usize && now & 0x180 == 0 {
@@ -695,15 +742,13 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     }
     let speed = stats::SPEED[kind];
     if speed > 0 && route_no != 0xFF {
-        // On along the heading it has been seen on since its last move (`live` projects it so, the same
-        // sum), then turned toward its waypoint: what is drawn never jumps when a unit turns.
-        let old = hw.peek(r + rec::YAW);
+        // On as it has been seen since its last move, turning on its arc (`live`, the same sum), then a
+        // new course for its waypoint: what is drawn never jumps when a unit turns.
+        let old = head[rec::COURSE as usize];
         let step = if hw.peek(r + rec::ACTION) == act::HOLD { 0 } else { speed as u16 * dt };
-        let a = (old as u16) << 8;
-        let (u0, v0) = (rd(hw, r + rec::U), rd(hw, r + rec::V));
         // (Kept on the map: a step past a waypoint by its edge stops there.)
-        let u = (u0 as i16).wrapping_add((crate::hud::mul16(crate::camera::sin(a) as i16, step as i16) >> 14) as i16).clamp(0, EDGE) as u16;
-        let v = (v0 as i16).wrapping_add((crate::hud::mul16(crate::camera::cos(a) as i16, step as i16) >> 14) as i16).clamp(0, EDGE) as u16;
+        let (u, v, heading_now) = live(&head, now);
+        hw.poke(r + rec::YAW, (heading_now >> 8) as u8);
         wr(hw, r + rec::U, u);
         wr(hw, r + rec::V, v);
         let (start, len, mode) = route(hw, route_no);
@@ -719,7 +764,9 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         let len = len.max(1);
         let span = if mode == LOOP { len } else { (2 * len).saturating_sub(2).max(1) };
         let mut yaw = 0;
-        // Its waypoint; reached (or just passed: behind it now), the next one.
+        // Its waypoint; reached (within its turning circle's width: it turns for the next one there), or
+        // just passed (behind it now), the next one.
+        let reach = ((speed as u16 * 40) >> stats::TURN[kind]) + 1;
         for pass in 0..2 {
             let k = if mode == LOOP || leg < len { leg % len } else { (2 * len - 2).wrapping_sub(leg) % len };
             let (tu, tv) = waypoint(hw, start + k);
@@ -728,7 +775,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             let dist = ax.max(ay) + (ax.min(ay) >> 1);
             yaw = heading(dx, dy);
             let passed = dist <= (step >> 4) + 1 && (yaw.wrapping_sub(old) as i8).unsigned_abs() > 64;
-            if pass == 1 || !(dist <= 1 || passed) {
+            if pass == 1 || !(dist <= reach || passed) {
                 break;
             }
             leg = leg.wrapping_add(1);
@@ -737,7 +784,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
             }
         }
         hw.poke(r + rec::LEG, leg);
-        hw.poke(r + rec::YAW, yaw);
+        hw.poke(r + rec::COURSE, yaw);
         let sector = sector_of(hw, r);
         let old = hw.peek(r + rec::SECTOR);
         if sector != old {

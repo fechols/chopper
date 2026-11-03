@@ -46,6 +46,12 @@ pub fn mul(a: i16, b: i16) -> i32 {
     }
 }
 
+/// `a * b >> 14`: a Q14 product in 16 bits (resident on the C64: one copy for the overlays' callers).
+#[inline(never)]
+pub fn mul14(a: i16, b: i16) -> i16 {
+    (mul(a, b) >> 14) as i16
+}
+
 /// `a * b`, exactly; `a` must not be `i16::MIN`.
 #[inline(never)]
 pub fn mulsu(a: i16, b: u16) -> i32 {

@@ -1235,6 +1235,44 @@ fn the_carrier_does_not_see_saw() {
     assert!(reversals <= 2, "the carrier turned back {reversals} times in 3 minutes");
 }
 
+/// Every moving unit turns on an arc at its kind's rate (`stats::TURN`), never snapping round: on long
+/// laps of the war (15 ticks a frame), each tick its heading turns by at most its rate and it moves by at
+/// most its speed. The carrier, on its station, turns at its waypoints too.
+#[test]
+fn units_turn_on_arcs() {
+    use crate::world_sim::{self as ws, ALIVE, COUNT, RECORD, rec, stats};
+    let mut m = Machine::new(package());
+    let head = |m: &Machine, id: u16| -> [u8; ws::CARRIER_RECORD] { m.reu[ws::UNITS as usize + id as usize * RECORD as usize..][..ws::CARRIER_RECORD].try_into().unwrap() };
+    let mut last: Vec<Option<(u16, u16, u16)>> = vec![None; COUNT as usize];
+    let (mut turned, mut t) = (0u32, 0u32);
+    while t < 10 * 3600 {
+        ws::step_page(&mut m, t as u16, -4000, -4000);
+        for k in 1..=15 {
+            for id in 0..COUNT {
+                let r = head(&m, id);
+                let kind = r[rec::KIND as usize] as usize % stats::TURN.len();
+                if r[rec::FLAGS as usize] & ALIVE == 0 || r[rec::ACTION as usize] == ws::act::HOLD {
+                    last[id as usize] = None;
+                    continue;
+                }
+                let now = ws::live(&r, (t + k) as u16);
+                if let Some(was) = last[id as usize] {
+                    // (A unit's own step may land a fraction of a unit back: 1/256 of a turn's slack.)
+                    let rate = ((1u32 << stats::TURN[kind]) << 5) + 256;
+                    let dy = (now.2.wrapping_sub(was.2) as i16).unsigned_abs() as u32;
+                    assert!(dy <= rate, "kind {kind} (unit {id}) turned {dy}/65536 in a tick at {}", t + k);
+                    let step = (now.0 as i32 - was.0 as i32).abs().max((now.1 as i32 - was.1 as i32).abs());
+                    assert!(step <= stats::SPEED[kind] as i32 + 1, "kind {kind} (unit {id}) jumped {step}/16 texel at {}", t + k);
+                    turned += (dy > 0) as u32;
+                }
+                last[id as usize] = Some(now);
+            }
+        }
+        t += 15;
+    }
+    assert!(turned > 1000, "hardly any turning: {turned}");
+}
+
 /// The carrier: an agent placed on its deck rides it (keeping its place on the deck while the ship
 /// steams on with the war), then the autopilot lifts off and climbs away from it.
 #[test]
@@ -1784,11 +1822,11 @@ fn near_churn(seconds: u32) -> (u32, u32) {
         a.fly(&mut &m.reu[..], t);
         let eye = Eye::new(&a.camera().0);
         let on_screen = |m: &Machine, id: u16| {
-            let r = &m.reu[ws::UNITS as usize + id as usize * ws::RECORD as usize..][..18];
+            let r: &[u8; ws::CARRIER_RECORD] = m.reu[ws::UNITS as usize + id as usize * ws::RECORD as usize..][..ws::CARRIER_RECORD].try_into().unwrap();
             if r[rec::FLAGS as usize] & ALIVE == 0 {
                 return false;
             }
-            let (u, v) = ws::live(r, t as u16);
+            let (u, v, _) = ws::live(r, t as u16);
             let c = to_camera(&eye, [(u >> 2) as i16, (r[rec::H as usize] as i16) << 2, (v >> 2) as i16]);
             c[2] > 8 && c[2] < 200 * 4 && c[0].abs() < c[2]
         };

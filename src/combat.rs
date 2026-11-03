@@ -262,6 +262,13 @@ pub fn launch<H: Hw + ?Sized>(hw: &mut H, kind: u8, ttl: u8, a: &Agent, target: 
 /// The frame's fight, after the war's page and before the HUD: the targets for the HUD, the gun and
 /// missiles, the projectiles moved, the player down or not. Returns whether the player is down (the main
 /// loop then restarts the agent at home).
+/// [`ws::live`] for the combat pass, in its library (the deck's overlay is not in then).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
+fn live(r: &[u8; ws::CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
+    ws::live_inline(r, now)
+}
+
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combat"))]
 pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) -> bool {
@@ -277,14 +284,15 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     let mut decks = 0u8;
     let mut in_cone = ws::NOBODY;
     let mut cone_z = i16::MAX;
-    let mut r = [0u8; 18];
+    let mut r = [0u8; ws::CARRIER_RECORD];
     for k in 0..n as u16 {
         let id = rd(hw, ws::NEAR + 1 + 2 * k);
         hw::read_into(hw, ws::UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut r);
         let flags = r[rec::FLAGS as usize];
         let alive = flags & ALIVE != 0;
         // Where it is now: moved on from its last step (the dead stay where they fell).
-        let (u, v) = ws::live_inline(&r, now);
+        let (u, v, yaw) = live(&r, now);
+        let yaw = (yaw >> 8) as u8;
         // Drawn: (mesh, yaw, u, v, h) into the list.
         let o = OBJLIST + 1 + 8 * k;
         let kind = r[rec::KIND as usize];
@@ -293,13 +301,13 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
             // Its flight deck with it, after the near units.
             let dk = OBJLIST + 1 + 8 * n as u16;
             hw.poke(dk, crate::actors::DECK);
-            hw.poke(dk + 1, r[rec::YAW as usize]);
+            hw.poke(dk + 1, yaw);
             wr(hw, dk + 2, u);
             wr(hw, dk + 4, v);
             wr(hw, dk + 6, (r[rec::H as usize] as u16) << 4);
             decks = 1;
         }
-        hw.poke(o + 1, r[rec::YAW as usize]);
+        hw.poke(o + 1, yaw);
         wr(hw, o + 2, u);
         wr(hw, o + 4, v);
         wr(hw, o + 6, (r[rec::H as usize] as u16) << 4);

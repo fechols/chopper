@@ -509,9 +509,10 @@ impl Agent {
     }
 
     /// The floor: the carrier's deck when over it (it matters when low, or riding it), else the ground.
-    /// Settling onto it: the deck (riding it from now), the sea (ditched) or the ground.
+    /// Settling onto it: the deck (riding it from now), the sea (ditched) or the ground. (In the AI's
+    /// overlay: the deck's, in at the same time, is also the war's move phase's.)
     #[inline(never)]
-    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     fn settle<R: Reu + ?Sized>(&mut self, reu: &mut R, rec: &[u8; CARRIER_RECORD]) {
         let deck = if self.deck == ON_DECK || self.h < DECK_EYE + DECK_TOP + 512 { deck_of(rec, self.t as u16) } else { None };
         let mut over = None;
