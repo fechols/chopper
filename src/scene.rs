@@ -345,7 +345,21 @@ pub fn vehicles() -> Vec<Mesh> {
     for k in 0..kind::COUNT {
         out.push(wreck(k));
     }
+    out.push(deck());
     out
+}
+
+/// The carrier's flight deck (`actors::DECK`, drawn with a live carrier): seven strips across, light and
+/// dark in turn, each 2 texels long, so that from on the deck the strips ahead stay in front of the near
+/// plane (`geom::NEAR`: faces crossing it are left out).
+fn deck() -> Mesh {
+    let mut m = Mesh::default();
+    for k in 0..7 {
+        let (y0, y1) = (-7.0 + 2.0 * k as f32, -5.0 + 2.0 * k as f32);
+        let mat = if k % 2 == 0 { Material::Marker } else { Material::Wreck };
+        m.quad([[-2.0, y0, 1.2], [2.0, y0, 1.2], [2.0, y1, 1.2], [-2.0, y1, 1.2]], [0.0, 0.0, 1.0], mat);
+    }
+    m
 }
 
 /// A kind's wreck: its model charred, slumped and listing, what stood on top knocked aside; ships settle
@@ -425,8 +439,8 @@ fn vehicle(k: u8, mat: Material) -> Mesh {
             m.quad([[-1.2, -1.2, 1.0], [1.2, -1.2, 1.0], [1.2, 1.2, 1.0], [-1.2, 1.2, 1.0]], [0.0, 0.0, 1.0], Material::Bright);
         }
         kind::CARRIER => {
-            // A flight deck (a long flat box, its top a pad) and the island to starboard.
-            m.cuboid([-2.0, -7.0, 0.0], [2.0, 7.0, 1.2], mat, Some(Material::Marker));
+            // The hull (its flight deck is `deck()`, drawn with it) and the island to starboard.
+            m.cuboid([-2.0, -7.0, 0.0], [2.0, 7.0, 1.2], mat, None);
             m.add(&pyramid(0.6, 1.4, mat), [1.4, 1.0, 1.2]);
         }
         kind::DESTROYER => {

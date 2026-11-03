@@ -17,7 +17,9 @@
 use crate::brain::{self, Reu};
 use crate::camera::{Matrix14, QUARTER_TURN, sin};
 use crate::floor::FloorCam;
+use crate::fixed::mul;
 use crate::format::{AI_TREES, HAZARD, HAZARD_CELLS, HAZARD_SHIFT};
+use crate::world_sim::{DECK_HALF, DECK_TOP, Deck, carrier};
 
 /// On the pad until the rotor is at full power: the sound's 1:20 (`digital::ROTOR_LOOP_START`).
 pub const LIFT: u32 = 80 * 60;
@@ -131,8 +133,20 @@ pub struct Agent {
     pub input: u8,
     pub mode: u8,
     pub throttle: u8,
-    pub spare: u8,
+    /// On the carrier's deck (`ON_DECK`), to be placed on it (`PLACE_CARRIER`), or ditched in the sea
+    /// (`DITCHED`, for `combat`); 0 otherwise.
+    pub deck: u8,
+    /// On the deck: where (1/16 texel across and along it) and the heading, relative to the carrier's.
+    pub du: i16,
+    pub dv: i16,
+    pub dyaw: u8,
+    pub pad: [u8; 3],
 }
+
+/// `Agent::deck`.
+pub const ON_DECK: u8 = 1;
+pub const DITCHED: u8 = 2;
+pub const PLACE_CARRIER: u8 = 3;
 
 /// The stick (active high; the main loop reads joystick 2 and button 2 into `Agent::input`).
 pub mod input {
@@ -202,8 +216,18 @@ fn cell<R: Reu + ?Sized>(reu: &mut R, u: i16, v: i16) -> u8 {
     b[0]
 }
 
+/// An offset (1/16 texel) turned into a frame headed `yaw`: world to (across, along); `back`, the other
+/// way. Q7 turns, 16-bit products.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+fn turn(x: i16, y: i16, yaw: u16, back: bool) -> (i16, i16) {
+    let (s, c) = (sin7(yaw), sin7(yaw.wrapping_add(QUARTER_TURN)));
+    let s = if back { -s } else { s };
+    (((mul(x, c) - mul(y, s)) >> 7) as i16, ((mul(x, s) + mul(y, c)) >> 7) as i16)
+}
+
 impl Agent {
-    pub const BYTES: usize = 40;
+    pub const BYTES: usize = 48;
 
     /// On the home pad, facing the island's centre, engine off.
     pub const fn new() -> Self {
@@ -226,8 +250,47 @@ impl Agent {
             input: 0,
             mode: MODE_AUTO,
             throttle: 0,
-            spare: 0,
+            deck: 0,
+            du: 0,
+            dv: 0,
+            dyaw: 0,
+            pad: [0; 3],
         }
+    }
+
+    /// After going down at tick `t`: back at home, or on the carrier (in turn, every 4096 ticks; placed
+    /// there at the next `fly`, from the AI overlay).
+    pub const fn reset(t: u32) -> Self {
+        let mut a = Self::new();
+        a.t = t;
+        if (t >> 12) & 1 == 0 {
+            a.deck = PLACE_CARRIER;
+        }
+        a
+    }
+
+    /// Put a `PLACE_CARRIER` agent on the carrier's deck: aft, facing the bow, still (or at home if the
+    /// carrier is gone).
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+    fn place<R: Reu + ?Sized>(&mut self, reu: &mut R) {
+        self.deck = 0;
+        if let Some(d) = carrier(reu, self.t as u16) {
+            (self.deck, self.du, self.dv, self.dyaw) = (ON_DECK, 0, -(4 << 4), 0);
+            self.ride(&d);
+        }
+    }
+
+    /// On the deck: where the carrier has carried it.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+    fn ride(&mut self, d: &Deck) {
+        let (du, dv) = turn(self.du, self.dv, d.yaw, true);
+        self.u = (d.u.wrapping_add(du as u16) as i32) << 4;
+        self.v = (d.v.wrapping_add(dv as u16) as i32) << 4;
+        self.yaw = d.yaw.wrapping_add((self.dyaw as u16) << 8);
+        self.vf = 0;
+        self.h = self.h.max(EYE + DECK_TOP);
     }
 
     /// Airspeed, 8.8 texels a tick.
@@ -400,25 +463,60 @@ impl Agent {
         self.u += (sin7(self.yaw) * speed >> 7) as i32;
         self.v += (sin7(self.yaw.wrapping_add(QUARTER_TURN)) * speed >> 7) as i32;
         self.h += self.climb as i32;
-        if self.h < EYE {
-            self.h = EYE;
+        self.settle(reu);
+        self.t += 1;
+    }
+
+    /// The floor: the carrier's deck when over it (it matters when low, or riding it), else the ground.
+    /// Settling onto it: the deck (riding it from now), the sea (ditched) or the ground.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+    fn settle<R: Reu + ?Sized>(&mut self, reu: &mut R) {
+        let deck = if self.deck == ON_DECK || self.h < EYE + DECK_TOP + 512 { carrier(reu, self.t as u16) } else { None };
+        let mut over = None;
+        if let Some(d) = &deck {
+            let (du, dv) = (((self.u >> 4) as u16).wrapping_sub(d.u) as i16, ((self.v >> 4) as u16).wrapping_sub(d.v) as i16);
+            if du.abs() < 256 && dv.abs() < 256 {
+                let (x, y) = turn(du, dv, d.yaw, false);
+                if x.abs() <= DECK_HALF.0 && y.abs() <= DECK_HALF.1 {
+                    over = Some((x, y, d.yaw));
+                }
+            }
+        }
+        let floor = EYE + if over.is_some() { DECK_TOP } else { 0 };
+        if self.h < floor {
+            self.h = floor;
             self.climb = self.climb.max(0);
-            if self.mode == MODE_PLAYER && self.action == action::DESCEND {
-                // Settled onto the ground.
+            if self.mode == MODE_PLAYER && self.action == action::DESCEND && self.grounded == 0 {
                 self.grounded = 1;
                 self.vf = 0;
+                if let Some((x, y, yaw)) = over {
+                    (self.deck, self.du, self.dv, self.dyaw) = (ON_DECK, x, y, (self.yaw.wrapping_sub(yaw) >> 8) as u8);
+                } else if cell(reu, (self.u >> 8) as i16, (self.v >> 8) as i16) & 0x80 != 0 {
+                    self.deck = DITCHED;
+                }
             }
         }
         if self.h >= LIFTED {
             self.grounded = 0;
         }
-        self.t += 1;
+        if self.deck == ON_DECK {
+            match deck {
+                Some(d) if self.grounded != 0 => self.ride(&d),
+                // Lifted off; or the carrier went down under it (into the sea).
+                Some(_) => self.deck = 0,
+                None => self.deck = if self.grounded != 0 { DITCHED } else { 0 },
+            }
+        }
     }
 
     /// Catch up with `clock` (the C64's entry to the AI overlay).
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     pub fn fly<R: Reu + ?Sized>(&mut self, reu: &mut R, clock: u32) {
+        if self.deck == PLACE_CARRIER {
+            self.place(reu);
+        }
         while self.t < clock {
             self.step(reu);
         }
@@ -454,7 +552,11 @@ impl Agent {
             input: b[36],
             mode: b[37],
             throttle: b[38],
-            spare: b[39],
+            deck: b[39],
+            du: w(12) as i16,
+            dv: w(13) as i16,
+            dyaw: b[44],
+            pad: [b[45], b[46], b[47]],
         }
     }
 
@@ -475,7 +577,11 @@ impl Agent {
         b[36] = self.input;
         b[37] = self.mode;
         b[38] = self.throttle;
-        b[39] = self.spare;
+        b[39] = self.deck;
+        b[40..42].copy_from_slice(&self.du.to_le_bytes());
+        b[42..44].copy_from_slice(&self.dv.to_le_bytes());
+        b[44] = self.dyaw;
+        b[45..48].copy_from_slice(&self.pad);
         b
     }
 }

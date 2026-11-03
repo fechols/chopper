@@ -111,8 +111,10 @@ pub mod head {
     pub const KNOBS: u16 = 21;
     /// Per pad: the director's passes in a row the other side has held it (`HOLD_PASSES` takes it).
     pub const PRESSURE: u16 = 26;
+    /// The carrier's unit id (u16; its deck is a landing place, `carrier`).
+    pub const CARRIER: u16 = 32;
 }
-pub const HEADER_LEN: u16 = 32;
+pub const HEADER_LEN: u16 = 34;
 /// The pads (`world::PADS`; `war` checks the count).
 pub const PADS: u16 = 5;
 const _: () = assert!(head::OWNER + PADS <= HEADER_LEN);
@@ -125,6 +127,8 @@ const _: () = assert!(head::OWNER + PADS <= HEADER_LEN);
 pub const FRONT_ROUTE: [u8; 2] = [2, 3];
 pub const PAD_SHIFT: u16 = 12;
 pub const CAPTURE: u8 = 2;
+/// The allies' air patrol: its gunships launch from the carrier (`war::route::ALLIED_AIR`).
+pub const CARRIER_AIR: u8 = 7;
 pub const HOLD_PASSES: u8 = 3;
 /// The allies' home pad (`world::PADS`).
 pub const HOME: usize = 0;
@@ -178,6 +182,57 @@ pub mod stats {
     pub const CLASS: [u8; COUNT as usize] = [1, 1, 1, 1, 1, 1, 4, 4, 2, 1, 1, 4, 4, 0, 0];
     /// Kinds that fly.
     pub const AIR: u8 = crate::actors::kind::GUNSHIP;
+}
+
+/// Where a unit is now (1/16 texel): moved on from its last step along its heading (the dead and the
+/// holding stay put). `r`: its record's first 18 bytes. (On the C64 in the deck's overlay, with the
+/// AI's and the war's move phase; the player's fight has its own copy, `live_inline`.)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+pub fn live(r: &[u8], now: u16) -> (u16, u16) {
+    live_inline(r, now)
+}
+
+/// [`live`], inlined where it is called.
+#[inline(always)]
+pub fn live_inline(r: &[u8], now: u16) -> (u16, u16) {
+    let (mut u, mut v) = (u16::from_le_bytes([r[4], r[5]]), u16::from_le_bytes([r[6], r[7]]));
+    if r[rec::FLAGS as usize] & ALIVE != 0 && r[rec::ACTION as usize] != act::HOLD {
+        // (At most 255 × 120: the products fit the 16 × 16 multiply.)
+        let d = (r[rec::SPEED as usize] as u16 * now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(120)) as i16;
+        let yaw = (r[rec::YAW as usize] as u16) << 8;
+        u = u.wrapping_add((crate::fixed::mul(crate::camera::sin(yaw) as i16, d) >> 14) as u16);
+        v = v.wrapping_add((crate::fixed::mul(crate::camera::cos(yaw) as i16, d) >> 14) as u16);
+    }
+    (u, v)
+}
+
+/// The carrier's deck now: its centre (1/16 texel) and heading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deck {
+    pub u: u16,
+    pub v: u16,
+    pub yaw: u16,
+}
+
+/// The deck's top above the sea (8.8 texels: the hull's 1.2, `scene::vehicle`), and the half-width and
+/// half-length one can land on (1/16 texel).
+pub const DECK_TOP: i32 = 307;
+pub const DECK_HALF: (i16, i16) = (27, 104);
+
+/// The carrier's deck at tick `now`, if it is afloat.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+pub fn carrier<R: crate::brain::Reu + ?Sized>(reu: &mut R, now: u16) -> Option<Deck> {
+    let mut id = [0u8; 2];
+    reu.read(HEADER + head::CARRIER as u32, &mut id);
+    let mut r = [0u8; 18];
+    reu.read(UNITS + u16::from_le_bytes(id) as u32 * RECORD as u32, &mut r);
+    if r[rec::FLAGS as usize] & ALIVE == 0 || r[rec::KIND as usize] != crate::actors::kind::CARRIER {
+        return None;
+    }
+    let (u, v) = live(&r, now);
+    Some(Deck { u, v, yaw: (r[rec::YAW as usize] as u16) << 8 })
 }
 
 /// A record's byte or word in the page.
@@ -552,7 +607,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         // side has reinforcements due.
         let fresh = now.wrapping_sub(last) < WRECK_TICKS;
         let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
-        near_list(hw, id, fresh && (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE);
+        near_list(hw, id, fresh && (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE, false);
         if fresh {
             return;
         }
@@ -567,8 +622,18 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
         let (start, len, _) = route(hw, route_no);
         let k = if route_no == FRONT_ROUTE[side as usize] { len.saturating_sub(2) } else { 0 };
         let (u, v) = waypoint(hw, start + k);
-        wr(hw, r + rec::U, (u as u16) << 4);
-        wr(hw, r + rec::V, (v as u16) << 4);
+        let (mut u, mut v) = ((u as u16) << 4, (v as u16) << 4);
+        if route_no == CARRIER_AIR {
+            // Off the carrier's deck, wherever it is (when afloat).
+            let id = reu_get16(hw, HEADER + head::CARRIER as u32);
+            let mut c = [0u8; 18];
+            hw::read_into(hw, UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut c);
+            if c[rec::FLAGS as usize] & ALIVE != 0 {
+                (u, v) = live(&c, now);
+            }
+        }
+        wr(hw, r + rec::U, u);
+        wr(hw, r + rec::V, v);
         hw.poke(r + rec::LEG, k);
         hw.poke(r + rec::HP, stats::HP[kind]);
         hw.poke(r + rec::FLAGS, (flags | ALIVE) & !NEAR_FLAG);
@@ -636,7 +701,7 @@ fn move_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i1
     let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
     let near = (u - pu).abs() < NEAR_RANGE && (v - pv).abs() < NEAR_RANGE;
     hw.poke(r + rec::FLAGS, if near { flags | NEAR_FLAG } else { flags & !NEAR_FLAG });
-    near_list(hw, id, near);
+    near_list(hw, id, near, kind == crate::actors::kind::CARRIER as usize);
 }
 
 /// One unit's fight: it represents its side in its sector, and fires at the other side's representative
@@ -796,7 +861,7 @@ fn muzzle<H: Hw + ?Sized>(hw: &mut H, r: u16, now: u16) {
 /// Keep unit `id` in the near list or out of it.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
-fn near_list<H: Hw + ?Sized>(hw: &mut H, id: u16, near: bool) {
+fn near_list<H: Hw + ?Sized>(hw: &mut H, id: u16, near: bool, first: bool) {
     let n = hw.peek(NEAR).min(NEAR_MAX);
     let mut k = 0;
     while k < n && rd(hw, NEAR + 1 + 2 * k as u16) != id {
@@ -805,6 +870,9 @@ fn near_list<H: Hw + ?Sized>(hw: &mut H, id: u16, near: bool) {
     if near && k == n && n < NEAR_MAX {
         wr(hw, NEAR + 1 + 2 * n as u16, id);
         hw.poke(NEAR, n + 1);
+    } else if near && k == n && first {
+        // The list full: one that must be there (the carrier) takes the last place.
+        wr(hw, NEAR + 1 + 2 * (n - 1) as u16, id);
     } else if !near && k < n {
         // Remove: the last moves into its place.
         let last = rd(hw, NEAR + 1 + 2 * (n - 1) as u16);

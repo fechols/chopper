@@ -437,6 +437,43 @@ fn wrecks(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The carrier: the view from its deck at the start (output/carrier-deck.png) and on approach from astern
+/// (output/carrier-approach.png), at tick --at.
+fn carrier_views(args: &[String]) -> Result<(), String> {
+    use chopper::layout::{AGENT, CLOCK};
+    let reu = std::fs::read(arg(args, "--reu").unwrap_or("dist/chopper.reu".into())).map_err(|e| e.to_string())?;
+    let t = num(args, "--at", 600.0) as u32;
+    let d = chopper::world_sim::carrier(&mut &reu[..], t as u16).ok_or("no carrier afloat")?;
+    let id = (chopper::world_sim::HEADER + chopper::world_sim::head::CARRIER as u32) as usize;
+    let mut deck = chopper::agent::Agent::new();
+    (deck.t, deck.deck) = (t, chopper::agent::PLACE_CARRIER);
+    let mut air = chopper::agent::Agent::new();
+    let back = num(args, "--back", 40.0) as i32;
+    let (s, c) = (chopper::camera::sin(d.yaw), chopper::camera::cos(d.yaw));
+    (air.t, air.grounded, air.yaw, air.pitch) = (t, 0, d.yaw, num(args, "--pitch", -1500.0) as i16);
+    air.u = ((d.u as i32) << 4) - (s * (back << 8) >> 14);
+    air.v = ((d.v as i32) << 4) - (c * (back << 8) >> 14);
+    air.h = num(args, "--h", 12.0) as i32 * 256;
+    for (name, a) in [("deck", deck), ("approach", air)] {
+        let snap = chopper::snapshot::Snapshot {
+            ram: vec![
+                (AGENT, a.to_bytes().to_vec()),
+                (CLOCK, t.to_le_bytes().to_vec()),
+                (chopper::world_sim::NEAR, vec![1, reu[id], reu[id + 1]]),
+                (chopper::world_sim::PHASE, vec![chopper::world_sim::DECIDE]),
+            ],
+            reu: vec![],
+        };
+        let (m, _) = package::render_snapshot(&reu, &snap, false)?;
+        let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
+        chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
+        let p = PathBuf::from(format!("output/carrier-{name}.png"));
+        png::save_wide(&p, 160, &rgb)?;
+        println!("{}", p.display());
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -451,6 +488,7 @@ fn main() -> Result<(), String> {
         Some("war") => war(&args),
         Some("effects") => effects(&args),
         Some("wrecks") => wrecks(&args),
+        Some("carrier") => carrier_views(&args),
         _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR]".into()),
     }
 }

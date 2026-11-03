@@ -1116,6 +1116,71 @@ fn the_fleets_meet() {
     assert!(carrier[rec::FLAGS as usize] & ALIVE != 0, "the carrier sank");
 }
 
+/// The carrier: an agent placed on its deck rides it (keeping its place on the deck while the ship
+/// steams on with the war), then the autopilot lifts off and climbs away from it.
+#[test]
+fn the_deck_carries_the_helicopter_until_it_lifts_off() {
+    use crate::agent::{Agent, LIFT, ON_DECK, PLACE_CARRIER};
+    use crate::world_sim::{self as ws, DECK_TOP, carrier};
+    let mut m = Machine::new(package());
+    let mut a = Agent::new();
+    a.deck = PLACE_CARRIER;
+    let d0 = carrier(&mut &m.reu[..], 0).expect("a carrier");
+    let mut t = 0u32;
+    while t < LIFT - 60 {
+        let (pu, pv) = a.at();
+        ws::step_page(&mut m, t as u16, pu, pv);
+        t += 4;
+        a.fly(&mut &m.reu[..], t);
+        assert_eq!((a.deck, a.grounded), (ON_DECK, 1), "off the deck at tick {t}");
+    }
+    let d = carrier(&mut &m.reu[..], a.t as u16).unwrap();
+    let moved = ((d.u as i32 - d0.u as i32).abs() + (d.v as i32 - d0.v as i32).abs()) >> 4;
+    assert!(moved > 40, "the carrier moved only {moved} texels");
+    // Still aft on the deck, facing the bow, on top of it.
+    let (du, dv) = ((a.u >> 4) - d.u as i32, (a.v >> 4) - d.v as i32);
+    let back = (crate::camera::sin(d.yaw) * -64 >> 14, crate::camera::cos(d.yaw) * -64 >> 14);
+    assert!((du - back.0).abs() <= 2 && (dv - back.1).abs() <= 2, "on the deck at ({du}, {dv}), not ({}, {})", back.0, back.1);
+    assert_eq!((a.yaw, a.h), (d.yaw, crate::agent::EYE + DECK_TOP));
+    // The rotor up to speed: off it and away.
+    while t < LIFT + 30 * 60 {
+        let (pu, pv) = a.at();
+        ws::step_page(&mut m, t as u16, pu, pv);
+        t += 4;
+        a.fly(&mut &m.reu[..], t);
+    }
+    assert_eq!((a.deck, a.grounded), (0, 0));
+    assert!(a.h > crate::agent::EYE + DECK_TOP + (8 << 8), "only {} up", a.h >> 8);
+}
+
+/// Landing: hovering with the stick back settles the player onto the deck when over it (riding it), into
+/// the sea when not (ditched, and down with a splash).
+#[test]
+fn landing_on_the_deck_or_in_the_sea() {
+    use crate::agent::{Agent, DITCHED, EYE, MODE_PLAYER, ON_DECK, input};
+    use crate::world_sim::{DECK_TOP, carrier};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let d = carrier(&mut &m.reu[..], 6000).unwrap();
+    let hover = |u: i32, v: i32| {
+        let mut a = Agent::new();
+        (a.u, a.v, a.h, a.grounded, a.mode, a.t, a.yaw) = (u, v, EYE + DECK_TOP + (3 << 8), 0, MODE_PLAYER, 6000, d.yaw);
+        a.input = input::DOWN;
+        a
+    };
+    let mut a = hover((d.u as i32) << 4, (d.v as i32) << 4);
+    a.fly(&mut &m.reu[..], 6000 + 600);
+    assert_eq!((a.deck, a.grounded), (ON_DECK, 1), "landed on the deck");
+    // 30 texels off its beam: the sea.
+    let mut b = hover(((d.u as i32) << 4) + (crate::camera::cos(d.yaw) * (30 << 8) >> 14), ((d.v as i32) << 4) - (crate::camera::sin(d.yaw) * (30 << 8) >> 14));
+    b.fly(&mut &m.reu[..], 6000 + 600);
+    assert_eq!(b.deck, DITCHED, "ditched");
+    let cam = b.camera().0;
+    assert!(crate::combat::update(&mut m, &b, &cam), "down after ditching");
+    let fx = crate::combat::FX as usize;
+    assert!((0..crate::combat::FX_MAX as usize).any(|k| m.ram[fx + k * crate::combat::FX_ENTRY as usize] == crate::effects::effect::SPLASH + 1), "a splash");
+}
+
 /// The units' brain: the baked tree reproduces the planner's decision in every situation; attacking when
 /// healthy and even is a learned choice against retreating; with no foes a mobile unit advances.
 #[test]

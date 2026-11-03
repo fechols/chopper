@@ -42,6 +42,9 @@ pub const fn mesh_of(kind: u8, side: u8) -> u8 {
     kind * 2 + (side & 1)
 }
 
+/// The carrier's flight deck (`scene::deck`), after the wrecks.
+pub const DECK: u8 = kind::COUNT * 3;
+
 /// A kind's wreck's mesh (after both sides' meshes, `scene::vehicles`).
 pub const fn wreck_of(kind: u8) -> u8 {
     kind::COUNT * 2 + kind % kind::COUNT

@@ -35,6 +35,7 @@ pub mod route {
     /// Air patrols.
     pub const ENEMY_AIR: u8 = 6;
     pub const ALLIED_AIR: u8 = 7;
+    const _: () = assert!(ALLIED_AIR == crate::world_sim::CARRIER_AIR);
     /// Stays put.
     pub const NONE: u8 = 0xFF;
 }
@@ -230,6 +231,8 @@ pub fn bake(w: &World) -> Vec<u8> {
     }
     out[h + ws::head::OWNER as usize..][..PADS.len()].copy_from_slice(&OWNERS);
     out[h + ws::head::KNOBS as usize..][..5].copy_from_slice(&ws::Knobs::DEFAULT.to_bytes());
+    let carrier = units.iter().position(|un| un.kind == kind::CARRIER).expect("a carrier") as u16;
+    out[h + ws::head::CARRIER as usize..][..2].copy_from_slice(&carrier.to_le_bytes());
     // The front roads as far as the first pad the other side holds.
     for side in 0..2 {
         let at = (ws::ROUTES - ws::STATE) as usize + ws::FRONT_ROUTE[side] as usize * ws::ROUTE_ENTRY as usize;

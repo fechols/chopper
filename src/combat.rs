@@ -274,6 +274,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     let n = hw.peek(ws::NEAR).min(ws::NEAR_MAX);
     let mut count = 0u8;
     let mut wrecks = 0u8;
+    let mut decks = 0u8;
     let mut in_cone = ws::NOBODY;
     let mut cone_z = i16::MAX;
     let mut r = [0u8; 18];
@@ -283,27 +284,31 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
         let flags = r[rec::FLAGS as usize];
         let alive = flags & ALIVE != 0;
         // Where it is now: moved on from its last step (the dead stay where they fell).
-        let (mut u, mut v) = (u16::from_le_bytes([r[4], r[5]]) as i32, u16::from_le_bytes([r[6], r[7]]) as i32);
-        if alive && r[rec::ACTION as usize] != ws::act::HOLD {
-            let d = r[rec::SPEED as usize] as i32 * now.wrapping_sub(u16::from_le_bytes([r[16], r[17]])).min(120) as i32;
-            let yaw = (r[rec::YAW as usize] as u16) << 8;
-            u += crate::camera::sin(yaw) * d >> 14;
-            v += crate::camera::cos(yaw) * d >> 14;
-        }
+        let (u, v) = ws::live_inline(&r, now);
         // Drawn: (mesh, yaw, u, v, h) into the list.
         let o = OBJLIST + 1 + 8 * k;
         let kind = r[rec::KIND as usize];
         hw.poke(o, if alive { crate::actors::mesh_of(kind, flags & SIDE) } else { crate::actors::wreck_of(kind) });
+        if alive && kind == crate::actors::kind::CARRIER && decks == 0 {
+            // Its flight deck with it, after the near units.
+            let dk = OBJLIST + 1 + 8 * n as u16;
+            hw.poke(dk, crate::actors::DECK);
+            hw.poke(dk + 1, r[rec::YAW as usize]);
+            wr(hw, dk + 2, u);
+            wr(hw, dk + 4, v);
+            wr(hw, dk + 6, (r[rec::H as usize] as u16) << 4);
+            decks = 1;
+        }
         hw.poke(o + 1, r[rec::YAW as usize]);
-        wr(hw, o + 2, u as u16);
-        wr(hw, o + 4, v as u16);
+        wr(hw, o + 2, u);
+        wr(hw, o + 4, v);
         wr(hw, o + 6, (r[rec::H as usize] as u16) << 4);
         // A wreck: its smoke column, while it lasts.
         let age = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]]));
         if !alive && age < ws::WRECK_TICKS && wrecks < WRECK_MAX {
             let w = WRECKS + 1 + wrecks as u16 * WRECK_ENTRY;
-            wr(hw, w, u as u16);
-            wr(hw, w + 2, v as u16);
+            wr(hw, w, u);
+            wr(hw, w + 2, v);
             // (Rising from a texel and a half up: the wreck shows under it.)
             wr(hw, w + 4, ((r[rec::H as usize] as u16) << 4) + 24);
             wr(hw, w + 6, age);
@@ -329,7 +334,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     }
     hw.poke(S_TARGETS, count);
     hw.poke(WRECKS, wrecks);
-    hw.poke(OBJLIST, n);
+    hw.poke(OBJLIST, n + decks);
     // The gun.
     let input = a.input;
     let cool = hw.peek(PLAYER + player::COOL).saturating_sub(dt);
@@ -409,8 +414,21 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     // Hit flash fades; down at full damage.
     let flash = hw.peek(PLAYER + player::FLASH);
     hw.poke(PLAYER + player::FLASH, flash.saturating_sub(dt));
-    if hw.peek(PLAYER + player::DAMAGE) >= DOWN {
+    // Landed at a base (home's pad, the carrier's deck): rearmed, and repaired a point a frame.
+    let home = (a.u >> 8) as i16 - crate::agent::HOME.0 as i16;
+    let homev = (a.v >> 8) as i16 - crate::agent::HOME.1 as i16;
+    if a.grounded != 0 && (a.deck == crate::agent::ON_DECK || home.abs() <= 10 && homev.abs() <= 10) {
+        hw.poke(PLAYER + player::MISSILES, MISSILES);
+        let d = hw.peek(PLAYER + player::DAMAGE);
+        hw.poke(PLAYER + player::DAMAGE, d.saturating_sub(1));
+    }
+    // Ditched in the sea (`agent::DITCHED`): down too, with a splash.
+    let ditched = a.deck == crate::agent::DITCHED;
+    if ditched || hw.peek(PLAYER + player::DAMAGE) >= DOWN {
         init(hw);
+        if ditched {
+            spawn(hw, crate::effects::effect::SPLASH, (a.u >> 4) as u16, (a.v >> 4) as u16, 0, now);
+        }
         return true;
     }
     false
@@ -473,7 +491,7 @@ pub fn fx<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) {
     }
     effects(hw, &eye, now);
     // The projectiles to draw, after the near units.
-    let mut n = hw.peek(OBJLIST).min(crate::world_sim::NEAR_MAX) as u16;
+    let mut n = hw.peek(OBJLIST).min(OBJLIST_UNITS) as u16;
     for k in 0..PROJ_MAX {
         let p = PROJ + k * PROJ_ENTRY;
         let kind = hw.peek(p + proj::KIND);
@@ -497,7 +515,9 @@ pub fn fx<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) {
 /// the near units (the main pass), then the projectiles (the effects pass). In the cell buffer, free
 /// until the geometry.
 pub const OBJLIST: u16 = crate::layout::CELL_RAM;
-pub const OBJLIST_MAX: u8 = crate::world_sim::NEAR_MAX + PROJ_MAX as u8;
+/// The near units, the carrier's deck, the projectiles.
+pub const OBJLIST_UNITS: u8 = crate::world_sim::NEAR_MAX + 1;
+pub const OBJLIST_MAX: u8 = OBJLIST_UNITS + PROJ_MAX as u8;
 const _: () = assert!(1 + 8 * OBJLIST_MAX as u16 <= crate::layout::CELL_MAX * 8);
 
 /// A projectile that hit the ground, for the main pass to turn into dust or spray.

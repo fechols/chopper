@@ -28,7 +28,7 @@ from native_cpu import B, I, U, Cpu, KernelError  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = 0xCA80
 AGENT = 0xCAA0      # layout::AGENT (agent::Agent::BYTES), then CLOCK
-AGENT_BYTES = 40
+AGENT_BYTES = 48
 SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
 SCREEN = 0x5C00     # layout::BUFFERS[0].screen
@@ -292,7 +292,7 @@ NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
 COMBAT, COMBAT_LEN = 0x8E84, 6 * 12 + 12    # combat::STATE, STATE_LEN: projectiles, the player's fight
 FX, FX_LEN = 0xB760, 8 * 10                 # combat::FX: the effects playing
 STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 1), (HUD + 4, 4), (COMBAT, COMBAT_LEN), (FX, FX_LEN)]
-WAR, WAR_LEN = 116 << 16, 0x5020    # world_sim::STATE, STATE_LEN: the war in the REU
+WAR, WAR_LEN = 116 << 16, 0x5022    # world_sim::STATE, STATE_LEN: the war in the REU
 BRAINS, BRAINS_LEN = 117 << 16, 0x0A00  # world_sim::BRAINS, BRAINS_LEN: the units' learned trees
 GAUGES = AGENT + AGENT_BYTES + 4
 
@@ -425,12 +425,12 @@ def main():
             cpu.wait_cycles = 0
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
-                if i >= 10688 + 47 + NEAR_LEN + 1:
-                    w = i - 10688 - 48 - NEAR_LEN
+                if i >= 10688 + AGENT_BYTES + 7 + NEAR_LEN + 1:
+                    w = i - 10688 - AGENT_BYTES - 8 - NEAR_LEN
                     print(f'  war byte ${w:04X} (unit {w // 32} byte {w % 32} below $4000): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10688:
-                    print(f'  state byte {i - 10688} (agent 0-39, gauges 40-46, near 47-71, phase 72): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    print(f'  state byte {i - 10688} (agent 0-47, gauges 48-54, near 55-79, phase 80): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10000:
                     print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')

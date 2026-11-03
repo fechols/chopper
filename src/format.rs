@@ -151,6 +151,9 @@ pub const OVERLAY_WORLD3: u32 = TREES + 0x8000;
 pub const OVERLAY_COMBAT: u32 = TREES + 0xA000;
 pub const OVERLAY_FX: u32 = TREES + 0xC000;
 pub const OVERLAY_COMBATLIB: u32 = TREES + 0xE000;
+/// The carrier's deck (the second window, with the AI), after the director's.
+pub const OVERLAY_DECK: u32 = TREES + 0x3800;
+const _: () = assert!(OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_DECK && OVERLAY_DECK + OVERLAY2_MAX <= OVERLAY_WORLD3);
 /// The war director's (once a lap), after the brains.
 pub const OVERLAY_WORLD4: u32 = TREES + 0x2000;
 const _: () = assert!(TREES + crate::brain::UNIT_BYTES as u32 <= OVERLAY_WORLD4 && OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_WORLD3);

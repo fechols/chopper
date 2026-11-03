@@ -112,6 +112,7 @@ SECTIONS {
         .cocktext { *(.text.cockpit .text.cockpit.*) }
         .dyntext { *(.text.dyn .text.dyn.*) }
         .combatlibtext { *(.text.combatlib .text.combatlib.*) }
+        .decktext { *(.text.deck .text.deck.*) }
     } >window2
     .audiotext : {
         *(.text.audio_boot)
@@ -163,6 +164,8 @@ ASSERT(SIZEOF(.aitext) <= 0x1800, "the AI overlay is larger than its window ($E0
 ASSERT(SIZEOF(.hudtext) <= 0x1800, "the HUD overlay is larger than its window ($E000-$F7FF)")
 __cocktext_size = SIZEOF(.cocktext);
 __dyntext_size = SIZEOF(.dyntext);
+__decktext_size = SIZEOF(.decktext);
+ASSERT(SIZEOF(.decktext) <= 0x0F00, "the deck's overlay is larger than its window ($A000-$AEFF)")
 ASSERT(SIZEOF(.cocktext) <= 0x0F00, "the cockpit overlay is larger than its window ($A000-$AEFF)")
 ASSERT(SIZEOF(.dyntext) <= 0x0F00, "the moving objects' overlay is larger than its window ($A000-$AEFF)")
 

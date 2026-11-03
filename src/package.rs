@@ -93,6 +93,7 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".combattext", OVERLAY_COMBAT, OVERLAY_MAX),
         (".fxtext", OVERLAY_FX, OVERLAY_MAX),
         (".combatlibtext", OVERLAY_COMBATLIB, OVERLAY2_MAX),
+        (".decktext", OVERLAY_DECK, OVERLAY2_MAX),
     ] {
         let code = crate::elf::section(elf, name)?;
         if code.len() as u32 > max {
@@ -215,9 +216,7 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     crate::world_sim::step_page(&mut m, agent.t as u16, pu, pv);
     let (cam0, _) = agent.camera();
     if crate::combat::update(&mut m, &agent, &cam0) {
-        let t = agent.t;
-        agent = crate::agent::Agent::new();
-        agent.t = t;
+        agent = crate::agent::Agent::reset(agent.t);
     }
     crate::combat::fx(&mut m, &agent, &agent.camera().0);
     for (i, b) in agent.to_bytes().iter().enumerate() {

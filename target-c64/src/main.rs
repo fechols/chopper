@@ -20,7 +20,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_DECK, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -95,6 +95,7 @@ unsafe extern "C" {
     /// The second window's overlays (`.text.cockpit`, `.text.dyn`, run at `BAND_RAM`).
     static __cocktext_size: u8;
     static __dyntext_size: u8;
+    static __decktext_size: u8;
 }
 
 fn cockpit_overlay() -> (u16, u16) {
@@ -360,6 +361,8 @@ pub extern "C" fn main() -> i16 {
     let mut seen = frames_elapsed();
     let agent = unsafe { &mut *(AGENT as *mut Agent) };
     *agent = Agent::new();
+    // (On the carrier's deck, placed at the first flight.)
+    agent.deck = chopper::agent::PLACE_CARRIER;
     unsafe { write_volatile(CLOCK as *mut u32, seen as u32) };
     let (ai_size, hud_size, geom_size, actors_size) = overlay_sizes();
     let (cockpit_at, cockpit_size) = cockpit_overlay();
@@ -395,6 +398,9 @@ pub extern "C" fn main() -> i16 {
         stopwatch_start();
         // The agent catches up with the clock, from its overlay over the (spent) triangles at WORK.
         hw::fetch(c, OVERLAY_AI, WORK, ai_size);
+        // The carrier's deck with it (the second window: the band state is spent; the war's move phase
+        // uses it too).
+        hw::fetch(c, OVERLAY_DECK, chopper::layout::BAND_RAM, unsafe { &raw const __decktext_size } as u16);
         agent.fly(&mut Senses(c), clock);
         let (cam, _yaw) = agent.camera();
         let t = agent.t;
@@ -413,9 +419,7 @@ pub extern "C" fn main() -> i16 {
         hw::fetch(c, OVERLAY_COMBATLIB, chopper::layout::BAND_RAM, unsafe { &raw const __combatlibtext_size } as u16);
         hw::fetch(c, OVERLAY_COMBAT, WORK, unsafe { &raw const __combattext_size } as u16);
         if chopper::combat::update(c, agent, &cam) {
-            let t = agent.t;
-            *agent = Agent::new();
-            agent.t = t;
+            *agent = Agent::reset(agent.t);
         }
         hw::fetch(c, OVERLAY_FX, WORK, unsafe { &raw const __fxtext_size } as u16);
         let (cam, _) = agent.camera();
