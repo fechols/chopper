@@ -42,13 +42,13 @@ the enemy's HQ.
 | # | Name | Objectives, in waypoint order | Enemies (per site) | Loadout |
 |---|---|---|---|---|
 | 1 | Shakedown | Lift off; fly through a gate over each of pads 1–4; land on the home H. Teaches the HUD's waypoint caret, the gauges and landing. | none | gun |
-| 2 | Medevac | Fly to the field hospital (pad 3); land and hold 10 s while 2 wounded are loaded; return home within 4 minutes. | 2 AA guns beside the route, light flak | gun, 19 rockets |
-| 3 | Recon | Overfly 3 marked sites below 200 ft, within 40 texels of each mark. | each site: 1 radar, 2 AA guns | gun, 19 rockets |
-| 4 | Hunter | Stop the convoy on the road from pad 2 to pad 4 before it arrives. Every truck must be destroyed. | 4 trucks, 2 APCs, 1 AA vehicle, all moving | gun, 38 rockets, 4 missiles |
-| 5 | Sea Lane | Sink the flotilla off the west coast, then hover low over a downed pilot's raft for 5 s. | 3 gunboats, 1 missile boat | gun, 38 rockets, 4 missiles |
-| 6 | SAM Belt | Destroy 3 SAM sites in the ridge's valleys; use the mountains to mask from the radars. | each site: 1 radar, 2 SAM launchers, 2 AA guns | gun, 38 rockets, 6 missiles |
-| 7 | Gunship Duel | Clear the 2-gunship patrol; a second pair intercepts once the first is down. | 2 gunships, then 2 more | gun, 38 rockets, 8 missiles |
-| 8 | Fortress | Assault the enemy HQ (pad 4): destroy the fuel depot, then the HQ bunker; return home. | 2 SAM sites (1 radar + 2 launchers each), 4 AA guns, 2 tanks, 2 gunships, 1 depot, 1 bunker | gun, 38 rockets, 8 missiles |
+| 2 | Medevac | Fly to the field hospital (pad 3); land and hold 10 s while 2 wounded are loaded; return home within 4 minutes. | 2 AA guns beside the route, light flak | gun |
+| 3 | Recon | Overfly 3 marked sites below 200 ft, within 40 texels of each mark. | each site: 1 radar, 2 AA guns | gun, 2 missiles |
+| 4 | Hunter | Stop the convoy on the road from pad 2 to pad 4 before it arrives. Every truck must be destroyed. | 4 trucks, 2 APCs, 1 AA vehicle, all moving | gun, 4 missiles |
+| 5 | Sea Lane | Sink the flotilla off the west coast, then hover low over a downed pilot's raft for 5 s. | 3 gunboats, 1 missile boat | gun, 4 missiles |
+| 6 | SAM Belt | Destroy 3 SAM sites in the ridge's valleys; use the mountains to mask from the radars. | each site: 1 radar, 2 SAM launchers, 2 AA guns | gun, 6 missiles |
+| 7 | Gunship Duel | Clear the 2-gunship patrol; a second pair intercepts once the first is down. | 2 gunships, then 2 more | gun, 8 missiles |
+| 8 | Fortress | Assault the enemy HQ (pad 4): destroy the fuel depot, then the HQ bunker; return home. | 2 SAM sites (1 radar + 2 launchers each), 4 AA guns, 2 tanks, 2 gunships, 1 depot, 1 bunker | gun, 8 missiles |
 
 Totals: mission 8 has 21 enemies, of which at most 16 are live at once. The gunships spawn when the
 depot falls.
@@ -59,16 +59,16 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
 
 | Type | Moves | Weapon | Range | To kill | Behaviour (GOAP tree) |
 |---|---|---|---|---|---|
-| Truck | on roads, 0.25 texel/tick | none | – | 1 gun burst | drive the route; stop and scatter when hit nearby |
-| APC | on roads | machine gun | 60 | 2 rockets | escort; fire at a low helicopter in range |
-| Tank | roads and off-road | cannon (hovering targets only) | 100 | 1 missile / 3 rockets | hold, turn the turret, fire when the target is slow and low |
-| AA gun (ZSU) | static, or with a convoy | flak bursts in a cone ahead of the target | 160 | 2 rockets | track, lead and fire in bursts; reload |
-| Radar | static | none: cues the SAMs | 300, line of sight | 1 rocket | sweep; track a helicopter it can see over the hazard map |
-| SAM launcher | static | missile (proportional navigation) after a 3 s radar track | 250 | 1 rocket | launch when its radar has a track; one missile in the air per launcher |
-| Gunboat | sea | machine gun | 80 | 3 rockets | patrol; turn broadside to the helicopter and fire |
+| Truck | on roads, 0.25 texel/tick | none | – | 1 burst | drive the route; stop and scatter when hit nearby |
+| APC | on roads | machine gun | 60 | 3 bursts / 1 missile | escort; fire at a low helicopter in range |
+| Tank | roads and off-road | cannon (hovering targets only) | 100 | 1 missile (the gun cannot hurt it) | hold, turn the turret, fire when the target is slow and low |
+| AA gun (ZSU) | static, or with a convoy | flak bursts in a cone ahead of the target | 160 | 3 bursts / 1 missile | track, lead and fire in bursts; reload |
+| Radar | static | none: cues the SAMs | 300, line of sight | 2 bursts / 1 missile | sweep; track a helicopter it can see over the hazard map |
+| SAM launcher | static | missile (proportional navigation) after a 3 s radar track | 250 | 2 bursts / 1 missile | launch when its radar has a track; one missile in the air per launcher |
+| Gunboat | sea | machine gun | 80 | 4 bursts / 1 missile | patrol; turn broadside to the helicopter and fire |
 | Missile boat | sea | SAM, with its own radar | 250 | 1 missile | as a SAM site, afloat |
-| Gunship | flies, with the agent's flight model | rockets + gun | 120 | 1 missile / 4 rockets | patrol, intercept, attack runs, break off when damaged |
-| Fuel depot, bunker | static | none | – | 3 rockets / 2 missiles | objectives |
+| Gunship | flies, with the agent's flight model | gun + missiles | 120 | 1 missile / 6 bursts | patrol, intercept, attack runs, break off when damaged |
+| Fuel depot, bunker | static | none | – | 8 bursts / 2 missiles | objectives |
 
 - Each enemy is a compact agent (16 bytes: position, heading, state, timers, hit points) stepped at the
   agent's tick. It decides every 8 ticks by walking its role's decision tree (`brain`, one root per
@@ -91,13 +91,19 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
 
 - **Flight:** the joystick is the cyclic. Left and right bank, which turns; forward and back pitch, which sets speed. The collective (climb and descend) is on keys. This is the agent's flight model with the player's controls in place of the decision tree.
 - **Landing:** on a pad's H, slowly, at near-zero climb. A hard landing damages the helicopter.
-- **Weapons** (fire to shoot; space cycles the weapon):
+- **Weapons:** two buttons, one weapon each.
 
-| Weapon | Load | Behaviour |
-|---|---|---|
-| Gun | 600 rounds | hit-scan along the boresight, 80 texels |
-| Rockets | 19 / 38 | unguided, fired in pairs along the boresight, 200 texels |
-| Missiles | 4–8 | need a lock: the target stays within ±10° of the boresight and in range (250) for 1.5 s; then fire and forget |
+| Weapon | Button | Load | Behaviour |
+|---|---|---|---|
+| Gun | fire (button 1) | 600 rounds | fires along the boresight while held, 80 texels. Every 4th round is a tracer, a short bright streak drawn as a thin triangle, so the stream shows where it is going. Hits are tested along the round's path. |
+| Missiles | button 2 | 4–8 | fire and forget at the locked target; with no lock, button 2 does nothing |
+
+- **Button 2** is the common 2-button convention: the second button is read on the SID's POT X line (`$D419`). The C64U's joysticks and most modern pads support it. One function reads both buttons, so they can be remapped.
+- **Auto-lock:** the diamond reticle is the missile seeker's field of view, a fixed area around the boresight.
+  - When an enemy in range (250) is inside it, the missile system arms by itself.
+  - The diamond moves onto that target and closes in as the lock builds over 1.5 s, then shows `LOCK`.
+  - If the target leaves the reticle before then, the lock resets.
+  - With several targets inside, the nearest one is chosen.
 
 - **Fuel:** a mission's worth plus a margin. Landing on home refuels.
 - **Damage:** 0–100%. At 50% the caution panel lights up; at 100% the helicopter goes down.
@@ -114,7 +120,7 @@ view (talonhd's raster-IRQ multiplexer, extended to free X/Y positions with a so
 | Waypoint caret | over the current waypoint; at the view's edge, pointing toward it, when it is off-screen or behind |
 | Waypoint readout | `WP n` and the range |
 | Target boxes | a bracket around each enemy in view (up to 8); they flash while that enemy is firing |
-| Lock-on diamond | on the selected target: closes in while the lock builds, then a small diamond and `LOCK` |
+| Lock-on diamond | the seeker reticle around the boresight; when a target enters it, the missiles arm and the diamond moves onto the target, closes in while the lock builds, then shows `LOCK` |
 | Launch cue | `MSL` flashing when a SAM is in the air toward you |
 
 ## Mission data (in the REU)
@@ -132,6 +138,6 @@ view (talonhd's raster-IRQ multiplexer, extended to free X/Y positions with a so
 | P1 | The HUD multiplexer over the attract flight: boresight, the waypoint caret and readout, target boxes and the lock-on diamond demoed on static targets. |
 | P2 | Player flight: joystick cyclic, keys for the collective. Recorded input keeps the emulator gate byte-exact. |
 | P3 | Moving objects (a dynamic list after the cell walk) and the enemy agents, roles and meshes. |
-| P4 | Weapons, hits, damage, explosions, the SAM warning. |
+| P4 | Weapons (the gun with tracers on button 1, missiles with auto-lock on button 2), hits, damage, explosions, the SAM warning. |
 | P5 | Missions: the tables, objectives, briefing and debrief, landing, fuel. |
 | P6 | Balance, sound effects, a full campaign play-test on the C64U. |
