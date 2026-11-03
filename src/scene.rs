@@ -355,6 +355,39 @@ pub fn vehicles() -> Vec<Mesh> {
     out
 }
 
+/// A unit's far mesh (`actors::LOD_Z`): a wedge over its footprint, the ridge along its long side, in the
+/// side's colours: 6 triangles (2-4 of them facing the camera) for a mesh of up to 16. `None` where that
+/// would not pay (a mesh of 6 faces or fewer) or would not look like the unit far off (the big ships,
+/// projectiles).
+pub fn far(k: u8, m: &Mesh, mat: Material) -> Option<Mesh> {
+    use crate::actors::kind;
+    if m.faces.len() <= 6 || matches!(k, kind::CARRIER | kind::DESTROYER | kind::TRACER | kind::MISSILE) {
+        return None;
+    }
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in &m.verts {
+        for a in 0..3 {
+            (lo[a], hi[a]) = (lo[a].min(v[a]), hi[a].max(v[a]));
+        }
+    }
+    // Built with the ridge along y, then turned a quarter (x, y) -> (y, -x) when x is the long side (a
+    // rotation, so the winding holds).
+    let along_x = hi[0] - lo[0] > hi[1] - lo[1];
+    let (lo2, hi2) = if along_x { ([lo[1], -hi[0]], [hi[1], -lo[0]]) } else { ([lo[0], lo[1]], [hi[0], hi[1]]) };
+    let (w, l) = (hi2[0] - lo2[0], hi2[1] - lo2[1]);
+    let (cx, inset, (z0, z1)) = ((lo2[0] + hi2[0]) / 2.0, (w / 2.0).min(l / 4.0), (lo[2], hi[2]));
+    let p = |x: f32, y: f32, z: f32| if along_x { [-y, x, z] } else { [x, y, z] };
+    let turn = |d: [f32; 3]| if along_x { [-d[1], d[0], d[2]] } else { d };
+    let (a, b, c, d) = (p(lo2[0], lo2[1], z0), p(hi2[0], lo2[1], z0), p(hi2[0], hi2[1], z0), p(lo2[0], hi2[1], z0));
+    let (r0, r1) = (p(cx, lo2[1] + inset, z1), p(cx, hi2[1] - inset, z1));
+    let mut f = Mesh::default();
+    f.quad([a, d, r1, r0], turn([-1.0, 0.0, 1.0]), mat);
+    f.quad([b, c, r1, r0], turn([1.0, 0.0, 1.0]), mat);
+    f.tri([a, b, r0], turn([0.0, -1.0, 1.0]), mat);
+    f.tri([d, c, r1], turn([0.0, 1.0, 1.0]), mat);
+    Some(f)
+}
+
 /// The carrier's flight deck (`actors::DECK`, drawn with a live carrier): seven strips across, light and
 /// dark in turn, each 2 texels long, so that from on the deck the strips ahead stay in front of the near
 /// plane (`geom::NEAR`: faces crossing it are left out).
@@ -478,11 +511,23 @@ pub fn encode(m: &Mesh) -> (u8, u8, Vec<u8>, Vec<u8>) {
 }
 
 /// The vehicles' mesh bank (`format::VEHICLES`): a table of `actors::MESH_RECORD` bytes per mesh (the
-/// blob's offset in the bank u16, its length u16, vertices, faces, shift, radius), then the blobs
-/// (vertices, then faces).
+/// blob's offset in the bank u16, its length u8, the mesh drawn instead beyond `actors::LOD_Z` (0:
+/// none), vertices, faces, shift, radius), then the blobs (vertices, then faces). The far meshes
+/// ([`far`]) follow [`vehicles`]' own.
 pub fn vehicle_bank() -> Vec<u8> {
-    use crate::actors::{MESH_RECORD, MESHBUF_LEN};
-    let ms = vehicles();
+    use crate::actors::{MESH_RECORD, MESHBUF_LEN, kind};
+    let mut ms = vehicles();
+    let mut lod = vec![0u8; ms.len()];
+    for k in 0..kind::COUNT {
+        for (side, mat) in [Material::Enemy, Material::Allied].into_iter().enumerate() {
+            let near = crate::actors::mesh_of(k, side as u8) as usize;
+            if let Some(f) = far(k, &ms[near], mat) {
+                lod[near] = ms.len() as u8;
+                ms.push(f);
+            }
+        }
+    }
+    lod.resize(ms.len(), 0);
     let mut out = vec![0u8; ms.len() * MESH_RECORD];
     for (k, m) in ms.iter().enumerate() {
         assert!(m.faces.len() <= 18, "vehicle mesh {k}: {} faces", m.faces.len());
@@ -492,7 +537,8 @@ pub fn vehicle_bank() -> Vec<u8> {
         let at = out.len() as u16;
         let rec_at = k * MESH_RECORD;
         out[rec_at..rec_at + 2].copy_from_slice(&at.to_le_bytes());
-        out[rec_at + 2..rec_at + 4].copy_from_slice(&(blob.len() as u16).to_le_bytes());
+        out[rec_at + 2] = blob.len() as u8;
+        out[rec_at + 3] = lod[k];
         out[rec_at + 4] = m.verts.len() as u8;
         out[rec_at + 5] = m.faces.len() as u8;
         out[rec_at + 6] = shift;

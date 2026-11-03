@@ -50,8 +50,12 @@ pub const fn wreck_of(kind: u8) -> u8 {
     kind::COUNT * 2 + kind % kind::COUNT
 }
 
-/// The mesh table's records: blob offset u16, blob length u16, vertices, faces, shift, radius.
+/// The mesh table's records: blob offset u16, blob length u8, the far mesh (0: none), vertices, faces,
+/// shift, radius (`scene::vehicle_bank`).
 pub const MESH_RECORD: usize = 8;
+/// Units further out than this along the view (Q4: 48 texels, where they are a few pixels across) are
+/// drawn with their far mesh (`scene::far`).
+pub const LOD_Z: i32 = 48 * 16;
 
 /// The frame's moving objects, ready to draw (scratch during the set-up and the geometry: the band
 /// stage, after the HUD's scratch; the sprite records after it are unused): a count, then [`DYN_ENTRY`]
@@ -124,6 +128,10 @@ pub fn prepare<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam, list: u
         let (x, y, z, r) = (c[0], c[1], c[2], (rad as i32) << 4);
         if z + r < crate::geom::NEAR || z - r > FAR || x.abs() - z > r + (r >> 1) || (y.abs() << 1) - z > r * 3 {
             continue;
+        }
+        // Far off, the unit's far mesh (culled by the near one's sphere: its footprint, a little wider at most).
+        if z > LOD_Z && rec[3] != 0 {
+            crate::hw::read_into(hw, crate::format::VEHICLES + rec[3] as u32 * MESH_RECORD as u32, crate::layout::BOUNCE, &mut rec);
         }
         let a = (o.yaw as u16) << 8;
         let at = DYN + 1 + n as u16 * DYN_ENTRY;

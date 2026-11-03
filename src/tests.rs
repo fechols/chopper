@@ -2159,7 +2159,7 @@ fn the_floor_doubles_its_lines_on_heavy_frames() {
     use crate::layout::{STATUS, status, status::mode};
     let mut m = Machine::new(&[]);
     // A frame of set-up, geometry and render (µs, µs, 4 µs units): the mode it leaves for the next.
-    let mut after = |m: &mut Machine, was: u8, (s, g, r): (u16, u16, u32)| {
+    let after = |m: &mut Machine, was: u8, (s, g, r): (u16, u16, u32)| {
         for (a, v) in [(status::SETUP_US, s), (status::GEOM_US, g), (status::RENDER_US, (r / 4) as u16)] {
             m.poke(STATUS + a, v as u8);
             m.poke(STATUS + a + 1, (v >> 8) as u8);
@@ -2175,4 +2175,52 @@ fn the_floor_doubles_its_lines_on_heavy_frames() {
     assert_eq!(after(&mut m, dbl, (10_000, 5_000, 20_000)), auto, "a light frame goes back to full");
     assert_eq!(after(&mut m, mode::DOUBLED, (1, 1, 4)), mode::DOUBLED, "a mode the host set is kept");
     assert_eq!(after(&mut m, 0, (30_000, 30_000, 60_000)), 0, "full, set by the host, too");
+}
+
+#[test]
+fn far_units_draw_their_low_poly_mesh() {
+    use crate::actors::{DYN, DYN_ENTRY, LOD_Z, MESH_RECORD, dyn_entry, kind, mesh_of, prepare};
+    use crate::hw::Hw;
+    let bank = crate::scene::vehicle_bank();
+    let rec = |mesh: usize| &bank[mesh * MESH_RECORD..][..MESH_RECORD];
+    // Each unit's far mesh: 6 faces, with none of its own (the big ships, projectiles and meshes of 6
+    // faces or fewer keep theirs).
+    let mut fars = 0;
+    for k in 0..kind::COUNT {
+        for side in 0..2 {
+            let near = rec(mesh_of(k, side) as usize);
+            if matches!(k, kind::CARRIER | kind::DESTROYER | kind::TRACER | kind::MISSILE) || near[5] <= 6 {
+                assert_eq!(near[3], 0, "{}: no far mesh", kind::NAMES[k as usize]);
+                continue;
+            }
+            let far = rec(near[3] as usize);
+            assert_ne!(near[3], 0, "{}: a far mesh", kind::NAMES[k as usize]);
+            assert_eq!((far[3], far[5]), (0, 6), "{}: its far mesh", kind::NAMES[k as usize]);
+            fars += 1;
+        }
+    }
+    assert!(fars >= 16, "{fars} far meshes");
+    // A tank near and one beyond LOD_Z, straight ahead of a camera looking north.
+    let reu = package();
+    let mut m = Machine::new(reu);
+    let cam = camera_at(1024.0, 1000.0, 6.0, 0, 0, 0);
+    let list = crate::combat::OBJLIST;
+    let tank = mesh_of(kind::TANK, crate::actors::ENEMY);
+    m.poke(list, 2);
+    for (k, ahead) in [(0u16, 20i32), (1, LOD_Z / 16 + 30)] {
+        let v = ((1000 + ahead) << 4) as u16;
+        for (i, b) in [tank, 0, 0x00, 0x40, v as u8, (v >> 8) as u8, 0, 0].into_iter().enumerate() {
+            m.poke(list + 1 + 8 * k + i as u16, b);
+        }
+    }
+    prepare(&mut m, &cam, list);
+    assert_eq!(m.peek(DYN), 2, "both in view");
+    let blob = |m: &mut Machine, k: u16| {
+        let at = DYN + 1 + k * DYN_ENTRY;
+        (m.peek(at + dyn_entry::BLOB) as u16 | (m.peek(at + dyn_entry::BLOB + 1) as u16) << 8, m.peek(at + dyn_entry::NF))
+    };
+    let near = rec(tank as usize);
+    let far = rec(near[3] as usize);
+    assert_eq!(blob(&mut m, 0), (u16::from_le_bytes([near[0], near[1]]), near[5]), "the near tank: its own mesh");
+    assert_eq!(blob(&mut m, 1), (u16::from_le_bytes([far[0], far[1]]), 6), "the far tank: the wedge");
 }
