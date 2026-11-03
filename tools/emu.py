@@ -290,11 +290,12 @@ def host_agent(reu, tick):
 # The C64 state carried across frames (snapshot::STATE_RAM): the agent, its clock, the gauges, the units
 # near, the war's phase and turn (world_sim::TURN); the HUD's lock state.
 NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
-COMBAT, COMBAT_LEN = 0x8E84, 6 * 12 + 12    # combat::STATE, STATE_LEN: projectiles, the player's fight
+COMBAT, COMBAT_LEN = 0x8E84, 6 * 12 + 24    # combat::STATE, STATE_LEN: projectiles, the player's fight
 FX, FX_LEN = 0xB760, 8 * 10                 # combat::FX: the effects playing
 STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 2), (HUD + 4, 4), (COMBAT, COMBAT_LEN), (FX, FX_LEN)]
 WAR, WAR_LEN = 116 << 16, 0x5022    # world_sim::STATE, STATE_LEN: the war in the REU
 BRAINS, BRAINS_LEN = 117 << 16, 0x0A00  # world_sim::BRAINS, BRAINS_LEN: the units' learned trees
+PILOT, PILOT_LEN = 107 << 16, 0x0800    # format::AI_TREES, brain::PILOT_LEN: the pilot's learned tree
 GAUGES = AGENT + AGENT_BYTES + 4
 
 
@@ -303,7 +304,7 @@ def snapshot(cpu):
     out = bytearray(b'CHSN')
     for addr, n in STATE_RAM:
         out += bytes([0]) + addr.to_bytes(4, 'little') + n.to_bytes(2, 'little') + bytes(cpu.mem[addr:addr + n])
-    for addr, n in [(WAR, WAR_LEN), (BRAINS, BRAINS_LEN)]:
+    for addr, n in [(WAR, WAR_LEN), (BRAINS, BRAINS_LEN), (PILOT, PILOT_LEN)]:
         out += bytes([1]) + addr.to_bytes(4, 'little') + n.to_bytes(2, 'little') + bytes(cpu.reu[addr:addr + n])
     return bytes(out)
 
@@ -411,7 +412,8 @@ def main():
             # The state after the frame (the next one has not flown yet): the agent, the gauges.
             got += bytes(cpu.mem[AGENT:AGENT + AGENT_BYTES]) + bytes(cpu.mem[GAUGES:GAUGES + 7])
             got += bytes(cpu.mem[GAUGES + 7:GAUGES + 7 + NEAR_LEN + 2]) + bytes(cpu.reu[WAR:WAR + WAR_LEN]) + \
-                bytes(cpu.reu[BRAINS:BRAINS + BRAINS_LEN]) + bytes(cpu.mem[COMBAT:COMBAT + COMBAT_LEN]) + \
+                bytes(cpu.reu[BRAINS:BRAINS + BRAINS_LEN]) + bytes(cpu.reu[PILOT:PILOT + PILOT_LEN]) + \
+                bytes(cpu.mem[COMBAT:COMBAT + COMBAT_LEN]) + \
                 bytes(cpu.mem[FX:FX + FX_LEN])
             want = host_frame(args.reu, state, doubled)
             # (The stick and the take-over in the agent are already the next frame's: the main loop reads

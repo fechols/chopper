@@ -965,6 +965,8 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i
             use crate::combat::{PLAYER, player};
             let d = hw.peek(PLAYER + player::DAMAGE).saturating_add(stats::DAMAGE[kind]);
             hw.poke(PLAYER + player::DAMAGE, d);
+            let t = hw.peek(PLAYER + player::TAKEN).wrapping_add(stats::DAMAGE[kind]);
+            hw.poke(PLAYER + player::TAKEN, t);
             hw.poke(PLAYER + player::FLASH, 12);
             let dealt = hw.peek(r + rec::DEALT).saturating_add(stats::DAMAGE[kind]);
             hw.poke(r + rec::DEALT, dealt);

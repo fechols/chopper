@@ -36,6 +36,8 @@ pub const HOME: (i32, i32) = (1024, 760);
 /// (its turn carries it about 200 texels further: positions stay well inside 16 bits).
 pub const SEA_WARN: i16 = 150;
 pub const SEA_LIMIT: i16 = 300;
+/// Waypoints stay this far inside the map's edge (texels): a roaming turn's width and more.
+pub const EDGE: i16 = 320;
 /// Cruise altitude, texels (over the 6-texel tower; mountains are 22-34).
 pub const CRUISE: i16 = 16;
 /// Off the pad (`grounded` clears) at this height, 8.8: over the tower before moving.
@@ -48,10 +50,12 @@ const DEG: i16 = 182;
 /// bank comes from the heading error), pitch attitude (nose down negative: −11° cruises at 0.5 texel a
 /// tick), climb rate (8.8 texels a tick).
 const TARGET_BANK: [i16; 16] = [0, 0, 0, 0, 0, 0, -30 * DEG, 30 * DEG, 0, 0, 0, 0, 0, 0, 0, 0];
-const TARGET_PITCH: [i16; 16] = [0, 0, -1024, -2048, -2048, -2048, -1024, -1024, -2048, -2048, 0, 0, 0, 0, 0, 0];
-const TARGET_CLIMB: [i16; 16] = [0, 24, 40, 0, 0, 0, 0, 0, -40, 0, 0, 0, 0, 0, 0, 0];
+const TARGET_PITCH: [i16; 16] = [0, 0, -1024, -2048, -2048, -2048, -1024, -1024, -2048, -2048, -2048, -2048, -256, 0, 0, 0];
+const TARGET_CLIMB: [i16; 16] = [0, 24, 40, 0, 0, 0, 0, 0, -40, 0, 0, 0, 0, -24, 0, 0];
 /// Turns bank between these (binary angle), in proportion to the heading error.
 const TURN_BANK_MIN: i16 = 10 * DEG;
+/// In the fight (hunting, or home hurt), turns bank this hard: a circle about 60 texels across at cruise.
+const FIGHT_BANK: i16 = 30 * DEG;
 const TURN_BANK_MAX: i16 = 20 * DEG;
 /// Bank per unit of heading error (`features`' `steer` scale: ±32 ≈ the waypoint abeam).
 const STEER_GAIN: i16 = 320;
@@ -90,7 +94,18 @@ pub mod feature {
     pub const HAZ_RIGHT: usize = 8;
     /// The largest of the four.
     pub const HAZ_MAX: usize = 9;
-    pub const COUNT: usize = 10;
+    /// The fight (`Agent::combat`, set by `combat::update`), 0 or 1 each: a prey chosen (the waypoint is
+    /// it), the seeker locked on with a missile left, hurt (the waypoint is home: land, rearm, repair).
+    pub const HUNT: usize = 10;
+    pub const LOCK: usize = 11;
+    pub const HURT: usize = 12;
+    /// A fresh random byte: the learn nodes' test (`goap`'s ties, `brain::walk`).
+    pub const RAND: usize = 13;
+    /// 1 when the waypoint lies inside the turning circle on its side (at this speed and the turn's
+    /// bank): no turn brings it ahead; fly on out of the circle first.
+    pub const INSIDE: usize = 14;
+    pub const COUNT: usize = 15;
+    const _: () = assert!(RAND as u8 == crate::brain::PILOT_LEARN && COUNT <= BLOCK);
     /// The feature block's size: a power of two, so slots index it with `& 15` and no bounds check.
     pub const BLOCK: usize = 16;
 }
@@ -107,9 +122,15 @@ pub mod action {
     pub const EVADE_R: u8 = 7;
     pub const DESCEND: u8 = 8;
     pub const NEXT_WP: u8 = 9;
-    pub const COUNT: u8 = 10;
+    /// The fight: on toward the prey with the gun firing, or loosing a missile at the lock; slowing over
+    /// home, then hovering down onto it.
+    pub const STRAFE: u8 = 10;
+    pub const LAUNCH: u8 = 11;
+    pub const SLOW: u8 = 12;
+    pub const LAND: u8 = 13;
+    pub const COUNT: u8 = 14;
     pub const NAMES: [&str; COUNT as usize] =
-        ["idle", "lift", "climb", "forward", "turn-l", "turn-r", "evade-l", "evade-r", "descend", "next-wp"];
+        ["idle", "lift", "climb", "forward", "turn-l", "turn-r", "evade-l", "evade-r", "descend", "next-wp", "strafe", "launch", "slow", "land"];
 }
 
 /// The helicopter's state: [`Agent::BYTES`] bytes, laid out as [`Agent::to_bytes`] (the C64's `AGENT`
@@ -149,7 +170,19 @@ pub struct Agent {
     pub du: i16,
     pub dv: i16,
     pub dyaw: u8,
-    pub pad: [u8; 3],
+    /// The fight (`combat` bits, written by `combat::update` each frame; the autopilot's features).
+    pub combat: u8,
+    /// The last learn node a decision passed and its branch (blob offset | 1 << 15 for its yes branch;
+    /// 0 none), for `combat::update` to file on the learning trail (and clear).
+    pub learned: [u8; 2],
+}
+
+/// `Agent::combat`.
+pub mod combat {
+    /// (Bits 0-2: the features read them so.)
+    pub const HUNT: u8 = 1;
+    pub const LOCKED: u8 = 2;
+    pub const HURT: u8 = 4;
 }
 
 /// `Agent::deck`.
@@ -175,6 +208,8 @@ pub const MODE_PLAYER: u8 = 1;
 pub const THROTTLE_MAX: u8 = 64;
 const PLAYER_BANK: i16 = 25 * DEG;
 const FLARE: i16 = 768;
+/// Hurt, the autopilot flies no faster than this pitch's speed (half the cruise).
+const HURT_PITCH: i16 = -1024;
 
 impl Default for Agent {
     fn default() -> Self {
@@ -264,7 +299,8 @@ impl Agent {
             du: 0,
             dv: 0,
             dyaw: 0,
-            pad: [0; 3],
+            combat: 0,
+            learned: [0; 2],
         }
     }
 
@@ -376,7 +412,22 @@ impl Agent {
         };
         self.steer = (-err * STEER_GAIN).clamp(-TURN_BANK_MAX, TURN_BANK_MAX);
         let (ax, ay) = (dx.abs(), dy.abs());
-        f[DIST] = clamp8((ax.max(ay) + (ax.min(ay) >> 1)) >> 3);
+        // In 8-texel units (close: the gun's range). Going home hurt, in 4-texel ones (close: time to slow,
+        // within 40 texels; arrived: over the pad, within 16).
+        let c = self.combat;
+        f[DIST] = clamp8((ax.max(ay) + (ax.min(ay) >> 1)) >> if c & combat::HURT != 0 { 2 } else { 3 });
+        // Inside the turning circle on the waypoint's side: lat² + fwd² < 2·R·|lat|, R the circle's radius
+        // (speed over the turn rate of the fight's hard turns; the roaming ones swing wider, but roaming
+        // never orbits long: its waypoints move on). In 4-texel units (fwd and lat are 1/4 texel).
+        // (A circle is at most 2·31 units across: beyond 64 either way, outside; within, the squares fit.)
+        let r = self.speed() >> 3;
+        let (l, w) = ((lat >> 4).abs(), (fwd >> 4).abs());
+        f[INSIDE] = (l < 64 && w < 64 && l * l + w * w < 2 * r * l) as u8;
+        f[HUNT] = c & combat::HUNT;
+        f[LOCK] = c >> 1 & 1;
+        f[HURT] = c >> 2 & 1;
+        self.seed = xorshift(self.seed);
+        f[RAND] = self.seed as u8;
         // The probes in feature order (the near pair both into HAZ_NEAR), each obstacle top − altitude.
         let mut max = 0;
         for &(slot, angle, d) in &PROBES {
@@ -388,23 +439,23 @@ impl Agent {
         f[HAZ_MAX] = max;
     }
 
-    /// A new waypoint: the first of up to 16 random cells that is clear land (no mountain, no sea) at
-    /// least 256 texels away (the old one kept if none is).
+    /// A new waypoint: a random sector's (`world_sim`'s 128 texels) centre, kept [`EDGE`] inside the
+    /// map's edge, on clear land (no mountain, no sea) at least 256 texels away: of up to 16 tries, the
+    /// first holding enemies (toward the fight); then of 16 more, any (the old one kept if none is).
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     fn next_waypoint<R: Reu + ?Sized>(&mut self, reu: &mut R) {
+        use crate::world_sim::{SECTOR, SECTORS, sec};
         let (pu, pv) = self.at();
-        for _ in 0..16 {
+        for k in 0..32u8 {
             self.seed = xorshift(self.seed);
-            // Cells 4..60 each way (unsigned: one compare).
-            let (cu, cv) = (self.seed & 63, self.seed >> 8 & 63);
-            if cu.wrapping_sub(4) >= 56 || cv.wrapping_sub(4) >= 56 {
-                continue;
-            }
-            let (u, v) = ((cu << HAZARD_SHIFT | 16) as i16, (cv << HAZARD_SHIFT | 16) as i16);
-            if (u - pu).abs() + (v - pv).abs() >= 256 && cell(reu, u, v) == 0 {
-                self.wu = u;
-                self.wv = v;
+            let sector = self.seed as u8;
+            let mut n = [0u8];
+            reu.read(SECTORS + sector as u32 * SECTOR as u32 + sec::COUNT as u32 + crate::actors::ENEMY as u32, &mut n);
+            let c = |k: u8| ((k as i16) << 7 | 64).clamp(EDGE, 2048 - EDGE);
+            let (u, v) = (c(sector & 15), c(sector >> 4));
+            if (n[0] != 0 || k >= 16) && (u - pu).abs() + (v - pv).abs() >= 256 && cell(reu, u, v) == 0 {
+                (self.wu, self.wv) = (u, v);
                 return;
             }
         }
@@ -433,13 +484,17 @@ impl Agent {
             };
             return;
         }
-        let mut a = brain::walk(reu, AI_TREES, brain::PILOT, &f);
-        if a == action::NEXT_WP {
+        let (mut a, mut learned) = brain::walk(reu, AI_TREES, brain::PILOT, &f);
+        // At the waypoint: the next (unless the fight owns it: the prey, or home).
+        if a == action::NEXT_WP && self.combat & (combat::HUNT | combat::HURT) == 0 {
             self.next_waypoint(reu);
             self.features(reu, &mut f);
-            a = brain::walk(reu, AI_TREES, brain::PILOT, &f);
+            (a, learned) = brain::walk(reu, AI_TREES, brain::PILOT, &f);
         }
-        self.action = if a < action::NEXT_WP { a } else { action::FORWARD };
+        self.action = if a == action::NEXT_WP { action::FORWARD } else { a };
+        if learned != 0 {
+            self.learned = learned.to_le_bytes();
+        }
         if f[feature::BEARING] != 128 {
             // Flying on past an obstacle: wings level until the waypoint is ahead again.
             self.steer = 0;
@@ -485,13 +540,18 @@ impl Agent {
             let want = -((self.throttle as i16) << 5);
             (bank, if self.grounded != 0 { 0 } else if self.vf > (-want << 2) + 512 { FLARE } else { want })
         } else {
+            // (In the fight, the turns are hard: a tight circle onto the prey, or home.)
+            let hard = if self.combat != 0 { FIGHT_BANK } else { TURN_BANK_MIN };
             let bank = match self.action {
-                action::TURN_L => -self.steer.abs().max(TURN_BANK_MIN),
-                action::TURN_R => self.steer.abs().max(TURN_BANK_MIN),
-                action::FORWARD => self.steer,
+                action::TURN_L => -self.steer.abs().max(hard),
+                action::TURN_R => self.steer.abs().max(hard),
+                action::FORWARD | action::STRAFE | action::LAUNCH | action::SLOW | action::LAND => self.steer,
                 _ => TARGET_BANK[k],
             };
-            (bank, TARGET_PITCH[k])
+            // Hurt, home at half speed at most (a tighter circle, a gentler arrival); landing, a flare
+            // while it still moves, then level as it settles.
+            let pitch = if self.combat & combat::HURT != 0 { TARGET_PITCH[k].max(HURT_PITCH) } else { TARGET_PITCH[k] };
+            (bank, if self.action == action::LAND && self.vf > 256 { FLARE } else { pitch })
         };
         // The attitude follows, lagged and rate-limited; the bank turns, the pitch drives the speed.
         follow(&mut self.roll, bank, ROLL_RATE);
@@ -529,7 +589,8 @@ impl Agent {
         if self.h < floor {
             self.h = floor;
             self.climb = self.climb.max(0);
-            if self.mode == MODE_PLAYER && self.action == action::DESCEND && self.grounded == 0 {
+            let down = if self.mode == MODE_PLAYER { action::DESCEND } else { action::LAND };
+            if self.action == down && self.grounded == 0 {
                 self.grounded = 1;
                 self.vf = 0;
                 if let Some((x, y, yaw)) = over {
@@ -599,7 +660,8 @@ impl Agent {
             du: w(12) as i16,
             dv: w(13) as i16,
             dyaw: b[44],
-            pad: [b[45], b[46], b[47]],
+            combat: b[45],
+            learned: [b[46], b[47]],
         }
     }
 
@@ -624,7 +686,8 @@ impl Agent {
         b[40..42].copy_from_slice(&self.du.to_le_bytes());
         b[42..44].copy_from_slice(&self.dv.to_le_bytes());
         b[44] = self.dyaw;
-        b[45..48].copy_from_slice(&self.pad);
+        b[45] = self.combat;
+        b[46..48].copy_from_slice(&self.learned);
         b
     }
 }

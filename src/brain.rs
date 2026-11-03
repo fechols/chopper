@@ -37,23 +37,38 @@ impl Reu for &[u8] {
     }
 }
 
-/// Walk tree `tree` of the blob at REU `base` over `features`: the leaf's action.
+/// The pilot's learn nodes test this feature (`agent::feature::RAND`, a fresh random byte): under the
+/// node's odds (its threshold), its first branch (`lt`, "yes").
+pub const PILOT_LEARN: u8 = 13;
+/// The pilot's learning baseline (i8, the reward × 8 it has come to expect) in the blob's header.
+pub const PILOT_BASELINE: usize = 32;
+/// The bytes of the pilot's blob the game writes as it learns (its header and nodes: the snapshot gate's).
+pub const PILOT_LEN: u32 = 0x0800;
+
+/// Walk tree `tree` of the blob at REU `base` over `features` (a block of 16): the leaf's action, and the first learn node
+/// passed (its blob offset, | `1 << 15` for its yes branch; 0 none).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
-pub fn walk<R: Reu + ?Sized>(reu: &mut R, base: u32, tree: usize, features: &[u8]) -> u8 {
+pub fn walk<R: Reu + ?Sized>(reu: &mut R, base: u32, tree: usize, features: &[u8]) -> (u8, u16) {
     let mut root = [0u8; 2];
     reu.read(base + (ROOTS + 2 * tree) as u32, &mut root);
     let mut at = u16::from_le_bytes(root);
+    let mut learned = 0u16;
     let mut n = [0u8; NODE_BYTES];
     for _ in 0..MAX_DEPTH {
         reu.read(base + at as u32, &mut n);
         if n[0] == LEAF {
-            return n[1];
+            return (n[1], learned);
         }
-        let f = features.get(n[0] as usize).copied().unwrap_or(0);
-        at = if f >= n[1] { u16::from_le_bytes([n[2], n[3]]) } else { u16::from_le_bytes([n[4], n[5]]) };
+        // (A feature block of 16, `agent::feature::BLOCK`: `& 15`, no bounds check in the overlay.)
+        let f = features[n[0] as usize & 15];
+        let ge = f >= n[1];
+        if n[0] == PILOT_LEARN && learned == 0 {
+            learned = at | (!ge as u16) << 15;
+        }
+        at = if ge { u16::from_le_bytes([n[2], n[3]]) } else { u16::from_le_bytes([n[4], n[5]]) };
     }
-    0
+    (0, learned)
 }
 
 /// The war's units' trees (`roles`, in `format::TREES`): their features, moves and learn nodes.

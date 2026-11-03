@@ -20,8 +20,12 @@ pub const STATE_RAM: &[(u16, u16)] = &[
     (crate::combat::STATE, crate::combat::STATE_LEN),
     (crate::combat::FX, crate::combat::FX_MAX as u16 * crate::combat::FX_ENTRY),
 ];
-/// REU ranges the game writes as it plays: the war.
-pub const STATE_REU: &[(u32, u32)] = &[(crate::world_sim::STATE, crate::world_sim::STATE_LEN), (crate::world_sim::BRAINS, crate::world_sim::BRAINS_LEN)];
+/// REU ranges the game writes as it plays: the war, the units' brains, the pilot's (learning).
+pub const STATE_REU: &[(u32, u32)] = &[
+    (crate::world_sim::STATE, crate::world_sim::STATE_LEN),
+    (crate::world_sim::BRAINS, crate::world_sim::BRAINS_LEN),
+    (crate::format::AI_TREES, crate::brain::PILOT_LEN),
+];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {

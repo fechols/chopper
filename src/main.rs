@@ -97,6 +97,8 @@ fn frame(args: &[String]) -> Result<(), String> {
     bin.extend_from_slice(&m.reu[war..war + chopper::world_sim::STATE_LEN as usize]);
     let brains = chopper::world_sim::BRAINS as usize;
     bin.extend_from_slice(&m.reu[brains..brains + chopper::world_sim::BRAINS_LEN as usize]);
+    let pilot = chopper::format::AI_TREES as usize;
+    bin.extend_from_slice(&m.reu[pilot..pilot + chopper::brain::PILOT_LEN as usize]);
     // The player's fight and the effects playing.
     let fight = chopper::combat::STATE as usize;
     bin.extend_from_slice(&m.ram[fight..fight + chopper::combat::STATE_LEN as usize]);
@@ -204,15 +206,16 @@ fn agent(args: &[String]) -> Result<(), String> {
 /// The planner's operators, some plans, and the tree.
 fn brain() -> Result<(), String> {
     use chopper::goap::{self, OPS, SYMBOLS, s};
-    let names = |st: u16| SYMBOLS.iter().enumerate().filter(|(k, _)| st >> k & 1 != 0).map(|(_, y)| y.name).collect::<Vec<_>>().join(" ");
-    for st in [s::GROUNDED, s::GROUNDED | s::ROTOR, s::BLOCKED, s::BLOCKED | s::BLOCKED_L, s::BLOCKED | s::BLOCKED_L | s::BLOCKED_R, s::WP_L, s::WP_R | s::BLOCKED_R, s::HIGH, s::HIGH | s::OVER] {
+    let names = |st: u32| SYMBOLS.iter().enumerate().filter(|(k, _)| st >> k & 1 != 0).map(|(_, y)| y.name).collect::<Vec<_>>().join(" ");
+    for st in [s::GROUNDED, s::GROUNDED | s::ROTOR, s::BLOCKED, s::BLOCKED | s::BLOCKED_L, s::BLOCKED | s::BLOCKED_L | s::BLOCKED_R, s::WP_L, s::WP_R | s::BLOCKED_R, s::HIGH, s::HIGH | s::OVER, s::HUNT, s::HUNT | s::WP_L, s::HUNT | s::CLOSE, s::HUNT | s::CLOSE | s::WP_R, s::HUNT | s::LOCKED, s::HURT, s::HURT | s::CLOSE, s::HURT | s::ARRIVED, s::HURT | s::GROUNDED | s::ROTOR] {
         let plan = goap::plan(st).map(|p| p.iter().map(|&k| OPS[k].name).collect::<Vec<_>>().join(" -> "));
         println!("[{}]: {}", names(st), plan.unwrap_or("none".into()));
     }
     let table = goap::table();
     let tree = goap::pilot_tree(&table);
     let blob = goap::compile();
-    println!("tree: {} nodes, depth {}; blob {} bytes", tree.nodes(), tree.depth(), blob.len());
+    let learns = table.iter().filter(|&&a| a >= goap::LEARN).count();
+    println!("tree: {} nodes, depth {}; blob {} bytes; {learns} states at a learn node", tree.nodes(), tree.depth(), blob.len());
     Ok(())
 }
 

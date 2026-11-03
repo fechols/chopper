@@ -10,7 +10,7 @@
 //!
 //! The same machinery will drive the enemies: more symbols, operators and goals, more trees.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 use crate::agent::{action, feature};
 use crate::brain;
@@ -28,23 +28,35 @@ const fn sym(name: &'static str, feature: usize, threshold: u8, ge: bool) -> Sym
     Symbol { name, feature: feature as u8, threshold, ge }
 }
 
-pub const N: usize = 12;
-/// Bits of a state.
+pub const N: usize = 17;
+/// Bits of a state: the symbols, then the planning-only bits (never in a real state: a goal's).
 pub mod s {
-    pub const GROUNDED: u16 = 1 << 0;
-    pub const ROTOR: u16 = 1 << 1;
-    pub const LOW: u16 = 1 << 2;
-    pub const HIGH: u16 = 1 << 3;
-    pub const BLOCKED: u16 = 1 << 4;
-    pub const BLOCKED_FAR: u16 = 1 << 5;
-    pub const BLOCKED_L: u16 = 1 << 6;
-    pub const BLOCKED_R: u16 = 1 << 7;
+    pub const GROUNDED: u32 = 1 << 0;
+    pub const ROTOR: u32 = 1 << 1;
+    pub const LOW: u32 = 1 << 2;
+    pub const HIGH: u32 = 1 << 3;
+    pub const BLOCKED: u32 = 1 << 4;
+    pub const BLOCKED_FAR: u32 = 1 << 5;
+    pub const BLOCKED_L: u32 = 1 << 6;
+    pub const BLOCKED_R: u32 = 1 << 7;
     /// Something within 12 texels below: no descending yet.
-    pub const OVER: u16 = 1 << 8;
-    pub const WP_L: u16 = 1 << 9;
-    pub const WP_R: u16 = 1 << 10;
-    pub const ARRIVED: u16 = 1 << 11;
+    pub const OVER: u32 = 1 << 8;
+    pub const WP_L: u32 = 1 << 9;
+    pub const WP_R: u32 = 1 << 10;
+    pub const ARRIVED: u32 = 1 << 11;
+    /// The fight: a prey (the waypoint is it), the seeker locked with a missile left, hurt (the waypoint
+    /// is home), and the waypoint near (the gun's range; over home, time to slow).
+    pub const HUNT: u32 = 1 << 12;
+    pub const LOCKED: u32 = 1 << 13;
+    pub const HURT: u32 = 1 << 14;
+    pub const CLOSE: u32 = 1 << 15;
+    /// The waypoint inside the turning circle on its side: no turn brings it ahead.
+    pub const INSIDE: u32 = 1 << 16;
+    /// Planning only: the prey engaged (a burst or a missile on its way).
+    pub const ENGAGED: u32 = 1 << 17;
 }
+/// Planning states: the symbols and the planning-only bits.
+const STATES: usize = 1 << (N + 1);
 
 pub const SYMBOLS: [Symbol; N] = [
     sym("grounded", feature::GROUND, 1, true),
@@ -59,6 +71,11 @@ pub const SYMBOLS: [Symbol; N] = [
     sym("wp-l", feature::BEARING, 96, false),
     sym("wp-r", feature::BEARING, 160, true),
     sym("arrived", feature::DIST, 4, false),
+    sym("hunt", feature::HUNT, 1, true),
+    sym("locked", feature::LOCK, 1, true),
+    sym("hurt", feature::HURT, 1, true),
+    sym("close", feature::DIST, 10, false),
+    sym("inside", feature::INSIDE, 1, true),
 ];
 
 /// An operator: applicable when every `need` bit is set and every `not` bit clear; sets `set`, clears
@@ -67,21 +84,36 @@ pub const SYMBOLS: [Symbol; N] = [
 pub struct Op {
     pub name: &'static str,
     pub leaf: u8,
-    pub need: u16,
-    pub not: u16,
-    pub set: u16,
-    pub clear: u16,
+    pub need: u32,
+    pub not: u32,
+    pub set: u32,
+    pub clear: u32,
     pub cost: u32,
 }
 
-const AIR: u16 = s::GROUNDED;
-const ALL_BLOCKS: u16 = s::BLOCKED | s::BLOCKED_FAR | s::BLOCKED_L | s::BLOCKED_R;
+const AIR: u32 = s::GROUNDED;
+const ALL_BLOCKS: u32 = s::BLOCKED | s::BLOCKED_FAR | s::BLOCKED_L | s::BLOCKED_R;
+/// Not dead ahead: the waypoint (prey, home) off to a side.
+const ASIDE: u32 = s::WP_L | s::WP_R;
 
 /// The helicopter's operators, in tie-break order.
-pub const OPS: [Op; 13] = [
+pub const OPS: [Op; 21] = [
     Op { name: "wait", leaf: action::IDLE, need: s::GROUNDED, not: s::ROTOR, set: s::ROTOR, clear: 0, cost: 1 },
     Op { name: "lift", leaf: action::LIFT, need: s::GROUNDED | s::ROTOR, not: 0, set: s::LOW, clear: s::GROUNDED, cost: 1 },
     Op { name: "climb-up", leaf: action::CLIMB, need: s::LOW, not: AIR, set: 0, clear: s::LOW, cost: 1 },
+    // The fight: a missile at the lock, or the gun on the run in; or round again for another pass.
+    Op { name: "launch", leaf: action::LAUNCH, need: s::HUNT | s::LOCKED, not: AIR | s::LOW, set: s::ENGAGED, clear: 0, cost: 1 },
+    Op { name: "strafe", leaf: action::STRAFE, need: s::HUNT | s::CLOSE, not: AIR | s::LOW | s::HIGH | ALL_BLOCKS | ASIDE, set: s::ENGAGED, clear: 0, cost: 2 },
+    Op { name: "run-in", leaf: action::FORWARD, need: s::HUNT, not: AIR | s::LOW | s::HIGH | ALL_BLOCKS | ASIDE | s::CLOSE, set: s::CLOSE, clear: 0, cost: 2 },
+    // The waypoint inside the turning circle (the prey just overflown, home just off a side): on, wings
+    // level, out of the circle; then round onto it.
+    Op { name: "extend", leaf: action::FORWARD, need: s::INSIDE, not: AIR | s::LOW | s::BLOCKED, set: 0, clear: s::INSIDE | s::CLOSE | s::ARRIVED, cost: 2 },
+    // Home: slow over it (only what is dead ahead matters), then straight down onto it (a hill off to
+    // a side, seen by the side probes, does not).
+    Op { name: "slow", leaf: action::SLOW, need: s::HURT | s::CLOSE, not: AIR | s::ARRIVED | s::BLOCKED | ASIDE, set: s::ARRIVED, clear: 0, cost: 1 },
+    Op { name: "land", leaf: action::LAND, need: s::HURT | s::ARRIVED, not: AIR | s::HIGH, set: s::GROUNDED, clear: s::LOW, cost: 1 },
+    // Hurt and landed away from home: up again.
+    Op { name: "relift", leaf: action::LIFT, need: s::GROUNDED | s::ROTOR | s::HURT, not: s::ARRIVED, set: s::LOW, clear: s::GROUNDED, cost: 1 },
     // Steer round: away from the obstacle, past it, back toward the waypoint.
     Op { name: "evade-l", leaf: action::EVADE_L, need: 0, not: AIR | s::LOW | s::BLOCKED_L, set: s::WP_R | s::BLOCKED_R, clear: s::BLOCKED | s::BLOCKED_FAR | s::WP_L, cost: 2 },
     Op { name: "evade-r", leaf: action::EVADE_R, need: 0, not: AIR | s::LOW | s::BLOCKED_R, set: s::WP_L | s::BLOCKED_L, clear: s::BLOCKED | s::BLOCKED_FAR | s::WP_R, cost: 2 },
@@ -89,86 +121,133 @@ pub const OPS: [Op; 13] = [
     // Or climb over it, and back down once clear.
     Op { name: "climb-over", leaf: action::CLIMB, need: 0, not: AIR | s::LOW, set: s::HIGH | s::OVER, clear: ALL_BLOCKS, cost: 6 },
     Op { name: "descend", leaf: action::DESCEND, need: s::HIGH, not: AIR | ALL_BLOCKS | s::OVER, set: 0, clear: s::HIGH, cost: 1 },
-    Op { name: "turn-l", leaf: action::TURN_L, need: s::WP_L, not: AIR | s::LOW | s::BLOCKED_L, set: 0, clear: s::WP_L, cost: 1 },
-    Op { name: "turn-r", leaf: action::TURN_R, need: s::WP_R, not: AIR | s::LOW | s::BLOCKED_R, set: 0, clear: s::WP_R, cost: 1 },
-    Op { name: "fly-to", leaf: action::FORWARD, need: 0, not: AIR | s::LOW | s::HIGH | ALL_BLOCKS | s::WP_L | s::WP_R, set: s::ARRIVED, clear: 0, cost: 2 },
-    Op { name: "fly-to-high", leaf: action::FORWARD, need: s::HIGH, not: AIR | ALL_BLOCKS | s::WP_L | s::WP_R, set: s::ARRIVED, clear: 0, cost: 4 },
+    // A turn brings the waypoint ahead only from outside the turning circle.
+    Op { name: "turn-l", leaf: action::TURN_L, need: s::WP_L, not: AIR | s::LOW | s::BLOCKED_L | s::INSIDE, set: 0, clear: s::WP_L, cost: 1 },
+    Op { name: "turn-r", leaf: action::TURN_R, need: s::WP_R, not: AIR | s::LOW | s::BLOCKED_R | s::INSIDE, set: 0, clear: s::WP_R, cost: 1 },
+    Op { name: "fly-to", leaf: action::FORWARD, need: 0, not: AIR | s::LOW | s::HIGH | ALL_BLOCKS | ASIDE, set: s::ARRIVED, clear: 0, cost: 2 },
+    Op { name: "fly-to-high", leaf: action::FORWARD, need: s::HIGH, not: AIR | ALL_BLOCKS | ASIDE, set: s::ARRIVED, clear: 0, cost: 4 },
     // Should the waypoint be behind a blocked side with the way ahead clear: hold on until it is not.
     Op { name: "hold", leaf: action::FORWARD, need: 0, not: AIR | s::LOW | s::BLOCKED, set: 0, clear: s::BLOCKED_L | s::BLOCKED_R, cost: 3 },
+    // Over a hold-up below (no landing on it): on past it.
+    Op { name: "overfly", leaf: action::FORWARD, need: s::OVER, not: AIR | s::HIGH, set: 0, clear: s::OVER | s::ARRIVED, cost: 4 },
 ];
 
-/// The goal: at the waypoint, in the air at cruise height or above.
-pub fn goal(state: u16) -> bool {
-    state & s::ARRIVED != 0 && state & (s::GROUNDED | s::LOW) == 0
+/// The close calls the pilot learns in flight: operator pairs (by name) whose plans cost within
+/// [`MARGIN`] of each other. A state where the first is the best and the second that good gets a learn
+/// node between them (`brain`: the first under its odds, the second otherwise), one per pair, shared by
+/// every such state.
+pub const LEARN_PAIRS: [(&str, &str); 4] = [("launch", "strafe"), ("strafe", "launch"), ("evade-l", "evade-r"), ("evade-r", "evade-l")];
+pub const MARGIN: u32 = 1;
+/// A learn node's table entry: this plus the pair's index (the table's other entries are actions).
+pub const LEARN: u8 = 0x80;
+
+/// The goal: home, landed (when hurt); the prey engaged (when hunting); else at the waypoint, in the air
+/// at cruise height or above.
+pub fn goal(state: u32) -> bool {
+    if state & s::HURT != 0 {
+        state & (s::GROUNDED | s::ARRIVED) == s::GROUNDED | s::ARRIVED
+    } else if state & s::HUNT != 0 {
+        state & s::ENGAGED != 0
+    } else {
+        state & s::ARRIVED != 0 && state & (s::GROUNDED | s::LOW) == 0
+    }
 }
 
-fn applies(op: &Op, state: u16) -> bool {
+fn applies(op: &Op, state: u32) -> bool {
     state & op.need == op.need && state & op.not == 0
 }
 
-/// The cheapest operator sequence from `start` to the goal (A*; ties go to the earlier operator), or
-/// `None` if there is none.
-pub fn plan(start: u16) -> Option<Vec<usize>> {
-    // Admissible: any unmet goal costs at least one more action.
-    let h = |st: u16| (!goal(st)) as u32;
-    let mut best: HashMap<u16, u32> = HashMap::new();
-    let mut came: HashMap<u16, (u16, usize)> = HashMap::new();
-    let mut open = BinaryHeap::new();
-    let mut seq = 0u32;
-    open.push(std::cmp::Reverse((h(start), seq, 0u32, start)));
-    best.insert(start, 0);
-    while let Some(std::cmp::Reverse((_, _, g, st))) = open.pop() {
-        if g > best[&st] {
-            continue;
-        }
-        if goal(st) {
-            let mut ops = Vec::new();
-            let mut at = st;
-            while at != start {
-                let (prev, op) = came[&at];
-                ops.push(op);
-                at = prev;
-            }
-            ops.reverse();
-            return Some(ops);
-        }
-        for (k, op) in OPS.iter().enumerate() {
-            if !applies(op, st) {
-                continue;
-            }
-            let next = (st | op.set) & !op.clear;
-            let g2 = g + op.cost;
-            if best.get(&next).is_none_or(|&b| g2 < b) {
-                best.insert(next, g2);
-                came.insert(next, (st, k));
-                seq += 1;
-                open.push(std::cmp::Reverse((g2 + h(next), seq, g2, next)));
-            }
-        }
-    }
-    None
+fn next(op: &Op, state: u32) -> u32 {
+    (state | op.set) & !op.clear
 }
 
-/// The action for every state: [`action::NEXT_WP`] at the goal, the plan's first action otherwise
-/// ([`action::FORWARD`] where there is no plan).
+/// Every planning state's cheapest cost to the goal (`u32::MAX`: none), relaxed to a fixed point.
+pub fn costs() -> &'static [u32] {
+    static C: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let mut c: Vec<u32> = (0..STATES as u32).map(|st| if goal(st) { 0 } else { u32::MAX }).collect();
+        loop {
+            let mut changed = false;
+            for st in 0..STATES as u32 {
+                if c[st as usize] == 0 {
+                    continue;
+                }
+                for op in OPS.iter().filter(|op| applies(op, st)) {
+                    let n = c[next(op, st) as usize];
+                    if n != u32::MAX && n + op.cost < c[st as usize] {
+                        c[st as usize] = n + op.cost;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                return c;
+            }
+        }
+    })
+}
+
+/// Each applicable operator with a plan after it: (operator, the whole plan's cost).
+fn options(state: u32) -> Vec<(usize, u32)> {
+    let c = costs();
+    OPS.iter()
+        .enumerate()
+        .filter(|(_, op)| applies(op, state) && c[next(op, state) as usize] != u32::MAX)
+        .map(|(k, op)| (k, op.cost + c[next(op, state) as usize]))
+        .collect()
+}
+
+/// The cheapest operator sequence from `start` to the goal (ties go to the earlier operator), or `None`
+/// if there is none.
+pub fn plan(start: u32) -> Option<Vec<usize>> {
+    let mut st = start;
+    let mut ops = Vec::new();
+    while !goal(st) {
+        let &(k, _) = options(st).iter().min_by_key(|&&(k, c)| (c, k))?;
+        ops.push(k);
+        st = next(&OPS[k], st);
+    }
+    Some(ops)
+}
+
+fn op_index(name: &str) -> usize {
+    OPS.iter().position(|o| o.name == name).expect("an operator")
+}
+
+/// The action for every symbol state: at the goal [`action::NEXT_WP`] ([`action::IDLE`] when hurt:
+/// landed home, rearming); a learn node ([`LEARN`] + its pair) where a learned pair's plans tie within
+/// [`MARGIN`]; else the plan's first action ([`action::FORWARD`] where there is no plan).
 pub fn table() -> Vec<u8> {
     (0..1u32 << N)
         .map(|st| {
-            let st = st as u16;
             if goal(st) {
-                action::NEXT_WP
-            } else {
-                plan(st).and_then(|p| p.first().map(|&k| OPS[k].leaf)).unwrap_or(action::FORWARD)
+                return if st & s::HURT != 0 { action::IDLE } else { action::NEXT_WP };
             }
+            let opts = options(st);
+            let Some(&(best, cost)) = opts.iter().min_by_key(|&&(k, c)| (c, k)) else { return action::FORWARD };
+            let near = |k: usize| opts.iter().any(|&(j, c)| j == k && c <= cost + MARGIN);
+            for (i, &(a, b)) in LEARN_PAIRS.iter().enumerate() {
+                let (a, b) = (op_index(a), op_index(b));
+                if a == best && near(b) && OPS[a].leaf != OPS[b].leaf {
+                    return LEARN + i as u8;
+                }
+            }
+            OPS[best].leaf
         })
         .collect()
 }
 
+/// A learn entry's two actions: under the node's odds, then otherwise.
+pub fn learn_pair(entry: u8) -> (u8, u8) {
+    let (a, b) = LEARN_PAIRS[(entry - LEARN) as usize];
+    (OPS[op_index(a)].leaf, OPS[op_index(b)].leaf)
+}
+
 /// The symbol state of a feature block.
-pub fn state_of(features: &[u8]) -> u16 {
+pub fn state_of(features: &[u8]) -> u32 {
     SYMBOLS.iter().enumerate().fold(0, |st, (k, sy)| {
         let ge = features[sy.feature as usize] >= sy.threshold;
-        st | ((ge == sy.ge) as u16) << k
+        st | ((ge == sy.ge) as u32) << k
     })
 }
 
@@ -181,7 +260,7 @@ pub enum Tree {
 }
 
 impl Tree {
-    pub fn eval(&self, state: u16) -> u8 {
+    pub fn eval(&self, state: u32) -> u8 {
         match self {
             Tree::Leaf(a) => *a,
             Tree::If(k, t, f) => if state >> k & 1 != 0 { t.eval(state) } else { f.eval(state) },
@@ -203,7 +282,7 @@ impl Tree {
     }
 }
 
-fn entropy(rows: &[u16], table: &[u8]) -> f64 {
+fn entropy(rows: &[u32], table: &[u8]) -> f64 {
     let mut count = [0usize; 256];
     for &r in rows {
         count[table[r as usize] as usize] += 1;
@@ -214,14 +293,14 @@ fn entropy(rows: &[u16], table: &[u8]) -> f64 {
 
 /// ID3: split on the symbol with the most information gain until every leaf is pure. Exact on the
 /// table (every state is a row).
-fn id3(rows: &[u16], table: &[u8], free: u16) -> Tree {
+fn id3(rows: &[u32], table: &[u8], free: u32) -> Tree {
     let first = table[rows[0] as usize];
     if rows.iter().all(|&r| table[r as usize] == first) {
         return Tree::Leaf(first);
     }
     let mut best: Option<(f64, usize)> = None;
     for k in (0..N).filter(|k| free >> k & 1 != 0) {
-        let (t, f): (Vec<u16>, Vec<u16>) = rows.iter().partition(|&&r| r >> k & 1 != 0);
+        let (t, f): (Vec<u32>, Vec<u32>) = rows.iter().partition(|&&r| r >> k & 1 != 0);
         if t.is_empty() || f.is_empty() {
             continue;
         }
@@ -232,15 +311,15 @@ fn id3(rows: &[u16], table: &[u8], free: u16) -> Tree {
         }
     }
     let (_, k) = best.expect("rows differ, so some symbol splits them");
-    let (t, f): (Vec<u16>, Vec<u16>) = rows.iter().partition(|&&r| r >> k & 1 != 0);
+    let (t, f): (Vec<u32>, Vec<u32>) = rows.iter().partition(|&&r| r >> k & 1 != 0);
     let free = free & !(1 << k);
     Tree::If(k, Box::new(id3(&t, table, free)), Box::new(id3(&f, table, free)))
 }
 
 /// The pilot's tree, exact on [`table`].
 pub fn pilot_tree(table: &[u8]) -> Tree {
-    let rows: Vec<u16> = (0..1u32 << N).map(|s| s as u16).collect();
-    id3(&rows, table, (1 << N) - 1)
+    let rows: Vec<u32> = (0..1u32 << N).collect();
+    id3(&rows, table, (1u32 << N) - 1)
 }
 
 /// Postorder emission (impact's `Emitter`): children first, identical nodes once.
@@ -263,6 +342,13 @@ impl Emitter {
 
     fn node(&mut self, tree: &Tree) -> u16 {
         match tree {
+            Tree::Leaf(a) if *a >= LEARN => {
+                // A learn node: a fresh random byte under its odds (from even) takes the first action.
+                let (yes, no) = learn_pair(*a);
+                let y = self.push([brain::LEAF, yes, 0, 0, 0, 0]).to_le_bytes();
+                let n = self.push([brain::LEAF, no, 0, 0, 0, 0]).to_le_bytes();
+                self.push([feature::RAND as u8, 128, n[0], n[1], y[0], y[1]])
+            }
             Tree::Leaf(a) => self.push([brain::LEAF, *a, 0, 0, 0, 0]),
             Tree::If(k, t, f) => {
                 let (yt, yf) = (self.node(t), self.node(f));

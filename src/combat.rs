@@ -35,7 +35,10 @@ pub mod proj {
     pub const TARGET: u16 = 10;
 }
 /// The player's state: damage taken (0..=`DOWN`), missiles left, the gun's cooldown (ticks), bursts fired,
-/// kills (u16), the last fire 2 (for its press), the hit flash (ticks), the tick of the last frame (u16).
+/// kills (u16), the last fire 2 (for its press), the hit flash (ticks), the tick of the last frame (u16);
+/// the autopilot's prey (unit, u16; `NOBODY` none); damage dealt and taken (counters, wrapping: the
+/// learning's rewards), and its learning trail: the last two learn nodes its decisions passed (newest
+/// first), each the node (blob offset | 1 << 15 for its yes branch, u16) and the counters then.
 pub const PLAYER: u16 = PROJ + PROJ_MAX * PROJ_ENTRY;
 pub mod player {
     pub const DAMAGE: u16 = 0;
@@ -47,8 +50,13 @@ pub mod player {
     pub const FLASH: u16 = 7;
     pub const LAST: u16 = 8;
     pub const LAST_FX: u16 = 10;
+    pub const PREY: u16 = 12;
+    pub const DEALT: u16 = 14;
+    pub const TAKEN: u16 = 15;
+    pub const TRAIL: u16 = 16;
+    pub const TRAIL_ENTRY: u16 = 4;
 }
-pub const PLAYER_LEN: u16 = 12;
+pub const PLAYER_LEN: u16 = 24;
 const _: () = assert!(PLAYER + PLAYER_LEN <= crate::layout::XFORM_RAM);
 /// Everything of this the frames carry (the snapshot gate).
 pub const STATE: u16 = PROJ;
@@ -172,6 +180,14 @@ pub const CONE_Y: i16 = 10;
 pub const MISSILES: u8 = 8;
 pub const MISSILE_DAMAGE: u8 = 40;
 pub const DOWN: u8 = 100;
+/// Landed within this many texels of home (each way), the helicopter is rearmed and repaired.
+pub const PAD: i16 = 16;
+/// The autopilot goes home to land, rearm and repair at this much damage (or with no missiles left).
+pub const HURT: u8 = 50;
+/// It hunts enemies within this range (texels, the larger axis plus half the smaller): the missile's.
+pub const PREY_RANGE: i16 = 250;
+/// A kill's worth to the learning, over the damage it dealt.
+pub const KILL_BONUS: u8 = 20;
 /// Projectile speeds (1/16 texel a tick) and lives (ticks).
 pub const TRACER_SPEED: u16 = 32;
 pub const TRACER_TTL: u8 = 60;
@@ -271,7 +287,7 @@ fn live(r: &[u8; ws::CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
 /// loop then restarts the agent at home).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combat"))]
-pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) -> bool {
+pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::FloorCam) -> bool {
     use crate::hud::{Eye, NEAR, S_TARGETS, TARGET, TARGETS, on_screen, screen, to_camera};
     let eye = Eye::new(cam);
     let now = a.t as u16;
@@ -284,6 +300,12 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     let mut decks = 0u8;
     let mut in_cone = ws::NOBODY;
     let mut cone_z = i16::MAX;
+    // The autopilot's prey: the one it had, while it lives and is near; else the nearest in range that no
+    // missile is after.
+    let auto = a.mode == crate::agent::MODE_AUTO;
+    let (pu, pv) = a.at();
+    let had = rd(hw, PLAYER + player::PREY);
+    let mut prey = (ws::NOBODY, 0i16, 0i16, PREY_RANGE);
     let mut r = [0u8; ws::CARRIER_RECORD];
     for k in 0..n as u16 {
         let id = rd(hw, ws::NEAR + 1 + 2 * k);
@@ -331,6 +353,15 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
         wr(hw, at + 2, tv as u16);
         hw.poke(at + 4, th as u8);
         count += 1;
+        if auto {
+            let (dx, dy) = ((tu - pu).abs(), (tv - pv).abs());
+            let d = dx.max(dy) + (dx.min(dy) >> 1);
+            if id == had {
+                prey = (id, tu, tv, -1);
+            } else if d < prey.3 && !chased(hw, id) {
+                prey = (id, tu, tv, d);
+            }
+        }
         // In the gun's cone?
         let c = to_camera(&eye, [tu << 2, th << 2, tv << 2]);
         if c[2] >= NEAR && c[2] <= GUN_RANGE {
@@ -347,7 +378,9 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     let input = a.input;
     let cool = hw.peek(PLAYER + player::COOL).saturating_sub(dt);
     hw.poke(PLAYER + player::COOL, cool);
-    if input & crate::agent::input::FIRE != 0 && a.mode == crate::agent::MODE_PLAYER && cool == 0 && a.grounded == 0 {
+    // (The autopilot's trigger: its tree's strafe; its fire 2, a launch.)
+    let firing = if auto { a.action == crate::agent::action::STRAFE } else { input & crate::agent::input::FIRE != 0 };
+    if firing && cool == 0 && a.grounded == 0 {
         hw.poke(PLAYER + player::COOL, GUN_EVERY);
         let bursts = hw.peek(PLAYER + player::BURSTS).wrapping_add(1);
         hw.poke(PLAYER + player::BURSTS, bursts);
@@ -358,16 +391,18 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
             let (tu, tv, th) = (u16::from_le_bytes([t[4], t[5]]), u16::from_le_bytes([t[6], t[7]]), (t[8] as u16) << 4);
             let fx = if sea(hw, tu, tv) { crate::effects::effect::SPLASH } else { crate::effects::effect::IMPACT };
             spawn(hw, fx, tu, tv, th, now);
+            dealt(hw, GUN_DAMAGE);
             if damage_unit(hw, in_cone, GUN_DAMAGE) {
                 let k = rd(hw, PLAYER + player::KILLS);
                 wr(hw, PLAYER + player::KILLS, k + 1);
+                dealt(hw, KILL_BONUS);
                 spawn(hw, crate::effects::effect::EXPLOSION, tu, tv, th, now);
                 spawn(hw, crate::effects::effect::WRECK_FIRE, tu, tv, th, now.wrapping_add(40));
             }
         }
     }
     // Missiles: on fire 2's press, at the locked target.
-    let fire2 = input & crate::agent::input::FIRE2;
+    let fire2 = if auto { (a.action == crate::agent::action::LAUNCH) as u8 } else { input & crate::agent::input::FIRE2 };
     let was = hw.peek(PLAYER + player::FIRE2);
     hw.poke(PLAYER + player::FIRE2, fire2);
     let locked = hw.peek(crate::hud::LOCK_STATE + 1) >= crate::hud::LOCK_TICKS;
@@ -410,9 +445,11 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
             let (tu, tv, th) = (u16::from_le_bytes([t[4], t[5]]), u16::from_le_bytes([t[6], t[7]]), (t[8] as u16) << 4);
             if ((tu >> 4) as i16 - (u >> 4) as i16).abs() < 3 && ((tv >> 4) as i16 - (v >> 4) as i16).abs() < 3 && ((th >> 4) as i16 - (h >> 4) as i16).abs() < 3 {
                 spawn(hw, crate::effects::effect::EXPLOSION, tu, tv, th, now);
+                dealt(hw, MISSILE_DAMAGE);
                 if damage_unit(hw, id, MISSILE_DAMAGE) {
                     let k = rd(hw, PLAYER + player::KILLS);
                     wr(hw, PLAYER + player::KILLS, k + 1);
+                    dealt(hw, KILL_BONUS);
                     spawn(hw, crate::effects::effect::WRECK_FIRE, tu, tv, th, now.wrapping_add(40));
                 }
                 hw.poke(p + proj::KIND, 0);
@@ -424,9 +461,17 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     hw.poke(PLAYER + player::FLASH, flash.saturating_sub(dt));
     // Down at full damage; ditched in the sea (`agent::DITCHED`) too, with a splash. (Before any repair:
     // a hit that downs it on the pad still does.)
+    // The learning: a decision at a learn node files it on the trail, crediting the last ones with what
+    // came of them; going down credits them too, and starts afresh.
     let ditched = a.deck == crate::agent::DITCHED;
     let damage = hw.peek(PLAYER + player::DAMAGE);
-    if ditched || damage >= DOWN {
+    let down = ditched || damage >= DOWN;
+    let node = u16::from_le_bytes(a.learned);
+    if node != 0 || down {
+        file_learned(hw, node);
+        a.learned = [0; 2];
+    }
+    if down {
         init(hw);
         if ditched {
             spawn(hw, crate::effects::effect::SPLASH, (a.u >> 4) as u16, (a.v >> 4) as u16, 0, now);
@@ -436,11 +481,96 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCa
     // Landed at a base (home's pad, the carrier's deck): rearmed, and repaired a point a frame.
     let home = (a.u >> 8) as i16 - crate::agent::HOME.0 as i16;
     let homev = (a.v >> 8) as i16 - crate::agent::HOME.1 as i16;
-    if a.grounded != 0 && (a.deck == crate::agent::ON_DECK || home.abs() <= 10 && homev.abs() <= 10) {
+    let based = a.grounded != 0 && (a.deck == crate::agent::ON_DECK || home.abs() <= PAD && homev.abs() <= PAD);
+    if based {
         hw.poke(PLAYER + player::MISSILES, MISSILES);
         hw.poke(PLAYER + player::DAMAGE, damage.saturating_sub(1));
     }
+    // The autopilot's fight for its tree: hurt (home: from its damage or an empty rack, until landed there
+    // and whole again), else hunting its prey (the waypoint is it), locked on with a missile to fire.
+    use crate::agent::combat::{HUNT, HURT as SORE, LOCKED};
+    let mut flags = 0;
+    if auto {
+        let missiles = hw.peek(PLAYER + player::MISSILES);
+        let sore = (a.combat & SORE != 0 && !(based && damage == 0)) || damage >= HURT || missiles == 0;
+        if sore {
+            flags = SORE;
+            (a.wu, a.wv) = (crate::agent::HOME.0 as i16, crate::agent::HOME.1 as i16);
+            prey.0 = ws::NOBODY;
+        } else if prey.0 != ws::NOBODY {
+            flags = HUNT | if locked && missiles > 0 && target < count { LOCKED } else { 0 };
+            (a.wu, a.wv) = (prey.1, prey.2);
+        }
+    }
+    a.combat = flags;
+    wr(hw, PLAYER + player::PREY, prey.0);
     false
+}
+
+/// Whether a missile in flight is after unit `id`.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
+fn chased<H: Hw + ?Sized>(hw: &mut H, id: u16) -> bool {
+    (0..PROJ_MAX).any(|k| {
+        let p = PROJ + k * PROJ_ENTRY;
+        hw.peek(p + proj::KIND) == crate::actors::kind::MISSILE && rd(hw, p + proj::TARGET) == id
+    })
+}
+
+/// Damage the player dealt (the learning's counter).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
+fn dealt<H: Hw + ?Sized>(hw: &mut H, d: u8) {
+    let n = hw.peek(PLAYER + player::DEALT).wrapping_add(d);
+    hw.poke(PLAYER + player::DEALT, n);
+}
+
+/// A decision at a learn node (`node`, or 0 going down): the trail credited with what came of its
+/// decisions since the newest, then the node filed as the newest, with the counters now.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
+fn file_learned<H: Hw + ?Sized>(hw: &mut H, node: u16) {
+    let t = PLAYER + player::TRAIL;
+    let (d, tk) = (hw.peek(PLAYER + player::DEALT), hw.peek(PLAYER + player::TAKEN));
+    let reward = (d.wrapping_sub(hw.peek(t + 2)) as i16 - tk.wrapping_sub(hw.peek(t + 3)) as i16).clamp(-128, 127) as i8;
+    learn_pilot(hw, reward);
+    for k in (0..player::TRAIL_ENTRY).rev() {
+        let b = hw.peek(t + k);
+        hw.poke(t + player::TRAIL_ENTRY + k, b);
+    }
+    wr(hw, t, node);
+    hw.poke(t + 2, d);
+    hw.poke(t + 3, tk);
+}
+
+/// The pilot's learning (`brain::learn`'s rule on its blob in the REU): `reward` (damage dealt minus
+/// taken since the trail's newest decision) against the pilot's baseline; the branch each learn node on
+/// the trail took is made likelier after a better than expected outcome, less likely after a worse one,
+/// the older at half the step.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
+pub fn learn_pilot<H: Hw + ?Sized>(hw: &mut H, reward: i8) {
+    use crate::brain::{LEARN_MAX, LEARN_MIN, PILOT_BASELINE};
+    let base = crate::format::AI_TREES;
+    let b = base + PILOT_BASELINE as u32;
+    let baseline = reu_get(hw, b) as i8;
+    let adv = (reward as i16 - (baseline as i16 >> 3)).clamp(-127, 127);
+    reu_put(hw, b, (baseline as i16 + adv).clamp(-128, 127) as i8 as u8);
+    if adv == 0 {
+        return;
+    }
+    let step = ((adv.unsigned_abs() << 1).min(32)) as u8;
+    for k in 0..2u16 {
+        let node = rd(hw, PLAYER + player::TRAIL + k * player::TRAIL_ENTRY);
+        let s = step >> k;
+        if node & 0x7FFF == 0 || s == 0 {
+            continue;
+        }
+        let at = base + (node & 0x7FFF) as u32 + 1;
+        let v = reu_get(hw, at);
+        let p = if (node >> 15 != 0) == (adv > 0) { v.saturating_add(s).min(LEARN_MAX) } else { v.saturating_sub(s).max(LEARN_MIN) };
+        reu_put(hw, at, p);
+    }
 }
 
 /// The effects pass (after the main one, its own overlay): projectiles moved (missiles turning toward

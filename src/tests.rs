@@ -620,47 +620,49 @@ fn the_ground_and_lift_off_frames_draw_inside_ram() {
 
 #[test]
 fn the_brain_tree_replays_the_plans() {
-    // Every feature block built from each threshold's two sides (and the extremes) walks the baked tree
-    // to the planner's action for its symbol state.
-    use crate::goap::{SYMBOLS, state_of, table};
+    // Every symbol state a feature block can show (each feature at a value on the right side of all its
+    // symbols' thresholds) walks the baked tree to the planner's action, or at a learn node to its pair's
+    // first action under the odds (a random byte of 0) and its second over them (255).
+    use crate::agent::feature;
+    use crate::goap::{LEARN, N, SYMBOLS, learn_pair, state_of, table};
     let table = table();
     let blob = crate::goap::compile();
-    let mut values: Vec<Vec<u8>> = vec![vec![0, 255]; crate::agent::feature::COUNT];
+    assert!(blob.len() as u32 <= crate::brain::PILOT_LEN, "the pilot's blob outgrew PILOT_LEN");
+    let mut reu: &[u8] = &blob;
+    let mut candidates: Vec<Vec<u8>> = vec![vec![0, 255]; feature::COUNT];
     for sy in SYMBOLS {
-        values[sy.feature as usize].extend([sy.threshold - 1, sy.threshold]);
+        candidates[sy.feature as usize].extend([sy.threshold - 1, sy.threshold]);
     }
-    for v in &mut values {
-        v.sort();
-        v.dedup();
-    }
-    let mut image = vec![0u8; blob.len()];
-    image.copy_from_slice(&blob);
-    let mut reu: &[u8] = &image;
-    let mut idx = vec![0usize; values.len()];
-    let mut n = 0;
-    'all: loop {
-        let f: Vec<u8> = idx.iter().zip(&values).map(|(&i, v)| v[i]).collect();
-        let got = crate::brain::walk(&mut reu, 0, crate::brain::PILOT, &f);
-        assert_eq!(got, table[state_of(&f) as usize], "features {f:?}");
-        n += 1;
-        for k in 0..idx.len() {
-            idx[k] += 1;
-            if idx[k] < values[k].len() {
-                continue 'all;
+    let (mut shown, mut learns) = (0, 0);
+    'states: for st in 0..1u32 << N {
+        let mut f = [0u8; feature::BLOCK];
+        for (k, c) in candidates.iter().enumerate() {
+            let fits = |v: u8| SYMBOLS.iter().enumerate().filter(|(_, sy)| sy.feature as usize == k).all(|(j, sy)| ((v >= sy.threshold) == sy.ge) == (st >> j & 1 != 0));
+            match c.iter().find(|&&v| fits(v)) {
+                Some(&v) => f[k] = v,
+                None => continue 'states,
             }
-            idx[k] = 0;
         }
-        break;
+        assert_eq!(state_of(&f) as u32, st);
+        shown += 1;
+        let want = table[st as usize];
+        let walk = |f: &mut [u8; feature::BLOCK], r: u8, reu: &mut &[u8]| {
+            f[feature::RAND] = r;
+            crate::brain::walk(reu, 0, crate::brain::PILOT, &f[..]).0
+        };
+        let (yes, no) = if want >= LEARN { learns += 1; learn_pair(want) } else { (want, want) };
+        assert_eq!(walk(&mut f, 0, &mut reu), yes, "state {st:#06x}: under the odds");
+        assert_eq!(walk(&mut f, 255, &mut reu), no, "state {st:#06x}: over the odds");
     }
     let tree = crate::goap::pilot_tree(&table);
     assert!(tree.depth() < crate::brain::MAX_DEPTH as usize);
-    println!("{n} feature blocks; tree {} nodes, depth {}, blob {} bytes", tree.nodes(), tree.depth(), blob.len());
+    println!("{shown} states shown, {learns} at a learn node; tree {} nodes, depth {}, blob {} bytes", tree.nodes(), tree.depth(), blob.len());
 }
 
 #[test]
 fn the_planner_lifts_off_and_climbs_or_steers() {
     use crate::goap::{OPS, plan, s};
-    let first = |st: u16| OPS[plan(st).unwrap()[0]].name;
+    let first = |st: u32| OPS[plan(st).unwrap()[0]].name;
     assert_eq!(first(s::GROUNDED), "wait");
     assert_eq!(first(s::GROUNDED | s::ROTOR), "lift");
     assert_eq!(first(s::LOW), "climb-up");
@@ -668,8 +670,44 @@ fn the_planner_lifts_off_and_climbs_or_steers() {
     assert_eq!(first(s::BLOCKED | s::BLOCKED_L | s::BLOCKED_R), "climb-over");
     assert_eq!(first(s::WP_L), "turn-l");
     assert_eq!(first(s::HIGH), "descend");
-    // Every state has a plan.
-    assert!((0..1u32 << crate::goap::N).all(|st| crate::goap::goal(st as u16) || plan(st as u16).is_some()));
+    // Every state out of the fight has a plan.
+    let fight = s::HUNT | s::LOCKED | s::HURT;
+    assert!((0..1u32 << crate::goap::N).filter(|st| st & fight == 0).all(|st| crate::goap::goal(st) || plan(st).is_some()));
+}
+
+#[test]
+fn the_planner_hunts_and_goes_home_hurt() {
+    // The fight's rows: the action the table gives (or a learn node's pair).
+    use crate::agent::action::*;
+    use crate::goap::{LEARN, learn_pair, s, table};
+    let t = table();
+    let act = |st: u32| {
+        let a = t[st as usize];
+        if a >= LEARN { learn_pair(a) } else { (a, a) }
+    };
+    let cruise = s::ROTOR;
+    assert_eq!(act(cruise | s::HUNT | s::LOCKED | s::CLOSE), (LAUNCH, STRAFE), "locked, in gun range: launch, or strafe (learned)");
+    assert_eq!(act(cruise | s::HUNT | s::LOCKED), (LAUNCH, LAUNCH), "locked, out of gun range: launch");
+    assert_eq!(act(cruise | s::HUNT | s::LOCKED | s::WP_L).0, LAUNCH, "locked: launch");
+    assert_eq!(act(cruise | s::HUNT | s::CLOSE), (STRAFE, STRAFE), "in gun range, ahead: strafe");
+    assert_eq!(act(cruise | s::HUNT), (FORWARD, FORWARD), "ahead, out of range: run in");
+    assert_eq!(act(cruise | s::HUNT | s::WP_L), (TURN_L, TURN_L), "to the left: turn");
+    assert_eq!(act(cruise | s::HUNT | s::CLOSE | s::WP_R), (TURN_R, TURN_R), "off to the right, outside the circle: turn");
+    assert_eq!(act(cruise | s::HUNT | s::CLOSE | s::WP_R | s::INSIDE), (FORWARD, FORWARD), "inside the turning circle: extend");
+    assert_eq!(act(cruise | s::HURT | s::WP_L | s::INSIDE), (FORWARD, FORWARD), "home inside the circle: out first");
+    assert_eq!(act(cruise | s::WP_L | s::INSIDE), (FORWARD, FORWARD), "a roaming waypoint inside the circle: out first");
+    let blocked = act(cruise | s::HUNT | s::CLOSE | s::BLOCKED);
+    assert!(blocked.0 != STRAFE && blocked.1 != STRAFE, "a mountain ahead: no strafing into it");
+    assert_eq!(act(cruise | s::HURT), (FORWARD, FORWARD), "hurt, home ahead: fly to it");
+    assert_eq!(act(cruise | s::HURT | s::WP_L), (TURN_L, TURN_L), "hurt, home to the left: turn");
+    assert_eq!(act(cruise | s::HURT | s::CLOSE), (SLOW, SLOW), "near home: slow");
+    assert_eq!(act(cruise | s::HURT | s::CLOSE | s::ARRIVED), (LAND, LAND), "over home: land");
+    assert_eq!(act(cruise | s::HURT | s::CLOSE | s::ARRIVED | s::LOW), (LAND, LAND), "on the way down: land");
+    assert_eq!(act(cruise | s::HURT | s::ARRIVED | s::GROUNDED), (IDLE, IDLE), "landed home: rearm");
+    assert_eq!(act(cruise | s::HURT | s::GROUNDED), (LIFT, LIFT), "landed away from home: up again");
+    assert_eq!(act(cruise | s::GROUNDED), (LIFT, LIFT), "whole again: off");
+    assert_eq!(act(cruise | s::HUNT | s::HURT), (FORWARD, FORWARD), "hurt beats hunting");
+    assert_eq!(act(cruise | s::HUNT | s::LOCKED | s::LOW).0, CLIMB, "low: up first");
 }
 
 #[test]
@@ -1659,10 +1697,10 @@ fn a_lethal_hit_on_the_pad_downs_the_player() {
     let a = crate::agent::Agent::new();
     assert_eq!(a.grounded, 1);
     m.ram[(PLAYER + player::DAMAGE) as usize] = DOWN - 1;
-    assert!(!crate::combat::update(&mut m, &a, &a.camera().0), "not down yet");
+    assert!(!crate::combat::update(&mut m, &mut a.clone(), &a.camera().0), "not down yet");
     assert_eq!(m.ram[(PLAYER + player::DAMAGE) as usize], DOWN - 2, "repaired on the pad");
     m.ram[(PLAYER + player::DAMAGE) as usize] = DOWN;
-    assert!(crate::combat::update(&mut m, &a, &a.camera().0), "down on the pad");
+    assert!(crate::combat::update(&mut m, &mut a.clone(), &a.camera().0), "down on the pad");
 }
 
 /// Going down: the agent stays where it went down until its next flight (the frame drawn after is the
@@ -1742,7 +1780,7 @@ fn landing_on_the_deck_or_in_the_sea() {
     fly(&mut m, &mut b);
     assert_eq!(b.deck, DITCHED, "ditched");
     let cam = b.camera().0;
-    assert!(crate::combat::update(&mut m, &b, &cam), "down after ditching");
+    assert!(crate::combat::update(&mut m, &mut b.clone(), &cam), "down after ditching");
     let fx = crate::combat::FX as usize;
     assert!((0..crate::combat::FX_MAX as usize).any(|k| m.ram[fx + k * crate::combat::FX_ENTRY as usize] == crate::effects::effect::SPLASH + 1), "a splash");
 }
@@ -1924,13 +1962,13 @@ fn wrecks_smoke_then_go() {
     }
     let cam = camera_at(1024.0, 1100.0, 10.0, 0, -11, 0);
     a.t = 1300;
-    combat::update(&mut m, &a, &cam);
+    combat::update(&mut m, &mut a.clone(), &cam);
     assert_eq!(m.ram[OBJLIST as usize + 1], crate::actors::wreck_of(crate::actors::kind::TANK), "drawn as a wreck");
     assert_eq!(m.ram[WRECKS as usize], 1, "smoking");
     combat::fx(&mut m, &a, &cam);
     assert_eq!(m.ram[FXDYN as usize], 1, "its smoke column placed");
     a.t = 1000 + WRECK_TICKS as u32;
-    combat::update(&mut m, &a, &cam);
+    combat::update(&mut m, &mut a.clone(), &cam);
     assert_eq!(m.ram[WRECKS as usize], 0, "burnt out");
 }
 
@@ -1969,7 +2007,7 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
     let mut spawned = std::collections::HashSet::new();
     for f in 0..200u32 {
         a.t = 1000 + 4 * f;
-        combat::update(&mut m, &a, &cam);
+        combat::update(&mut m, &mut a.clone(), &cam);
         combat::fx(&mut m, &a, &cam);
         for k in 0..combat::FX_MAX as usize {
             let id = m.ram[FX as usize + 10 * k];
@@ -1997,14 +2035,14 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
     m.ram[crate::hud::LOCK_STATE as usize] = 0;
     m.ram[crate::hud::LOCK_STATE as usize + 1] = crate::hud::LOCK_TICKS;
     a.input = input::FIRE2;
-    combat::update(&mut m, &a, &cam);
+    combat::update(&mut m, &mut a.clone(), &cam);
     assert_eq!(m.ram[(PLAYER + player::MISSILES) as usize], combat::MISSILES - 1, "no missile");
     a.input = 0;
     let hp0 = m.reu[ws::UNITS as usize + 9 * RECORD as usize + rec::HP as usize];
     for f in 0..200u32 {
         a.t += 4;
         let _ = f;
-        combat::update(&mut m, &a, &cam);
+        combat::update(&mut m, &mut a.clone(), &cam);
         combat::fx(&mut m, &a, &cam);
     }
     let hp = m.reu[ws::UNITS as usize + 9 * RECORD as usize + rec::HP as usize];
@@ -2109,7 +2147,7 @@ fn near_churn(seconds: u32) -> (u32, u32) {
     let mut m = Machine::new(package());
     crate::combat::init(&mut m);
     let mut a = crate::agent::Agent::boot();
-    let (mut t, mut prev, mut dropped, mut frames) = (0u32, Vec::<u16>::new(), 0u32, 0u32);
+    let (mut t, mut prev, mut dropped) = (0u32, Vec::<u16>::new(), 0u32);
     let (mut capped, mut most) = (0u32, 0u8);
     while t < seconds * 60 {
         let (pu, pv) = a.at();
@@ -2128,7 +2166,7 @@ fn near_churn(seconds: u32) -> (u32, u32) {
         };
         // The draw list as the C64 builds it: the combat pass, then the actors' cull (`DYN_MAX` at most).
         let cam = a.camera().0;
-        crate::combat::update(&mut m, &a, &cam);
+        crate::combat::update(&mut m, &mut a.clone(), &cam);
         let objects = m.ram[crate::combat::OBJLIST as usize];
         crate::actors::prepare(&mut m, &cam, crate::combat::OBJLIST);
         let drawn = m.ram[crate::actors::DYN as usize];
@@ -2138,19 +2176,20 @@ fn near_churn(seconds: u32) -> (u32, u32) {
         let listed: Vec<u16> = (0..n).map(|k| u16::from_le_bytes([m.ram[ws::NEAR as usize + 1 + 2 * k], m.ram[ws::NEAR as usize + 2 + 2 * k]])).collect();
         dropped += prev.iter().filter(|&&id| !listed.contains(&id) && on_screen(&m, id)).count() as u32;
         prev = listed.into_iter().filter(|&id| on_screen(&m, id)).collect();
-        frames += 1;
     }
     eprintln!("draw list: {most} objects at most; the actors' cap of {} reached in {capped} frames", crate::actors::DYN_MAX);
     (dropped, capped)
 }
 
-/// Ten minutes from the start on the deck: no unit on screen is ever dropped from the near list, and
-/// the actors' cap never cuts the draw list (units seen to vanish were faces crossing the near plane,
-/// now cut instead of dropped).
+/// Ten minutes from the start on the deck: no unit on screen is ever dropped from the near list (units
+/// seen to vanish were faces crossing the near plane, now cut instead of dropped), and the actors' cap
+/// seldom cuts the draw list: the autopilot heads for the fight now, where a dozen units can be in view
+/// (`actors::DYN_MAX`, as many as `DYN` holds below `JOB`).
 #[test]
 fn units_on_screen_stay_listed() {
     let (dropped, capped) = near_churn(600);
-    assert_eq!((dropped, capped), (0, 0), "units on screen dropped from the near list; frames at the actors' cap");
+    assert_eq!(dropped, 0, "units on screen dropped from the near list");
+    assert!(capped <= 600 * 60 / 8 / 100, "the actors' cap reached in {capped} frames (over 1%)");
 }
 
 #[test]
@@ -2223,4 +2262,169 @@ fn far_units_draw_their_low_poly_mesh() {
     let far = rec(near[3] as usize);
     assert_eq!(blob(&mut m, 0), (u16::from_le_bytes([near[0], near[1]]), near[5]), "the near tank: its own mesh");
     assert_eq!(blob(&mut m, 1), (u16::from_le_bytes([far[0], far[1]]), 6), "the far tank: the wedge");
+}
+
+/// What an autopilot sortie did (`sortie`).
+#[derive(Debug, Default)]
+struct Sortie {
+    kills: u32,
+    launched: u32,
+    bursts: u32,
+    downs: u32,
+    /// Landings at home while hurt, and the ticks of the first (and of the lift-off after it).
+    landed: u32,
+    first_landing: Option<u32>,
+    off_again: Option<u32>,
+    /// Damage and missiles when whole again after the first landing.
+    rearmed: Option<(u8, u8)>,
+}
+
+/// The autopilot from boot for `seconds` of clock, framed as the C64 frames it (8 ticks a frame, the war
+/// and the gauges taking turns): the agent, the war's page, the fight, the effects, the HUD's seeker.
+/// `hurt` pokes that much damage once, a minute after lift-off.
+fn sortie(m: &mut Machine, seconds: u32, hurt: Option<u8>) -> Sortie {
+    use crate::agent::{HOME, LIFT, combat::HURT};
+    use crate::combat::{MISSILES, PLAYER, player};
+    crate::package::setup(m, BUFFERS[0]);
+    crate::combat::init(m);
+    crate::hud::init(m);
+    let mut a = crate::agent::Agent::boot();
+    let mut out = Sortie::default();
+    let (mut t, mut turn, mut missiles, mut bursts, mut was_down) = (0u32, 0u8, MISSILES, 0u8, false);
+    while t < seconds * 60 {
+        t += 8;
+        let reu = m.reu.clone();
+        a.fly(&mut &reu[..], t);
+        if turn == 0 {
+            let (pu, pv) = a.at();
+            crate::world_sim::step_page(m, a.t as u16, pu, pv);
+        }
+        turn ^= 1;
+        if hurt.is_some() && a.t >= LIFT + 3600 && a.t < LIFT + 3608 {
+            m.ram[(PLAYER + player::DAMAGE) as usize] = hurt.unwrap();
+        }
+        let kills = u16::from_le_bytes([m.ram[(PLAYER + player::KILLS) as usize], m.ram[(PLAYER + player::KILLS) as usize + 1]]);
+        let cam = a.camera().0;
+        if crate::combat::update(m, &mut a, &cam) {
+            a.reset();
+            out.downs += 1;
+            out.kills += kills as u32;
+            (missiles, bursts) = (MISSILES, 0);
+            continue;
+        }
+        crate::combat::fx(m, &a, &a.camera().0);
+        crate::hud::update(m, &a, &a.camera().0);
+        let now = m.ram[(PLAYER + player::MISSILES) as usize];
+        out.launched += missiles.saturating_sub(now) as u32;
+        missiles = now;
+        let b = m.ram[(PLAYER + player::BURSTS) as usize];
+        out.bursts += b.wrapping_sub(bursts) as u32;
+        bursts = b;
+        // Down at home, hurt: a landing.
+        let pad = crate::combat::PAD as i32;
+        let home = ((a.u >> 8) - HOME.0).abs() <= pad && ((a.v >> 8) - HOME.1).abs() <= pad;
+        let down = a.grounded != 0 && home && a.t > LIFT + 60;
+        if down && !was_down {
+            out.landed += 1;
+            out.first_landing.get_or_insert(a.t);
+        }
+        if out.first_landing.is_some() && out.off_again.is_none() && a.grounded == 0 {
+            out.off_again = Some(a.t);
+            out.rearmed = Some((m.ram[(PLAYER + player::DAMAGE) as usize], m.ram[(PLAYER + player::MISSILES) as usize]));
+        }
+        was_down = down;
+        let window = std::env::var("SORTIE_TRACE").ok().and_then(|w| w.split_once('-').map(|(a, b)| (a.parse::<u32>().unwrap_or(0), b.parse::<u32>().unwrap_or(0))));
+        let traced = match window { Some((from, to)) => a.t >= from && a.t < to, None => std::env::var("SORTIE_TRACE").is_ok() && t % 240 == 0 };
+        if traced {
+            let mut f = [0u8; crate::agent::feature::BLOCK];
+            a.clone().features(&mut &reu[..], &mut f);
+            eprintln!("  features {f:?}");
+            eprintln!(
+                "t {} at ({}, {}) h {} wp ({}, {}) action {} combat {} grounded {} vf {} damage {} missiles {}",
+                a.t, a.u >> 8, a.v >> 8, a.h >> 8, a.wu, a.wv, crate::agent::action::NAMES[a.action as usize], a.combat, a.grounded, a.vf,
+                m.ram[(PLAYER + player::DAMAGE) as usize], m.ram[(PLAYER + player::MISSILES) as usize]
+            );
+        }
+    }
+    out.kills += u16::from_le_bytes([m.ram[(PLAYER + player::KILLS) as usize], m.ram[(PLAYER + player::KILLS) as usize + 1]]) as u32;
+    out
+}
+
+#[test]
+fn the_autopilot_fights() {
+    // Five minutes after lift-off: it finds the front, fires its gun and missiles, and kills.
+    let mut m = Machine::new(package());
+    let s = sortie(&mut m, crate::agent::LIFT / 60 + 300, None);
+    println!("{s:?}");
+    assert!(s.bursts > 0, "no gun fired");
+    assert!(s.launched > 0, "no missile launched");
+    assert!(s.kills > 0, "no kills");
+}
+
+#[test]
+fn the_autopilot_goes_home_to_rearm() {
+    // Hurt a minute after lift-off: home, down on the pad, repaired and rearmed, and off again.
+    use crate::combat::MISSILES;
+    let mut m = Machine::new(package());
+    let s = sortie(&mut m, crate::agent::LIFT / 60 + 300, Some(60));
+    println!("{s:?}");
+    let landed = s.first_landing.expect("never landed at home");
+    assert!(landed < crate::agent::LIFT + 3600 + 150 * 60, "landed only at tick {landed}");
+    assert_eq!(s.rearmed.expect("never off again"), (0, MISSILES), "off again whole and rearmed");
+}
+
+/// The pilot's learn nodes in a REU image: (blob offset, odds).
+fn pilot_learns(reu: &[u8]) -> Vec<(usize, u8)> {
+    let base = crate::format::AI_TREES as usize;
+    let len = u16::from_le_bytes([reu[base + 4], reu[base + 5]]) as usize;
+    (crate::brain::HEADER_BYTES..len)
+        .step_by(crate::brain::NODE_BYTES)
+        .filter(|&at| reu[base + at] == crate::brain::PILOT_LEARN)
+        .map(|at| (at, reu[base + at + 1]))
+        .collect()
+}
+
+#[test]
+fn the_pilot_learns_from_what_came_of_its_choices() {
+    // A better than expected outcome makes the branch each trail entry took likelier (the older at half
+    // the step); a worse one, less likely; never out of LEARN_MIN..LEARN_MAX.
+    use crate::brain::{LEARN_MAX, LEARN_MIN};
+    use crate::combat::{PLAYER, learn_pilot, player};
+    let mut m = Machine::new(package());
+    let nodes = pilot_learns(&m.reu);
+    assert!(nodes.len() >= 2, "learn nodes: {nodes:?}");
+    assert!(nodes.iter().all(|&(_, p)| p == 128), "they start even");
+    let ((a, _), (b, _)) = (nodes[0], nodes[1]);
+    let odds = |m: &Machine, at: usize| m.reu[crate::format::AI_TREES as usize + at + 1];
+    // Newest: node a, its yes branch; older: node b, its no branch.
+    let t = (PLAYER + player::TRAIL) as usize;
+    m.ram[t..t + 2].copy_from_slice(&(a as u16 | 0x8000).to_le_bytes());
+    m.ram[t + 4..t + 6].copy_from_slice(&(b as u16).to_le_bytes());
+    learn_pilot(&mut m, 40);
+    let (ya, yb) = (odds(&m, a), odds(&m, b));
+    assert!(ya > 128, "yes, then a good outcome: likelier ({ya})");
+    assert!(yb < 128, "no, then a good outcome: yes less likely ({yb})");
+    assert_eq!(ya - 128, 2 * (128 - yb), "the older at half the step");
+    for _ in 0..200 {
+        learn_pilot(&mut m, -100);
+    }
+    assert_eq!((odds(&m, a), odds(&m, b)), (LEARN_MIN, LEARN_MAX), "bad outcomes, to the band's edge");
+}
+
+#[test]
+fn the_pilot_learns_in_flight() {
+    // Twenty minutes of the autopilot's war: its close calls' odds move with what came of them.
+    let mut m = Machine::new(package());
+    let before = pilot_learns(&m.reu);
+    let s = sortie(&mut m, crate::agent::LIFT / 60 + 20 * 60, None);
+    let after = pilot_learns(&m.reu);
+    println!("{s:?}");
+    let base = crate::format::AI_TREES as usize;
+    let leaf = |at: usize| crate::agent::action::NAMES[m.reu[base + at + 1] as usize];
+    for (&(at, p0), &(_, p1)) in before.iter().zip(&after) {
+        let (no, yes) = (u16::from_le_bytes([m.reu[base + at + 2], m.reu[base + at + 3]]), u16::from_le_bytes([m.reu[base + at + 4], m.reu[base + at + 5]]));
+        println!("learn node at {at} ({} or {}): odds of the first {p0} -> {p1}", leaf(yes as usize), leaf(no as usize));
+    }
+    assert!(after.iter().any(|&(_, p)| p != 128), "nothing learned");
+    assert!(s.kills > 0);
 }

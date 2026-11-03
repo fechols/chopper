@@ -221,7 +221,7 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
         crate::world_sim::step_page(&mut m, agent.t as u16, pu, pv);
     }
     let (cam0, _) = agent.camera();
-    if crate::combat::update(&mut m, &agent, &cam0) {
+    if crate::combat::update(&mut m, &mut agent, &cam0) {
         agent.reset();
     }
     crate::combat::fx(&mut m, &agent, &agent.camera().0);
