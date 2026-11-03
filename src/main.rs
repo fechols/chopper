@@ -490,6 +490,6 @@ fn main() -> Result<(), String> {
         Some("effects") => effects(&args),
         Some("wrecks") => wrecks(&args),
         Some("carrier") => carrier_views(&args),
-        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR]".into()),
+        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR] | war [--minutes M] [--knobs E,A,P,W,WP] [--quiet] [--fleet] | wrecks [--reu R] [--out DIR] [--v V] [--h H] [--pitch P] | carrier [--reu R] [--at T] [--back B] [--h H] [--pitch P]".into()),
     }
 }
