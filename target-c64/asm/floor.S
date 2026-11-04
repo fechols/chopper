@@ -428,6 +428,18 @@ PB_TOP = $B4
 PB_BOT = $B5
 PB_D   = $B6        ; (2)
 
+; X:Y += 64, into the store at dst's operand.
+.macro PBNEXT dst
+    txa
+    clc
+    adc #64
+    tax
+    bcc 6f
+    iny
+6:  stx \dst+1
+    sty \dst+2
+.endm
+
 .section .text.band_publish,"ax",@progbits
 .globl band_publish
 .type band_publish,@function
@@ -456,16 +468,28 @@ band_publish:
     bcc 2f
     cmp PB_BOT
     bcc 1b
-2:  ldy #0
+    ; Five 64-byte stripes a pass (the stores' operands set to PB_D + 64 k first).
+2:  ldx PB_D
+    ldy PB_D+1
+    stx pbs0+1
+    sty pbs0+2
+    PBNEXT pbs1
+    PBNEXT pbs2
+    PBNEXT pbs3
+    PBNEXT pbs4
+    ldy #0
 3:  lda STAGE,y
-    sta (PB_D),y
+pbs0: sta $ffff,y
+    lda STAGE+64,y
+pbs1: sta $ffff,y
+    lda STAGE+128,y
+pbs2: sta $ffff,y
+    lda STAGE+192,y
+pbs3: sta $ffff,y
+    lda STAGE+256,y
+pbs4: sta $ffff,y
     iny
+    cpy #64
     bne 3b
-    inc PB_D+1
-    ldy #63
-4:  lda STAGE+256,y
-    sta (PB_D),y
-    dey
-    bpl 4b
     rts
 .size band_publish, .-band_publish
