@@ -7,6 +7,7 @@ a few frames, in the 6502 interpreter (`tools/emu.py`'s machine). Functions are 
 import argparse
 import bisect
 import collections
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,12 +23,14 @@ def text_symbols(elf):
     syms = []
     for line in out.splitlines():
         p = line.split(None, 2)
-        if len(p) == 3 and p[1] in 'tTW':
+        # (Linker markers such as __heap_default_limit or __hitext_start are not functions.)
+        if len(p) == 3 and p[1] in 'tTW' and not re.match(r'__\w+_(limit|start|end|size)$', p[2]):
             syms.append((int(p[0], 16), p[2][:70]))
     return syms
 
 
-WINDOWS = ((0xE000, 0xF800), (0xA000, 0xAF00))
+# Window 3 (the clipping overlay at $F010) first: it lies inside window 1's range.
+WINDOWS = ((0xF010, 0xF800), (0xE000, 0xF800), (0xA000, 0xAF00))
 
 
 def overlay_symbols(elf):
@@ -37,23 +40,25 @@ def overlay_symbols(elf):
                          capture_output=True, text=True, check=True).stdout
     by = collections.defaultdict(list)
     for line in out.splitlines():
-        p = line.split(None, 5)
-        if len(p) == 6 and p[2] == 'F' and p[3].endswith('text') and p[3] != '.text':
-            a = int(p[0], 16)
-            if any(lo <= a < hi for lo, hi in WINDOWS):
-                by[p[3]].append((a, p[5][:70]))
+        # addr, flags (7 columns), section, size, name: functions ('F') and asm labels alike
+        m = re.match(r'([0-9a-f]{8}) (.{7}) (\S+)\s+[0-9a-f]{8} (.+)$', line)
+        if m and m[3].endswith('text') and m[3] != '.text' and 'd' not in m[2] and 'f' not in m[2]:
+            a = int(m[1], 16)
+            if any(lo <= a < hi for lo, hi in WINDOWS) and not re.match(r'__\w+_(limit|start|end|size)$', m[4]):
+                by[m[3]].append((a, m[4][:70]))
     b = Path(elf).read_bytes()
     import struct
     shoff, = struct.unpack_from('<I', b, 0x20)
     shentsize, shnum, shstrndx = struct.unpack_from('<HHH', b, 0x2E)
     hdrs = [struct.unpack_from('<IIIIII', b, shoff + i * shentsize) for i in range(shnum)]
     names = hdrs[shstrndx][4]
-    heads = {}
+    heads, sizes = {}, {}
     for name_off, _, flags, addr, off, size in hdrs:
         n = b[names + name_off:b.index(b'\0', names + name_off)].decode()
         if n in by and size >= 16:
             heads[n] = (addr, bytes(b[off:off + 16]))
-    return {n: sorted(v) for n, v in by.items()}, heads
+            sizes[n] = size
+    return {n: sorted(v) for n, v in by.items()}, heads, sizes
 
 
 def main():
@@ -72,16 +77,18 @@ def main():
     cpu.push(0xFF)
     cpu.push(0xFE)
     syms = text_symbols(args.elf)
-    osyms, heads = overlay_symbols(args.elf)
+    osyms, heads, sizes = overlay_symbols(args.elf)
+
+    oaddrs = {sec: [x for x, _ in v] for sec, v in osyms.items()}
 
     def name_of(a):
         """The function at `a`, overlays resolved by what is loaded in their window now."""
         for lo, hi in WINDOWS:
             if lo <= a < hi:
                 for sec, (base, head) in heads.items():
-                    if base == lo and bytes(cpu.mem[lo:lo + 16]) == head:
+                    if base == lo and a < base + sizes[sec] and bytes(cpu.mem[lo:lo + 16]) == head:
                         v = osyms[sec]
-                        i = bisect.bisect_right([x for x, _ in v], a) - 1
+                        i = bisect.bisect_right(oaddrs[sec], a) - 1
                         return v[i][1] if i >= 0 else sec
         i = bisect.bisect_right(addrs, a) - 1
         return syms[i][1] if i >= 0 else hex(a)
@@ -98,8 +105,7 @@ def main():
         pc, c0 = cpu.pc, cpu.cycles
         cpu.step()
         if inside:
-            i = bisect.bisect_right(addrs, pc) - 1
-            by[syms[i][1] if i >= 0 else '?'] += cpu.cycles - c0
+            by[name_of(pc)] += cpu.cycles - c0
             total += cpu.cycles - c0
             if cpu.mem[pc] == 0x20:  # jsr
                 t = cpu.mem[pc + 1] | cpu.mem[pc + 2] << 8

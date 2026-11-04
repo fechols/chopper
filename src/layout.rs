@@ -113,6 +113,9 @@ pub const GEO_ARGS: u16 = 0x8E00;
 pub const WALK_ARGS: u16 = 0xC6A0;
 const _: () = assert!(RAYS as u32 + core::mem::size_of::<crate::floor::SpanArgs>() as u32 <= WALK_ARGS as u32);
 const _: () = assert!(WALK_ARGS as u32 + crate::geom::walk::SIZE as u32 <= POLY_ARGS as u32);
+/// The band loop's ray step a drawn line (`[i32; 3]`, added to `SpanArgs::a` by `asm/floor.S`'s `ray_step`).
+pub const RAY_STEP: u16 = 0xC760;
+const _: () = assert!(WALK_ARGS as u32 + crate::geom::walk::SIZE as u32 <= RAY_STEP as u32 && RAY_STEP + 12 <= POLY_ARGS);
 /// (Relocated code runs from `$9B00`: target-c64/link.ld `vicrom`.)
 const _: () = assert!(VERTS as u32 + core::mem::size_of::<crate::geom::Verts>() as u32 <= 0x9B00);
 pub const DIR_RAM: u16 = 0x8E40;

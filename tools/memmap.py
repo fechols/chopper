@@ -49,6 +49,7 @@ DATA = [
     (0xC400, 0xC640, 'SPANS'),
     (0xC640, 0xC6A0, 'RAYS / SpanArgs'),
     (0xC6A0, 0xC756, 'WALK_ARGS'),
+    (0xC760, 0xC76C, 'RAY_STEP'),
     (0xC780, 0xC7A0, 'POLY_ARGS'),
     (0xC7A0, 0xC7D4, 'TRI_ARGS'),
     (0xC7D4, 0xC7E0, 'FLOOR_SHADOW'),

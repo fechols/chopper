@@ -373,6 +373,26 @@ fc_line:
     rts
 .size floor_copy, .-floor_copy
 
+; ray_step(): RAYS.a += RAY_STEP, three i32s (`layout::RAY_STEP`), the next drawn line's ray.
+R_A      = $C640 + 61
+RAY_STEP = $C760
+.section .text.clip.ray_step,"ax",@progbits
+.globl ray_step
+.type ray_step,@function
+ray_step:
+.set rsi, 0
+.rept 3
+    clc
+.rept 4
+    lda R_A+rsi
+    adc RAY_STEP+rsi
+    sta R_A+rsi
+.set rsi, rsi+1
+.endr
+.endr
+    rts
+.size ray_step, .-ray_step
+
 ; turbo_probe() -> u16: CIA 2 timer A ticks for 4096 x 5 cycles (~20,500 at 1 MHz, ~320 at 64 MHz).
 ; The C64U engages turbo ~2 s after $D031 is written; main repeats this until it is fast.
 ; (Boot only: in the boot code, not relocated.)

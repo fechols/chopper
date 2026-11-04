@@ -51,6 +51,8 @@ unsafe extern "C" {
     fn floor_end();
     fn floor_line();
     fn floor_copy(line: u8, doubled: u8);
+    /// `asm/floor.S`: `RAYS.a += RAY_STEP` (the next drawn line's ray).
+    fn ray_step();
     /// `asm/floor.S`: copy `STAGE` to the bitmap's cell row `band` once the raster is not in it.
     fn band_publish(band: u8);
     /// `asm/poly.S`: one cell row of a polygon from `POLY_ARGS`.
@@ -598,9 +600,10 @@ pub extern "C" fn main() -> i16 {
         let (mut render, mut last) = (0u32, 0u16);
         // Of it, the floor's lines and the triangles (the status block's split; the rest is publishing).
         let (mut floor_t, mut draw_t) = (0u32, 0u32);
-        // Line y's ray at byte 0, stepped (exactly) line by line.
-        let mut a = rays.a0;
+        // Line y's ray at byte 0, stepped (exactly) line by line in place (`ray_step`).
+        args.a = rays.a0;
         let step: [i32; 3] = if doubled != 0 { rays.ay.map(|c| c * 2) } else { rays.ay };
+        unsafe { core::ptr::write_volatile(chopper::layout::RAY_STEP as *mut [i32; 3], step) };
         for band in 0..VIEW_BANDS as u8 {
             // (Sprites fetch from the REU between bands: the floor starts each band afresh.)
             let active = unsafe {
@@ -611,14 +614,13 @@ pub extern "C" fn main() -> i16 {
             draw_t += lines.wrapping_sub(last) as u32;
             let mut line = 0u8;
             while line < 8 {
-                args.a = a;
                 args.haze = floor::haze_byte(line, doubled != 0);
                 unsafe {
                     span_line();
                     floor_line();
                     floor_copy(line, doubled);
+                    ray_step();
                 }
-                a = [a[0] + step[0], a[1] + step[1], a[2] + step[2]];
                 line += 1 + doubled;
             }
             let drawn = stopwatch_read();
