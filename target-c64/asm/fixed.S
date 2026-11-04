@@ -131,6 +131,122 @@ m7_smul16:
     rts
 .size m7_smul16, .-m7_smul16
 
+; m7_div_clamp(n: i32, z: u16) -> i16: (n / z).clamp(-1000, 1000), truncated toward zero, for
+; 0 < z < 32768 (`hud::div_clamp`; its callers keep z >= NEAR). |n| >= z << 10 clamps at once; else the
+; quotient has ten bits: R = |n| >> 10 (< z), then |n|'s low ten bits shifted in one by one, restoring.
+DQ_B0 = __rc6           ; |n| << 8 as five bytes B4..B0, then >> 2: R = B3:B2, the low bits in B1:B0
+DQ_B1 = __rc7
+DQ_B2 = __rc8
+DQ_B3 = __rc9
+DQ_B4 = __rc10
+DQ_QL = __rc11
+DQ_QH = __rc12
+DQ_SG = __rc13          ; bit 7: n < 0
+DQ_T0 = __rc14          ; z << 2 (17 bits)
+DQ_T1 = __rc15
+DQ_T2 = __rc16
+.section .text.m7_div_clamp,"ax",@progbits
+.globl m7_div_clamp
+.type m7_div_clamp,@function
+m7_div_clamp:
+    sta DQ_B1
+    stx DQ_B2
+    lda __rc2
+    sta DQ_B3
+    lda __rc3
+    sta DQ_B4
+    sta DQ_SG
+    bpl 1f
+    sec
+    lda #0
+    sbc DQ_B1
+    sta DQ_B1
+    lda #0
+    sbc DQ_B2
+    sta DQ_B2
+    lda #0
+    sbc DQ_B3
+    sta DQ_B3
+    lda #0
+    sbc DQ_B4
+    sta DQ_B4
+1:  lda __rc4
+    asl
+    sta DQ_T0
+    lda __rc5
+    rol
+    sta DQ_T1
+    lda #0
+    rol
+    sta DQ_T2
+    asl DQ_T0
+    rol DQ_T1
+    rol DQ_T2
+    ; |n| >= z << 10 when its top three bytes reach z << 2 (its low byte against 0).
+    lda DQ_B2
+    cmp DQ_T0
+    lda DQ_B3
+    sbc DQ_T1
+    lda DQ_B4
+    sbc DQ_T2
+    bcs dq_clamp
+    lda #0
+    sta DQ_B0
+    ldy #2
+2:  lsr DQ_B4
+    ror DQ_B3
+    ror DQ_B2
+    ror DQ_B1
+    ror DQ_B0
+    dey
+    bne 2b
+    lda #0
+    sta DQ_QL
+    sta DQ_QH
+    ldy #10
+3:  asl DQ_B0
+    rol DQ_B1
+    rol DQ_B2
+    rol DQ_B3
+    sec
+    lda DQ_B2
+    sbc __rc4
+    tax
+    lda DQ_B3
+    sbc __rc5
+    bcc 4f
+    sta DQ_B3
+    stx DQ_B2
+4:  rol DQ_QL
+    rol DQ_QH
+    dey
+    bne 3b
+    lda DQ_QL
+    cmp #<1000
+    lda DQ_QH
+    sbc #>1000
+    bcc 5f
+dq_clamp:
+    lda #<1000
+    sta DQ_QL
+    lda #>1000
+    sta DQ_QH
+5:  bit DQ_SG
+    bpl 6f
+    sec
+    lda #0
+    sbc DQ_QL
+    tay
+    lda #0
+    sbc DQ_QH
+    tax
+    tya
+    rts
+6:  lda DQ_QL
+    ldx DQ_QH
+    rts
+.size m7_div_clamp, .-m7_div_clamp
+
 ; Point the table pointers' high bytes at the tables (once, at boot; nothing else writes $80-$87).
 .section .text.m7_umul_init,"ax",@progbits
 .globl m7_umul_init

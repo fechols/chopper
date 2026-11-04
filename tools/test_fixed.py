@@ -54,6 +54,43 @@ def main():
     for name, want in (('m7_umul16', lambda a, b: a * b), ('m7_smul16', lambda a, b: (signed(a) * signed(b)) & 0xFFFFFFFF)):
         if name in syms:
             run(mem, syms[name], name, cases, want)
+    if 'm7_div_clamp' in syms:
+        div_clamp(mem, syms['m7_div_clamp'], rng, args.cases)
+
+
+def div_clamp(mem, entry, rng, n_cases):
+    """m7_div_clamp(n: i32, z: u16) -> i16 against (n / z).clamp(-1000, 1000), truncated, for 0 < z < 32768."""
+    def want(n, z):
+        q = abs(n) // z
+        return max(-1000, min(1000, -q if n < 0 else q))
+    zs = [1, 2, 7, 8, 9, 100, 133, 1000, 4096, 32767]
+    cases = [(s * (base * z + d), z) for z in zs for base in (0, 1, 999, 1000, 1001, 1023, 1024, 1025, 40000)
+             for d in (-1, 0, 1) for s in (1, -1)]
+    cases += [(-2 ** 31, 1), (2 ** 31 - 1, 1), (-2 ** 31, 32767), (2 ** 31 - 1, 32767)]
+    for _ in range(n_cases):
+        z = rng.randrange(1, 32768)
+        k = rng.randrange(3)
+        n = rng.randrange(-2 ** 31, 2 ** 31) if k == 0 else rng.randrange(-1024 * z, 1024 * z) if k == 1 else \
+            rng.randrange(-32768, 32768) * rng.choice((160, 133))
+        cases.append((n, z))
+    total = 0
+    for n, z in cases:
+        n = max(-2 ** 31, min(2 ** 31 - 1, n))
+        u = n & 0xFFFFFFFF
+        cpu = Cpu(mem, [(0x02, 0x14), (0x80, 0x9C), (0x100, 0x200)])
+        cpu.a, cpu.x = u & 255, u >> 8 & 255
+        mem[RC2], mem[RC3], mem[0x06], mem[0x07] = u >> 16 & 255, u >> 24, z & 255, z >> 8
+        cpu.pc = entry
+        cpu.push((RETURN - 1) >> 8)
+        cpu.push((RETURN - 1) & 0xFF)
+        while cpu.pc != RETURN:
+            cpu.step()
+        got = cpu.a | cpu.x << 8
+        got -= 0x10000 if got & 0x8000 else 0
+        if got != want(n, z):
+            raise SystemExit(f'm7_div_clamp: {n} / {z}: got {got}, want {want(n, z)}')
+        total += cpu.cycles
+    print(f'm7_div_clamp: {len(cases)} quotients exact; {total / len(cases):.0f} cycles each')
 
 
 def run(mem, entry, name, cases, want):

@@ -264,9 +264,84 @@ pub fn to_camera(eye: &Eye, p: [i16; 3]) -> [i16; 3] {
 // (Resident on the C64: shared by the overlays.)
 pub fn screen(c: [i16; 3]) -> (i16, i16) {
     let z = c[2] as i32;
-    let x = (mul16(c[0], 160) / z).clamp(-1000, 1000) as i16;
-    let y = (mul16(c[1], 133) / z).clamp(-1000, 1000) as i16;
+    let x = div_clamp(mul16(c[0], 160), z);
+    let y = div_clamp(mul16(c[1], 133), z);
     (160 + x, 68 - y)
+}
+
+/// `(n / z).clamp(-1000, 1000)`: only quotients up to 1000 matter, so for `z > 0` a ten-step restoring
+/// division of the magnitudes (an i32 divide is ~1900 cycles on the C64), truncated toward zero as `/` is.
+/// On the C64 `asm/fixed.S` `m7_div_clamp`, for `0 < z < 32768` only: `screen`'s callers keep
+/// `z ≥ NEAR`.
+#[inline(never)]
+// (Resident on the C64, with `screen`.)
+fn div_clamp(n: i32, z: i32) -> i16 {
+    #[cfg(target_arch = "mos")]
+    unsafe {
+        unsafe extern "C" {
+            fn m7_div_clamp(n: i32, z: u16) -> i16;
+        }
+        m7_div_clamp(n, z as u16)
+    }
+    #[cfg(not(target_arch = "mos"))]
+    div_clamp_ref(n, z)
+}
+
+/// [`div_clamp`] in Rust (the host's; what the C64's asm matches).
+#[cfg_attr(target_arch = "mos", allow(dead_code))]
+fn div_clamp_ref(n: i32, z: i32) -> i16 {
+    if z <= 0 {
+        return (n / z).clamp(-1000, 1000) as i16;
+    }
+    let m = n.unsigned_abs();
+    // z is an i16's value, so z << 10 fits.
+    let q = if m >= (z as u32) << 10 {
+        1000
+    } else {
+        let (mut r, mut d, mut q, mut bit) = (m, (z as u32) << 9, 0u16, 512u16);
+        while bit != 0 {
+            if r >= d {
+                r -= d;
+                q |= bit;
+            }
+            d >>= 1;
+            bit >>= 1;
+        }
+        q.min(1000)
+    };
+    if n < 0 { -(q as i16) } else { q as i16 }
+}
+
+#[cfg(test)]
+#[test]
+fn div_clamp_is_the_clamped_quotient() {
+    let mut seed = 0x9E37_79B9u32;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let zs = [1i32, 2, 7, 8, 9, 100, 133, 1000, 4096, 32767];
+    for &z in &zs {
+        for base in [0i64, 1, 999, 1000, 1001, 1023, 1024, 1025, 40000] {
+            for d in [-1i64, 0, 1] {
+                for s in [1i64, -1] {
+                    let n = (s * (base * z as i64 + d)).clamp(i32::MIN as i64 + 1, i32::MAX as i64) as i32;
+                    assert_eq!(div_clamp(n, z), (n / z).clamp(-1000, 1000) as i16, "{n} / {z}");
+                }
+            }
+        }
+    }
+    for _ in 0..200_000 {
+        let z = (rnd() % 32767 + 1) as i32;
+        let n = match rnd() % 3 {
+            0 => rnd() as i32,
+            1 => (rnd() % 2_000_000) as i32 - 1_000_000,
+            _ => mul16(rnd() as i16, 160),
+        };
+        assert_eq!(div_clamp(n, z), (n / z).clamp(-1000, 1000) as i16, "{n} / {z}");
+    }
 }
 
 /// Whether a screen position is inside the view (with a margin for the sprite).

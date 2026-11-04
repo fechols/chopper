@@ -66,6 +66,10 @@ pub fn sin(angle: u16) -> i32 {
     let index = angle >> 6;
     let fraction = (angle & 63) as i32;
     let a = sin_step(index);
+    // On a table step (byte yaws, `yaw << 8`, always are) the interpolation adds (0 + 32) >> 6 = 0.
+    if fraction == 0 {
+        return a;
+    }
     let b = sin_step(index.wrapping_add(1));
     a + ((crate::fixed::mul((b - a) as i16, fraction as i16) + 32) >> 6)
 }
@@ -179,6 +183,15 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sin_on_table_steps_is_the_interpolated_value() {
+        for angle in 0..=u16::MAX {
+            let (a, b) = (sin_step(angle >> 6), sin_step((angle >> 6).wrapping_add(1)));
+            let old = a + ((crate::fixed::mul((b - a) as i16, (angle & 63) as i16) + 32) >> 6);
+            assert_eq!(sin(angle), old, "angle {angle:#06x}");
+        }
+    }
 
     #[test]
     fn sine_table_is_accurate() {
