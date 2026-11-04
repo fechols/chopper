@@ -44,6 +44,8 @@ fn main() {
     // The i32 divide libcall goes to asm/fixed.S's `__wrap___divsi3` (a byte-divisor fast path; libcrt's
     // divmod object, which every divide pulls in, still provides `__real___divsi3`).
     println!("cargo:rustc-link-arg=-Wl,--wrap=__divsi3");
+    // And the u32 divide, on the same core (libcrt's `__udivsi3` is then never linked).
+    println!("cargo:rustc-link-arg=-Wl,--wrap=__udivsi3");
     // Likewise the i32 multiply: `__wrap___mulsi3`, up to three 16 × 16 quarter-square products (libcrt's
     // `__mulsi3` is then never linked).
     println!("cargo:rustc-link-arg=-Wl,--wrap=__mulsi3");

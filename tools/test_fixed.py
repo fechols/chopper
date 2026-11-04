@@ -60,6 +60,26 @@ def main():
         divsi3(mem, syms['__wrap___divsi3'], rng, args.cases)
     if '__wrap___mulsi3' in syms:
         mulsi3(mem, syms['__wrap___mulsi3'], rng, args.cases)
+    if '__wrap___udivsi3' in syms:
+        udivsi3(mem, syms['__wrap___udivsi3'], rng, args.cases)
+
+
+def udivsi3(mem, entry, rng, n_cases):
+    """__wrap___udivsi3 (asm/fixed.S) against n // d, unsigned: the byte-divisor loop and the wide one
+    (divisors to 2^32 - 1: the remainder's 33rd bit)."""
+    ds = (1, 2, 5, 133, 255, 256, 1024, 2047, 65535, 65536, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFE, 0xFFFFFFFF)
+    ns = (0, 1, 0x3FFFFFF, 0xFFFFFFFF, 0x80000000, 0x7FFFFFFF, 12345678)
+    cases = [(n, d) for d in ds for n in ns + (d - 1, d, d + 1, 2 * d - 1) if n < 2 ** 32]
+    cases += [(0x3FFFFFF, m) for m in range(1024, 2048)]  # fixed::init_tables' reciprocals
+    cases += [(rng.randrange(2 ** 32), rng.randrange(1, 256)) for _ in range(n_cases)]
+    cases += [(rng.randrange(2 ** 32), rng.randrange(1, 2 ** 32) >> rng.randrange(32) or 7) for _ in range(n_cases // 2)]
+    total = 0
+    for n, d in cases:
+        got, cycles = call32(mem, entry, n, d)
+        if got != n // d:
+            raise SystemExit(f'__udivsi3: {n} / {d}: got {got}, want {n // d}')
+        total += cycles
+    print(f'__udivsi3: {len(cases)} quotients exact; {total / len(cases):.0f} cycles each')
 
 
 def call32(mem, entry, a, b):

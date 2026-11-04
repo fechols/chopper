@@ -247,31 +247,44 @@ dq_clamp:
     rts
 .size m7_div_clamp, .-m7_div_clamp
 
-; __wrap___divsi3(n: i32, d: i32) -> i32: the i32 divide libcall (`--wrap=__divsi3`, target-c64/build.rs;
-; libcrt's takes ~3400 cycles here): n / d
-; truncated toward zero (Rust has ruled out d = 0 and MIN / -1). For 0 < |d| < 256 (`floor::Rays::new`'s
-; divisors) the magnitude's 32 bits are shifted through a 9-bit remainder, each quotient bit taking the
-; place of the dividend bit shifted out; wider divisors go to libcrt's `__udivsi3`.
-SD_N0 = __rc8
-SD_N1 = __rc9
-SD_N2 = __rc10
-SD_N3 = __rc11
-SD_SG = __rc12          ; bit 7: the quotient is negative
+; The i32 and u32 divide libcalls (`--wrap=__divsi3`, `--wrap=__udivsi3`, target-c64/build.rs), in place of
+; libcrt's (~3400 cycles; 380 bytes for its __udivsi3): n / d truncated toward zero (Rust has ruled out
+; d = 0 and MIN / -1). One unsigned core, `ud32`:
+; - d < 256 (`floor::Rays::new`'s divisors): the dividend's 32 bits shifted through a 9-bit remainder in A,
+;   each quotient bit taking the place of the dividend bit shifted out (~1100-1500 cycles);
+; - wider (`fixed::init_tables`' reciprocals, at boot): the same with a 32-bit remainder and its 33rd bit.
+DV_N0 = __rc8           ; the dividend, then the quotient
+DV_N1 = __rc9
+DV_N2 = __rc10
+DV_N3 = __rc11
+DV_R0 = __rc12          ; the wide remainder
+DV_R1 = __rc13
+DV_R2 = __rc14
+DV_R3 = __rc15
+DV_T1 = __rc16          ; a trial difference's middle bytes, the remainder's 33rd bit
+DV_T2 = __rc17
+DV_T3 = __rc18
+DV_SG = __rc19          ; bit 7: the quotient is negative (__divsi3)
+
 .section .text.__wrap___divsi3,"ax",@progbits
+.globl __wrap___udivsi3
+.type __wrap___udivsi3,@function
+__wrap___udivsi3:
+    jsr dv_load
+    jsr ud32
+    jmp dv_ret
+.size __wrap___udivsi3, .-__wrap___udivsi3
+
 .globl __wrap___divsi3
 .type __wrap___divsi3,@function
 __wrap___divsi3:
-    sta SD_N0
-    stx SD_N1
-    lda __rc2
-    sta SD_N2
-    lda __rc3
-    sta SD_N3
+    jsr dv_load
+    lda DV_N3
     eor __rc7
-    sta SD_SG
-    lda SD_N3
+    sta DV_SG
+    lda DV_N3
     bpl 1f
-    jsr sd_neg
+    jsr dv_neg
 1:  lda __rc7
     bpl 2f
     sec
@@ -287,70 +300,111 @@ __wrap___divsi3:
     lda #0
     sbc __rc7
     sta __rc7
-2:  lda __rc5
+2:  jsr ud32
+    bit DV_SG
+    bpl dv_ret
+    jsr dv_neg
+dv_ret:
+    lda DV_N2
+    sta __rc2
+    lda DV_N3
+    sta __rc3
+    lda DV_N0
+    ldx DV_N1
+    rts
+dv_load:
+    sta DV_N0
+    stx DV_N1
+    lda __rc2
+    sta DV_N2
+    lda __rc3
+    sta DV_N3
+    rts
+dv_neg:
+    sec
+    lda #0
+    sbc DV_N0
+    sta DV_N0
+    lda #0
+    sbc DV_N1
+    sta DV_N1
+    lda #0
+    sbc DV_N2
+    sta DV_N2
+    lda #0
+    sbc DV_N3
+    sta DV_N3
+    rts
+
+; N /= d (__rc4-__rc7), unsigned.
+ud32:
+    lda __rc5
     ora __rc6
     ora __rc7
-    bne sd_wide
+    bne ud_wide
     ldx #32
     lda #0
-3:  asl SD_N0
-    rol SD_N1
-    rol SD_N2
-    rol SD_N3
+3:  asl DV_N0
+    rol DV_N1
+    rol DV_N2
+    rol DV_N3
     rol a
     bcs 4f
     cmp __rc4
     bcc 5f
 4:  sbc __rc4
-    inc SD_N0
+    inc DV_N0
 5:  dex
     bne 3b
-sd_done:
-    bit SD_SG
-    bpl 6f
-    jsr sd_neg
-6:  lda SD_N2
-    sta __rc2
-    lda SD_N3
-    sta __rc3
-    lda SD_N0
-    ldx SD_N1
     rts
-sd_wide:
-    lda SD_SG
-    pha
-    lda SD_N2
-    sta __rc2
-    lda SD_N3
-    sta __rc3
-    lda SD_N0
-    ldx SD_N1
-    jsr __udivsi3
-    sta SD_N0
-    stx SD_N1
-    lda __rc2
-    sta SD_N2
-    lda __rc3
-    sta SD_N3
-    pla
-    sta SD_SG
-    jmp sd_done
-sd_neg:
+ud_wide:
+    lda #0
+    sta DV_R0
+    sta DV_R1
+    sta DV_R2
+    sta DV_R3
+    ldx #32
+6:  asl DV_N0
+    rol DV_N1
+    rol DV_N2
+    rol DV_N3
+    rol DV_R0
+    rol DV_R1
+    rol DV_R2
+    rol DV_R3
+    lda #0
+    rol a
+    sta DV_T3
+    ; R (33 bits) - d: kept when it does not borrow
     sec
-    lda #0
-    sbc SD_N0
-    sta SD_N0
-    lda #0
-    sbc SD_N1
-    sta SD_N1
-    lda #0
-    sbc SD_N2
-    sta SD_N2
-    lda #0
-    sbc SD_N3
-    sta SD_N3
+    lda DV_R0
+    sbc __rc4
+    tay
+    lda DV_R1
+    sbc __rc5
+    sta DV_T1
+    lda DV_R2
+    sbc __rc6
+    sta DV_T2
+    lda DV_R3
+    sbc __rc7
+    pha
+    lda DV_T3
+    sbc #0
+    pla
+    bcc 7f
+    sta DV_R3
+    lda DV_T2
+    sta DV_R2
+    lda DV_T1
+    sta DV_R1
+    sty DV_R0
+    inc DV_N0
+7:  dex
+    bne 6b
     rts
 .size __wrap___divsi3, .-__wrap___divsi3
+
 
 
 ; __wrap___mulsi3(a: i32, b: i32) -> i32: the i32 multiply libcall (`--wrap=__mulsi3`, target-c64/build.rs),
