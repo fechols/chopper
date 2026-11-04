@@ -62,6 +62,30 @@ def main():
         mulsi3(mem, syms['__wrap___mulsi3'], rng, args.cases)
     if '__wrap___udivsi3' in syms:
         udivsi3(mem, syms['__wrap___udivsi3'], rng, args.cases)
+    if '__wrap___udivhi3' in syms:
+        udivhi3(mem, syms['__wrap___udivhi3'], rng)
+
+
+def udivhi3(mem, entry, rng):
+    """__wrap___udivhi3 (asm/fixed.S) against n // d for u16: every divisor with edge dividends, and
+    random pairs."""
+    cases = [(n, d) for d in range(1, 65536) for n in (0, d - 1, d, 65535)]
+    cases += [(rng.randrange(65536), rng.randrange(1, 65536)) for _ in range(100000)]
+    total = 0
+    for n, d in cases:
+        cpu = Cpu(mem, [(0x02, 0x40), (0x80, 0x9C), (0x100, 0x200)])
+        cpu.a, cpu.x = n & 255, n >> 8
+        mem[RC2], mem[RC3] = d & 255, d >> 8
+        cpu.pc = entry
+        cpu.push((RETURN - 1) >> 8)
+        cpu.push((RETURN - 1) & 0xFF)
+        while cpu.pc != RETURN:
+            cpu.step()
+        got = cpu.a | cpu.x << 8
+        if got != n // d:
+            raise SystemExit(f'__udivhi3: {n} / {d}: got {got}, want {n // d}')
+        total += cpu.cycles
+    print(f'__udivhi3: {len(cases)} quotients exact; {total / len(cases):.0f} cycles each')
 
 
 def udivsi3(mem, entry, rng, n_cases):

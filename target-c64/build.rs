@@ -46,6 +46,8 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,--wrap=__divsi3");
     // And the u32 divide, on the same core (libcrt's `__udivsi3` is then never linked).
     println!("cargo:rustc-link-arg=-Wl,--wrap=__udivsi3");
+    // And the u16 divide (`__wrap___udivhi3`: 16 steps; libcrt's is 196 bytes).
+    println!("cargo:rustc-link-arg=-Wl,--wrap=__udivhi3");
     // Likewise the i32 multiply: `__wrap___mulsi3`, up to three 16 × 16 quarter-square products (libcrt's
     // `__mulsi3` is then never linked).
     println!("cargo:rustc-link-arg=-Wl,--wrap=__mulsi3");

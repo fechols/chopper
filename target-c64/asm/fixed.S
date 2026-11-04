@@ -407,6 +407,52 @@ ud_wide:
 
 
 
+; __wrap___udivhi3(n: u16, d: u16) -> u16: the u16 divide libcall (`--wrap=__udivhi3`, target-c64/build.rs;
+; libcrt's is 196 bytes): 16 steps, the remainder with its 17th bit (d may exceed 32767). d > 0 (Rust
+; checks).
+DH_N0 = __rc4           ; the dividend, then the quotient
+DH_N1 = __rc5
+DH_R0 = __rc6           ; the remainder
+DH_R1 = __rc7
+DH_R2 = __rc8           ; its 17th bit
+.section .text.__wrap___udivhi3,"ax",@progbits
+.globl __wrap___udivhi3
+.type __wrap___udivhi3,@function
+__wrap___udivhi3:
+    sta DH_N0
+    stx DH_N1
+    lda #0
+    sta DH_R0
+    sta DH_R1
+    ldx #16
+1:  asl DH_N0
+    rol DH_N1
+    rol DH_R0
+    rol DH_R1
+    lda #0
+    rol a
+    sta DH_R2
+    sec
+    lda DH_R0
+    sbc __rc2
+    tay
+    lda DH_R1
+    sbc __rc3
+    pha
+    lda DH_R2
+    sbc #0
+    pla
+    bcc 2f
+    sta DH_R1
+    sty DH_R0
+    inc DH_N0
+2:  dex
+    bne 1b
+    lda DH_N0
+    ldx DH_N1
+    rts
+.size __wrap___udivhi3, .-__wrap___udivhi3
+
 ; __wrap___mulsi3(a: i32, b: i32) -> i32: the i32 multiply libcall (`--wrap=__mulsi3`, target-c64/build.rs),
 ; in place of libcrt's (~1440 cycles, 103 bytes): the low 32 bits of a * b, the same signed or not, are
 ; aL * bL + ((aL * bH + aH * bL) mod 2^16) * 2^16 in unsigned 16-bit halves: m7_umul16 for each, the cross
