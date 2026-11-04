@@ -317,49 +317,26 @@ lookup:
 .size floor_line, .-floor_line
 
 ; floor_copy(A = band line 0..7, X = doubled): LINEBUF into STAGE column by column (+8 a column), and
-; into the next line too when doubled.
-CP_D = $A0      ; (2)
+; into the next line too when doubled. Unrolled (9 cycles a byte); it lives in the clipping overlay
+; (window 3, $F010), which is loaded before the band loop and not overwritten until the next frame.
+.section .text.clip.floor_copy,"ax",@progbits
 .globl floor_copy
 .type floor_copy,@function
 floor_copy:
-    clc
-    adc #<STAGE
-    sta CP_D
-    lda #>STAGE
-    adc #0
-    sta CP_D+1
-    txa
-    bne copy2
-    ldx #0
-    ldy #0
-1:  lda LINEBUF,x
-    sta (CP_D),y
-    tya
-    clc
-    adc #8
-    tay
-    bne 2f
-    inc CP_D+1
-2:  inx
-    cpx #COLS
-    bne 1b
-    rts
-copy2:
-    ldx #0
-    ldy #0
-3:  lda LINEBUF,x
-    sta (CP_D),y
-    iny
-    sta (CP_D),y
-    tya
-    clc
-    adc #7
-    tay
-    bne 4f
-    inc CP_D+1
-4:  inx
-    cpx #COLS
-    bne 3b
+    cpx #0
+    beq 1f
+    tax
+    jsr fc_line
+    inx
+    bne fc_line         ; (X = line + 1: always)
+1:  tax
+fc_line:
+.set fci, 0
+.rept COLS
+    lda LINEBUF+fci
+    sta STAGE+fci*8,x
+.set fci, fci+1
+.endr
     rts
 .size floor_copy, .-floor_copy
 
