@@ -251,17 +251,11 @@ impl Eye {
 #[inline(never)]
 // (Resident on the C64: shared by the overlays.)
 pub fn to_camera(eye: &Eye, p: [i16; 3]) -> [i16; 3] {
-    let mut c = [0i16; 3];
-    let mut k = 0;
-    for cj in c.iter_mut() {
-        let mut sum = 0i32;
-        for i in 0..3 {
-            sum += mul16(eye.m[k], p[i].wrapping_sub(eye.p[i]));
-            k += 1;
-        }
-        *cj = (sum >> 14) as i16;
-    }
-    c
+    // Straight-line (no indexing loop: on the C64 it cost ~5000 cycles of bounds checks and copies).
+    let (d0, d1, d2) = (p[0].wrapping_sub(eye.p[0]), p[1].wrapping_sub(eye.p[1]), p[2].wrapping_sub(eye.p[2]));
+    let m = &eye.m;
+    let row = |a: i16, b: i16, c: i16| ((mul16(a, d0) + mul16(b, d1) + mul16(c, d2)) >> 14) as i16;
+    [row(m[0], m[1], m[2]), row(m[3], m[4], m[5]), row(m[6], m[7], m[8])]
 }
 
 /// Screen position (hires px, view line) of a camera-space point in front of the near plane:
