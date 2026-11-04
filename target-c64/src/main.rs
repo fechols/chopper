@@ -10,7 +10,9 @@
 //!
 //! Needs the matching `chopper.reu` at REU address 0; until it appears the border flashes, so it may be
 //! uploaded after starting. Any control (joystick 2 or its second button, or the keys: W A S D, SPACE,
-//! SHIFT, `controls`) takes over from the autopilot (`STATUS+MODE` toggles full / line-doubled).
+//! SHIFT, `controls`) takes over from the autopilot (`STATUS+MODE` toggles full / line-doubled). F1
+//! toggles the floor between full lines (the boot default) and AUTO (full or line-doubled by the frame
+//! time).
 //! Performance is in the status block at `$CA80` (`layout::status`).
 
 #![no_std]
@@ -323,8 +325,13 @@ fn stream(c: &mut C64, now: u16) {
 }
 
 /// The player's controls as `agent::input` bits: joystick 2 (its second button on POT X), or the keys:
-/// W, A, S, D for the stick, SPACE to fire, either SHIFT for a missile. (In the spare region: the resident
-/// code is full.)
+/// W, A, S, D for the stick, SPACE to fire, either SHIFT for a missile. F1 (not an input bit) toggles
+/// `STATUS+MODE` on its press (latched at `STATUS+KEYS`): AUTO goes to 0 (always full lines), anything
+/// else (0, or the host's 1) to AUTO. (In the spare region: the resident code is full.)
+///
+/// Like every key, F1 is ignored while the stick is pushed (the scan is skipped, and the latch is kept),
+/// masked while joystick 1's fire is held (column 4, as for SPACE and right SHIFT), and read once a
+/// frame: a press must last until the next frame's scan.
 ///
 /// The stick and POT X are read first, with CIA 1 port A as the boot left it (bits 7/6 select the
 /// paddle pair); the stick pushed, it alone (its lines would select rows of their own). Else the keyboard
@@ -349,7 +356,14 @@ fn controls() -> u8 {
     poke(0xDC00, 0xFF);
     let held = !peek(0xDC01);
     // Row 1: W column 1, A 2, S 5, left SHIFT 7; row 2: D column 2; row 6: right SHIFT column 4; row 7:
-    // SPACE column 4. (Each row's keys moved onto their bits.)
+    // SPACE column 4. (Each row's keys moved onto their bits.) Row 0: F1 column 4.
+    poke(0xDC00, !0x01);
+    let f1 = !peek(0xDC01) & !held & 0x10;
+    if f1 & !peek(STATUS + status::KEYS) != 0 {
+        let m = peek(STATUS + status::MODE);
+        poke(STATUS + status::MODE, if m & status::mode::AUTO != 0 { 0 } else { status::mode::AUTO });
+    }
+    poke(STATUS + status::KEYS, f1);
     poke(0xDC00, !0x02);
     let r1 = !peek(0xDC01) & !held;
     poke(0xDC00, !0x04);
@@ -495,8 +509,9 @@ pub extern "C" fn main() -> i16 {
 
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);
-    // The floor picks full or line-doubled lines by itself (`floor::pick_lines`) until the host sets one.
-    poke(STATUS + status::MODE, status::mode::AUTO);
+    // Full lines; F1 (or the host) turns on AUTO, where the floor picks full or line-doubled lines by
+    // itself (`floor::pick_lines`).
+    poke(STATUS + status::MODE, 0);
     poke(STATUS + status::MAGIC, STATUS_MAGIC);
 
     let mut frames = 0u16;

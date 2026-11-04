@@ -154,7 +154,10 @@ pub mod status {
     /// u8: set by the host to freeze the flight's clock (0 = run).
     pub const HOLD: u16 = 6;
     /// u8: the floor's lines ([`mode`]): bit 0 line-doubled (the mode the frame is drawn in), bit 1
-    /// AUTO (the C64 sets bit 0 itself from the frame time; the boot default). The host writes 0 or 1.
+    /// AUTO (the C64 sets bit 0 itself from the frame time). The boot default is 0 (full lines); the host
+    /// writes 0, 1 or AUTO.
+    /// F1 toggles it on its press: AUTO goes to 0 (always full lines), anything else (0, or the host's 1)
+    /// to AUTO.
     pub const MODE: u16 = 7;
     pub mod mode {
         pub const DOUBLED: u8 = 1;
@@ -185,7 +188,11 @@ pub mod status {
     /// u16: of `RENDER_US`, the triangles and sprites (activation and drawing), in units of 4 µs. The
     /// rest of the render is publishing the bands.
     pub const DRAW_US: u16 = 25;
-    pub const SIZE: u16 = 27;
+    /// u8: F1's column bit as the keyboard scan read it last frame (the toggle acts on the press). The
+    /// C64's own latch, shown for debugging: the host must not write it (a cleared byte under a held F1
+    /// would toggle MODE again).
+    pub const KEYS: u16 = 27;
+    pub const SIZE: u16 = 28;
 }
 
 /// The attract-mode helicopter (`agent::Agent`, as `Agent::to_bytes`) and the flight's clock (u32: NTSC

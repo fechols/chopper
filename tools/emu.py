@@ -119,8 +119,9 @@ class Cia:
             timer.running = False
 
 
-# agent::input bits as keys: (keyboard matrix row, column), as target-c64's `controls` reads them.
-KEYS = {1: (1, 1), 2: (1, 5), 4: (1, 2), 8: (2, 2), 16: (7, 4), 32: (1, 7)}
+# agent::input bits as keys: (keyboard matrix row, column), as target-c64's `controls` reads them. Bit 64
+# is F1 (keys only: not an input bit; it toggles STATUS+MODE on its press).
+KEYS = {1: (1, 1), 2: (1, 5), 4: (1, 2), 8: (2, 2), 16: (7, 4), 32: (1, 7), 64: (0, 4)}
 
 
 class C64(Cpu):
@@ -141,7 +142,7 @@ class C64(Cpu):
         self.irqs = 0
         self.stick = 0      # agent::input bits (active high), as joystick 2 and its POT X button read
         self.sid_writes = []   # the SID registers written since the last frame's report (--sid)
-        self.keys = 0       # agent::input bits held as keys (KEYS: W A S D, SPACE, left SHIFT)
+        self.keys = 0       # agent::input bits held as keys (KEYS: W A S D, SPACE, left SHIFT; 64 F1)
         self.pa, self.ddra = 0xFF, 0   # CIA 1 port A as last written, and its direction
 
     def t(self):
@@ -366,12 +367,12 @@ def main():
     ap.add_argument('--poke', default='', help='with --start: HEX=HEX,... RAM bytes poked as the main loop starts')
     ap.add_argument('--start', type=int, help='start the flight at this tick: poke the host agent and clock')
     ap.add_argument('--input', default='', help='the stick by frame: "FRAME:BITS,..." (agent::input bits: up 1, '
-                    'down 2, left 4, right 8, fire 16, fire2 32), each from that frame on')
+                    'down 2, left 4, right 8, fire 16, fire2 32; with --keys, F1 64), each from that frame on')
     ap.add_argument('--leap', type=int, default=0, help='and the clock this many ticks further on (the first '
                     'frame runs them all through the AI overlay)')
     ap.add_argument('--sid', action='store_true', help='print the four SIDs each frame (the sound effects)')
     ap.add_argument('--keys', action='store_true', help='play --input on the keyboard (W A S D, SPACE, left '
-                    'SHIFT), not the stick')
+                    'SHIFT; F1 for 64), not the stick')
     args = ap.parse_args()
     if args.leap and args.start is None:
         args.start = 0
