@@ -60,15 +60,15 @@ U1 = $9B
 m7_umul16:
     sta AL
     stx AH
-    lda __rc2
+    lda mos8(__rc2)
     sta BL
-    lda __rc3
+    lda mos8(__rc3)
     sta BH
     jsr umul
     lda P2
-    sta __rc2
+    sta mos8(__rc2)
     lda P3
-    sta __rc3
+    sta mos8(__rc3)
     lda P0
     ldx P1
     rts
@@ -83,11 +83,11 @@ m7_smul16:
     sta AL
     stx AH
     txa
-    eor __rc3
+    eor mos8(__rc3)
     sta U0              ; bit 7: the signs differ
-    lda __rc2
+    lda mos8(__rc2)
     sta BL
-    lda __rc3
+    lda mos8(__rc3)
     sta BH
     bpl 1f
     lda #0
@@ -123,9 +123,9 @@ m7_smul16:
     sbc P3
     sta P3
 3:  lda P2
-    sta __rc2
+    sta mos8(__rc2)
     lda P3
-    sta __rc3
+    sta mos8(__rc3)
     lda P0
     ldx P1
     rts
@@ -149,101 +149,101 @@ DQ_T2 = __rc16
 .globl m7_div_clamp
 .type m7_div_clamp,@function
 m7_div_clamp:
-    sta DQ_B1
-    stx DQ_B2
-    lda __rc2
-    sta DQ_B3
-    lda __rc3
-    sta DQ_B4
-    sta DQ_SG
+    sta mos8(DQ_B1)
+    stx mos8(DQ_B2)
+    lda mos8(__rc2)
+    sta mos8(DQ_B3)
+    lda mos8(__rc3)
+    sta mos8(DQ_B4)
+    sta mos8(DQ_SG)
     bpl 1f
     sec
     lda #0
-    sbc DQ_B1
-    sta DQ_B1
+    sbc mos8(DQ_B1)
+    sta mos8(DQ_B1)
     lda #0
-    sbc DQ_B2
-    sta DQ_B2
+    sbc mos8(DQ_B2)
+    sta mos8(DQ_B2)
     lda #0
-    sbc DQ_B3
-    sta DQ_B3
+    sbc mos8(DQ_B3)
+    sta mos8(DQ_B3)
     lda #0
-    sbc DQ_B4
-    sta DQ_B4
-1:  lda __rc4
+    sbc mos8(DQ_B4)
+    sta mos8(DQ_B4)
+1:  lda mos8(__rc4)
     asl
-    sta DQ_T0
-    lda __rc5
+    sta mos8(DQ_T0)
+    lda mos8(__rc5)
     rol
-    sta DQ_T1
+    sta mos8(DQ_T1)
     lda #0
     rol
-    sta DQ_T2
-    asl DQ_T0
-    rol DQ_T1
-    rol DQ_T2
+    sta mos8(DQ_T2)
+    asl mos8(DQ_T0)
+    rol mos8(DQ_T1)
+    rol mos8(DQ_T2)
     ; |n| >= z << 10 when its top three bytes reach z << 2 (its low byte against 0).
-    lda DQ_B2
-    cmp DQ_T0
-    lda DQ_B3
-    sbc DQ_T1
-    lda DQ_B4
-    sbc DQ_T2
+    lda mos8(DQ_B2)
+    cmp mos8(DQ_T0)
+    lda mos8(DQ_B3)
+    sbc mos8(DQ_T1)
+    lda mos8(DQ_B4)
+    sbc mos8(DQ_T2)
     bcs dq_clamp
     lda #0
-    sta DQ_B0
+    sta mos8(DQ_B0)
     ldy #2
-2:  lsr DQ_B4
-    ror DQ_B3
-    ror DQ_B2
-    ror DQ_B1
-    ror DQ_B0
+2:  lsr mos8(DQ_B4)
+    ror mos8(DQ_B3)
+    ror mos8(DQ_B2)
+    ror mos8(DQ_B1)
+    ror mos8(DQ_B0)
     dey
     bne 2b
     lda #0
-    sta DQ_QL
-    sta DQ_QH
+    sta mos8(DQ_QL)
+    sta mos8(DQ_QH)
     ldy #10
-3:  asl DQ_B0
-    rol DQ_B1
-    rol DQ_B2
-    rol DQ_B3
+3:  asl mos8(DQ_B0)
+    rol mos8(DQ_B1)
+    rol mos8(DQ_B2)
+    rol mos8(DQ_B3)
     sec
-    lda DQ_B2
-    sbc __rc4
+    lda mos8(DQ_B2)
+    sbc mos8(__rc4)
     tax
-    lda DQ_B3
-    sbc __rc5
+    lda mos8(DQ_B3)
+    sbc mos8(__rc5)
     bcc 4f
-    sta DQ_B3
-    stx DQ_B2
-4:  rol DQ_QL
-    rol DQ_QH
+    sta mos8(DQ_B3)
+    stx mos8(DQ_B2)
+4:  rol mos8(DQ_QL)
+    rol mos8(DQ_QH)
     dey
     bne 3b
-    lda DQ_QL
+    lda mos8(DQ_QL)
     cmp #<1000
-    lda DQ_QH
+    lda mos8(DQ_QH)
     sbc #>1000
     bcc 5f
 dq_clamp:
     lda #<1000
-    sta DQ_QL
+    sta mos8(DQ_QL)
     lda #>1000
-    sta DQ_QH
-5:  bit DQ_SG
+    sta mos8(DQ_QH)
+5:  bit mos8(DQ_SG)
     bpl 6f
     sec
     lda #0
-    sbc DQ_QL
+    sbc mos8(DQ_QL)
     tay
     lda #0
-    sbc DQ_QH
+    sbc mos8(DQ_QH)
     tax
     tya
     rts
-6:  lda DQ_QL
-    ldx DQ_QH
+6:  lda mos8(DQ_QL)
+    ldx mos8(DQ_QH)
     rts
 .size m7_div_clamp, .-m7_div_clamp
 
@@ -261,9 +261,6 @@ DV_R0 = __rc12          ; the wide remainder
 DV_R1 = __rc13
 DV_R2 = __rc14
 DV_R3 = __rc15
-DV_T1 = __rc16          ; a trial difference's middle bytes, the remainder's 33rd bit
-DV_T2 = __rc17
-DV_T3 = __rc18
 DV_SG = __rc19          ; bit 7: the quotient is negative (__divsi3)
 
 .section .text.__wrap___divsi3,"ax",@progbits
@@ -279,127 +276,169 @@ __wrap___udivsi3:
 .type __wrap___divsi3,@function
 __wrap___divsi3:
     jsr dv_load
-    lda DV_N3
-    eor __rc7
-    sta DV_SG
-    lda DV_N3
+    lda mos8(DV_N3)
+    eor mos8(__rc7)
+    sta mos8(DV_SG)
+    lda mos8(DV_N3)
     bpl 1f
     jsr dv_neg
-1:  lda __rc7
+1:  lda mos8(__rc7)
     bpl 2f
     sec
     lda #0
-    sbc __rc4
-    sta __rc4
+    sbc mos8(__rc4)
+    sta mos8(__rc4)
     lda #0
-    sbc __rc5
-    sta __rc5
+    sbc mos8(__rc5)
+    sta mos8(__rc5)
     lda #0
-    sbc __rc6
-    sta __rc6
+    sbc mos8(__rc6)
+    sta mos8(__rc6)
     lda #0
-    sbc __rc7
-    sta __rc7
+    sbc mos8(__rc7)
+    sta mos8(__rc7)
 2:  jsr ud32
-    bit DV_SG
+    bit mos8(DV_SG)
     bpl dv_ret
     jsr dv_neg
 dv_ret:
-    lda DV_N2
-    sta __rc2
-    lda DV_N3
-    sta __rc3
-    lda DV_N0
-    ldx DV_N1
+    lda mos8(DV_N2)
+    sta mos8(__rc2)
+    lda mos8(DV_N3)
+    sta mos8(__rc3)
+    lda mos8(DV_N0)
+    ldx mos8(DV_N1)
     rts
 dv_load:
-    sta DV_N0
-    stx DV_N1
-    lda __rc2
-    sta DV_N2
-    lda __rc3
-    sta DV_N3
+    sta mos8(DV_N0)
+    stx mos8(DV_N1)
+    lda mos8(__rc2)
+    sta mos8(DV_N2)
+    lda mos8(__rc3)
+    sta mos8(DV_N3)
     rts
 dv_neg:
     sec
     lda #0
-    sbc DV_N0
-    sta DV_N0
+    sbc mos8(DV_N0)
+    sta mos8(DV_N0)
     lda #0
-    sbc DV_N1
-    sta DV_N1
+    sbc mos8(DV_N1)
+    sta mos8(DV_N1)
     lda #0
-    sbc DV_N2
-    sta DV_N2
+    sbc mos8(DV_N2)
+    sta mos8(DV_N2)
     lda #0
-    sbc DV_N3
-    sta DV_N3
+    sbc mos8(DV_N3)
+    sta mos8(DV_N3)
     rts
 
-; N /= d (__rc4-__rc7), unsigned.
+; N /= d (__rc4-__rc7), unsigned. Both loops shift N left a bit a step, the bit shifted out into the
+; remainder R and the quotient bit into N's bottom; whole leading bytes go first while R stays under d (no
+; quotient bits there: small dividends end early).
 ud32:
-    lda __rc5
-    ora __rc6
-    ora __rc7
+    lda mos8(__rc5)
+    ora mos8(__rc6)
+    ora mos8(__rc7)
     bne ud_wide
+    ; d < 256 (all of `geom::cut`'s seen; `geom::pop_scale`'s): R in A, 9 bits with the carry.
     ldx #32
     lda #0
-3:  asl DV_N0
-    rol DV_N1
-    rol DV_N2
-    rol DV_N3
+11: ldy mos8(DV_N3)     ; (R = 0) a byte under d moves to R
+    cpy mos8(__rc4)
+    bcs 3f
+    lda mos8(DV_N2)
+    sta mos8(DV_N3)
+    lda mos8(DV_N1)
+    sta mos8(DV_N2)
+    lda mos8(DV_N0)
+    sta mos8(DV_N1)
+    lda #0
+    sta mos8(DV_N0)
+    txa
+    sec
+    sbc #8
+    beq 5f              ; all 32 bits: the quotient is 0
+    tax
+    tya
+    beq 11b
+3:  asl mos8(DV_N0)
+    rol mos8(DV_N1)
+    rol mos8(DV_N2)
+    rol mos8(DV_N3)
     rol a
     bcs 4f
-    cmp __rc4
-    bcc 5f
-4:  sbc __rc4
-    inc DV_N0
-5:  dex
+    cmp mos8(__rc4)
+    bcc 12f
+4:  sbc mos8(__rc4)
+    inc mos8(DV_N0)
+12: dex
     bne 3b
-    rts
+5:  rts
+; d >= 256: a 32-bit remainder and its 33rd bit; R:N is __rc8-__rc15.
 ud_wide:
     lda #0
-    sta DV_R0
-    sta DV_R1
-    sta DV_R2
-    sta DV_R3
+    sta mos8(DV_R0)
+    sta mos8(DV_R1)
+    sta mos8(DV_R2)
+    sta mos8(DV_R3)
     ldx #32
-6:  asl DV_N0
-    rol DV_N1
-    rol DV_N2
-    rol DV_N3
-    rol DV_R0
-    rol DV_R1
-    rol DV_R2
-    rol DV_R3
+9:  lda mos8(DV_R3)
+    bne 6f
+    lda mos8(DV_N3)
+    cmp mos8(__rc4)
+    lda mos8(DV_R0)
+    sbc mos8(__rc5)
+    lda mos8(DV_R1)
+    sbc mos8(__rc6)
+    lda mos8(DV_R2)
+    sbc mos8(__rc7)
+    bcs 6f
+    ldy #6
+10: lda __rc8,y
+    sta __rc9,y
+    dey
+    bpl 10b
     lda #0
-    rol a
-    sta DV_T3
-    ; R (33 bits) - d: kept when it does not borrow
+    sta mos8(DV_N0)
+    txa
     sec
-    lda DV_R0
-    sbc __rc4
-    tay
-    lda DV_R1
-    sbc __rc5
-    sta DV_T1
-    lda DV_R2
-    sbc __rc6
-    sta DV_T2
-    lda DV_R3
-    sbc __rc7
-    pha
-    lda DV_T3
-    sbc #0
-    pla
+    sbc #8
+    tax
+    bne 9b
+    rts
+6:  asl mos8(DV_N0)
+    rol mos8(DV_N1)
+    rol mos8(DV_N2)
+    rol mos8(DV_N3)
+    rol mos8(DV_R0)
+    rol mos8(DV_R1)
+    rol mos8(DV_R2)
+    rol mos8(DV_R3)
+    bcs 8f              ; R >= 2^32 > d
+    ; R - d: taken when it does not borrow
+    lda mos8(DV_R0)
+    cmp mos8(__rc4)
+    lda mos8(DV_R1)
+    sbc mos8(__rc5)
+    lda mos8(DV_R2)
+    sbc mos8(__rc6)
+    lda mos8(DV_R3)
+    sbc mos8(__rc7)
     bcc 7f
-    sta DV_R3
-    lda DV_T2
-    sta DV_R2
-    lda DV_T1
-    sta DV_R1
-    sty DV_R0
-    inc DV_N0
+8:  lda mos8(DV_R0)           ; (carry set)
+    sbc mos8(__rc4)
+    sta mos8(DV_R0)
+    lda mos8(DV_R1)
+    sbc mos8(__rc5)
+    sta mos8(DV_R1)
+    lda mos8(DV_R2)
+    sbc mos8(__rc6)
+    sta mos8(DV_R2)
+    lda mos8(DV_R3)
+    sbc mos8(__rc7)
+    sta mos8(DV_R3)
+    inc mos8(DV_N0)
 7:  dex
     bne 6b
     rts
@@ -419,37 +458,37 @@ DH_R2 = __rc8           ; its 17th bit
 .globl __wrap___udivhi3
 .type __wrap___udivhi3,@function
 __wrap___udivhi3:
-    sta DH_N0
-    stx DH_N1
+    sta mos8(DH_N0)
+    stx mos8(DH_N1)
     lda #0
-    sta DH_R0
-    sta DH_R1
+    sta mos8(DH_R0)
+    sta mos8(DH_R1)
     ldx #16
-1:  asl DH_N0
-    rol DH_N1
-    rol DH_R0
-    rol DH_R1
+1:  asl mos8(DH_N0)
+    rol mos8(DH_N1)
+    rol mos8(DH_R0)
+    rol mos8(DH_R1)
     lda #0
     rol a
-    sta DH_R2
+    sta mos8(DH_R2)
     sec
-    lda DH_R0
-    sbc __rc2
+    lda mos8(DH_R0)
+    sbc mos8(__rc2)
     tay
-    lda DH_R1
-    sbc __rc3
+    lda mos8(DH_R1)
+    sbc mos8(__rc3)
     pha
-    lda DH_R2
+    lda mos8(DH_R2)
     sbc #0
     pla
     bcc 2f
-    sta DH_R1
-    sty DH_R0
-    inc DH_N0
+    sta mos8(DH_R1)
+    sty mos8(DH_R0)
+    inc mos8(DH_N0)
 2:  dex
     bne 1b
-    lda DH_N0
-    ldx DH_N1
+    lda mos8(DH_N0)
+    ldx mos8(DH_N1)
     rts
 .size __wrap___udivhi3, .-__wrap___udivhi3
 
@@ -469,61 +508,61 @@ MW_C1 = __rc13
 .globl __wrap___mulsi3
 .type __wrap___mulsi3,@function
 __wrap___mulsi3:
-    sta MW_A0
-    stx MW_A1
-    lda __rc2
-    sta MW_A2
-    lda __rc3
-    sta MW_A3
+    sta mos8(MW_A0)
+    stx mos8(MW_A1)
+    lda mos8(__rc2)
+    sta mos8(MW_A2)
+    lda mos8(__rc3)
+    sta mos8(MW_A3)
     lda #0
-    sta MW_C0
-    sta MW_C1
+    sta mos8(MW_C0)
+    sta mos8(MW_C1)
     ; aL * bH
-    lda __rc6
-    ora __rc7
+    lda mos8(__rc6)
+    ora mos8(__rc7)
     beq 1f
-    lda __rc6
-    sta __rc2
-    lda __rc7
-    sta __rc3
-    lda MW_A0
-    ldx MW_A1
+    lda mos8(__rc6)
+    sta mos8(__rc2)
+    lda mos8(__rc7)
+    sta mos8(__rc3)
+    lda mos8(MW_A0)
+    ldx mos8(MW_A1)
     jsr m7_umul16
-    sta MW_C0
-    stx MW_C1
+    sta mos8(MW_C0)
+    stx mos8(MW_C1)
     ; + aH * bL
-1:  lda MW_A2
-    ora MW_A3
+1:  lda mos8(MW_A2)
+    ora mos8(MW_A3)
     beq 2f
-    lda __rc4
-    sta __rc2
-    lda __rc5
-    sta __rc3
-    lda MW_A2
-    ldx MW_A3
+    lda mos8(__rc4)
+    sta mos8(__rc2)
+    lda mos8(__rc5)
+    sta mos8(__rc3)
+    lda mos8(MW_A2)
+    ldx mos8(MW_A3)
     jsr m7_umul16
     clc
-    adc MW_C0
-    sta MW_C0
+    adc mos8(MW_C0)
+    sta mos8(MW_C0)
     txa
-    adc MW_C1
-    sta MW_C1
+    adc mos8(MW_C1)
+    sta mos8(MW_C1)
     ; aL * bL, its high half plus the cross sum
-2:  lda __rc4
-    sta __rc2
-    lda __rc5
-    sta __rc3
-    lda MW_A0
-    ldx MW_A1
+2:  lda mos8(__rc4)
+    sta mos8(__rc2)
+    lda mos8(__rc5)
+    sta mos8(__rc3)
+    lda mos8(MW_A0)
+    ldx mos8(MW_A1)
     jsr m7_umul16
     pha
     clc
-    lda __rc2
-    adc MW_C0
-    sta __rc2
-    lda __rc3
-    adc MW_C1
-    sta __rc3
+    lda mos8(__rc2)
+    adc mos8(MW_C0)
+    sta mos8(__rc2)
+    lda mos8(__rc3)
+    adc mos8(MW_C1)
+    sta mos8(__rc3)
     pla
     rts
 .size __wrap___mulsi3, .-__wrap___mulsi3
