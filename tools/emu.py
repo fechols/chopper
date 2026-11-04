@@ -32,9 +32,9 @@ AGENT_BYTES = 48
 SOFT_STACK, SOFT_STACK_END = 0xCD80, 0xD000
 BUFFERS = [0x6000]
 SCREEN = 0x5C00     # layout::BUFFERS[0].screen
-HUD = 0x8B00        # hud::PAGE: READY, FRONT, NEXT, BACK, the lock state (4), the tables from +$10
+HUD = 0x8B00        # hud::PAGE: READY, FRONT, NEXT, BACK, the lock state (6), the tables from +$10
 HUD_BACK, HUD_LOCK, HUD_BUF, HUD_TABLE = HUD + 3, HUD + 4, HUD + 0x10, 4 * 27
-LOCK_BYTES = 5      # hud::LOCK_BYTES (the lock state, then the waypoint arrow's side)
+LOCK_BYTES = 6      # hud::LOCK_BYTES (the lock state, then the waypoint arrow's side)
 HUD_SLOTS = [0x5A80, 0x5AC0, 0x5B00, 0x5B40, 0x5B80, 0x5BC0, 0x7F40, 0x7F80, 0x7FC0]
 TURBO = 64          # CPU cycles per Phi2 tick
 LINE_CYCLES = 65 * TURBO
@@ -119,6 +119,10 @@ class Cia:
             timer.running = False
 
 
+# agent::input bits as keys: (keyboard matrix row, column), as target-c64's `controls` reads them.
+KEYS = {1: (1, 1), 2: (1, 5), 4: (1, 2), 8: (2, 2), 16: (7, 4), 32: (1, 7)}
+
+
 class C64(Cpu):
     def __init__(self, mem, reu):
         super().__init__(mem, [])
@@ -136,6 +140,9 @@ class C64(Cpu):
         self.raster = 0
         self.irqs = 0
         self.stick = 0      # agent::input bits (active high), as joystick 2 and its POT X button read
+        self.sid_writes = []   # the SID registers written since the last frame's report (--sid)
+        self.keys = 0       # agent::input bits held as keys (KEYS: W A S D, SPACE, left SHIFT)
+        self.pa, self.ddra = 0xFF, 0   # CIA 1 port A as last written, and its direction
 
     def t(self):
         return self.cycles // TURBO
@@ -153,6 +160,15 @@ class C64(Cpu):
                 return (self.io[0x011] & 0x7F) | (0x80 if line > 255 else 0) if address == 0xD011 else line & 0xFF
             if address == 0xDC00:
                 return 0xFF ^ (self.stick & 0x1F)
+            if address == 0xDC01:
+                # The keyboard matrix: the rows port A drives low (and joystick 2's lines pulled low), the
+                # held keys' columns in them low.
+                rows = (~self.pa & self.ddra | self.stick & 0x1F) & 0xFF
+                cols = 0
+                for bit, (row, col) in KEYS.items():
+                    if self.keys & bit and rows >> row & 1:
+                        cols |= 1 << col
+                return 0xFF ^ cols
             if address == 0xD419:
                 return 0x00 if self.stick & 0x20 else 0xFF
             if 0xDC00 <= address < 0xDE00:
@@ -169,6 +185,10 @@ class C64(Cpu):
             self.io_writes += 1
             if 0xDC00 <= address < 0xDE00:
                 cia = (address >> 8) & 1
+                if address == 0xDC00:
+                    self.pa = value
+                elif address == 0xDC02:
+                    self.ddra = value
                 if cia == 0 and (address & 0xF) == 14:
                     self.watch.append((self.cycles, self.io_writes, self.dmas))
                 self.cia[cia].write(address & 0xF, value, self.t())
@@ -188,6 +208,8 @@ class C64(Cpu):
                 if address == 0xDF01 and value & 0x80:
                     self.reu_exec(value)
                 return
+            if 0xD400 <= address < 0xD480:
+                self.sid_writes.append(address)
             self.io[address - 0xD000] = value
             if address == 0xD018:
                 self.check_vic()
@@ -299,7 +321,7 @@ def host_agent(reu, tick):
 # near, the war's phase and turn (world_sim::TURN); the HUD's lock state.
 NEAR_LEN = 25        # world_sim::NEAR_LEN, after the gauges
 COMBAT, COMBAT_LEN = 0x8E84, 6 * 12 + 24    # combat::STATE, STATE_LEN: projectiles, the player's fight
-FX, FX_LEN = 0xB760, 8 * 10                 # combat::FX: the effects playing
+FX, FX_LEN = 0xB760, 16 * 10                # combat::FX: the effects playing (FX_MAX of FX_ENTRY)
 STATE_RAM = [(AGENT, AGENT_BYTES + 4 + 7 + NEAR_LEN + 2), (HUD + 4, 4), (COMBAT, COMBAT_LEN), (FX, FX_LEN)]
 WAR, WAR_LEN = 116 << 16, 0x5022    # world_sim::STATE, STATE_LEN: the war in the REU
 BRAINS, BRAINS_LEN = 117 << 16, 0x0A00  # world_sim::BRAINS, BRAINS_LEN: the units' learned trees
@@ -347,6 +369,9 @@ def main():
                     'down 2, left 4, right 8, fire 16, fire2 32), each from that frame on')
     ap.add_argument('--leap', type=int, default=0, help='and the clock this many ticks further on (the first '
                     'frame runs them all through the AI overlay)')
+    ap.add_argument('--sid', action='store_true', help='print the four SIDs each frame (the sound effects)')
+    ap.add_argument('--keys', action='store_true', help='play --input on the keyboard (W A S D, SPACE, left '
+                    'SHIFT), not the stick')
     args = ap.parse_args()
     if args.leap and args.start is None:
         args.start = 0
@@ -399,7 +424,10 @@ def main():
             # The stick for the next frame (the main loop reads it before the frame's set-up).
             for f, bits in script:
                 if done >= f:
-                    cpu.stick = bits
+                    if args.keys:
+                        cpu.keys = bits
+                    else:
+                        cpu.stick = bits
             pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3], state_before)
             if done == args.doubled_after:
                 cpu.mem[STATUS + 7] = 1
@@ -443,6 +471,17 @@ def main():
                   f'bands {(c1 - c0) / 64000:.2f} ms ({dmas} DMAs), geometry {(g1 - g0) / 64000:.2f} ms, '
                   f'{st[18]} triangles; raster wait {cpu.wait_cycles / 64000:.2f} ms')
             cpu.wait_cycles = 0
+            if args.sid:
+                # Each of the four SIDs (sfx: pairs $D400+$D440, $D420+$D460): volume, cutoff high byte, the
+                # voices' frequency high bytes and controls; the writes this frame (the IRQ's sweeps among them).
+                chips = []
+                for base in (0xD400, 0xD420, 0xD440, 0xD460):
+                    r = cpu.io[base - 0xD000:base - 0xD000 + 0x20]
+                    n = sum(base <= w < base + 0x20 for w in cpu.sid_writes)
+                    chips.append(f'${base:04X} vol {r[0x18] & 15:2} cut {r[0x16]:02X} f {r[1]:02X}/{r[8]:02X}/{r[15]:02X} '
+                                 f'ctl {r[4]:02X}/{r[11]:02X}/{r[18]:02X} ({n} writes)')
+                print('  SID ' + ' | '.join(chips))
+            cpu.sid_writes = []
             failures += bad != 0
             for i in [i for i in range(len(want)) if got[i] != want[i]][:8]:
                 if i >= 10688 + AGENT_BYTES + 7 + NEAR_LEN + 2:
@@ -453,7 +492,7 @@ def main():
                     print(f'  state byte {i - 10688} (agent 0-47, gauges 48-54, near 55-79, phase 80, turn 81): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 10000:
-                    print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-687): C64 ${got[i]:02X} host ${want[i]:02X}')
+                    print(f'  HUD byte {i - 10000} (table 0-107, blocks 108-683, lock 684-689): C64 ${got[i]:02X} host ${want[i]:02X}')
                     continue
                 if i >= 8000:
                     what = 'screen RAM' if i < 9000 else 'colour RAM'

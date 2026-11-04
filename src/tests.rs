@@ -63,6 +63,11 @@ fn camera_at(u: f64, v: f64, h: f64, yaw: u16, pitch: i32, roll: i32) -> FloorCa
     FloorCam { u: (u * 256.0) as i32, v: (v * 256.0) as i32, h: (h * 256.0) as u16, r: m.m }
 }
 
+/// A little-endian word of RAM.
+fn rd16(m: &Machine, a: u16) -> u16 {
+    u16::from_le_bytes([m.ram[a as usize], m.ram[a as usize + 1]])
+}
+
 fn package() -> &'static Vec<u8> {
     static P: OnceLock<Vec<u8>> = OnceLock::new();
     P.get_or_init(|| crate::package::bake(&crate::world::generate(1983)))
@@ -949,7 +954,7 @@ fn hud_run(yaw: u16, frames: u32) -> (Machine, Vec<crate::hud::Sprite>) {
     let mut m = Machine::new(package());
     init(&mut m);
     // (The frame's targets, as `combat::update` lists them.)
-    for (i, b) in [1u8, 0, 4, 132, 3, 3].into_iter().enumerate() {
+    for (i, b) in [1u8, 0, 4, 132, 3, 3, 7, 0].into_iter().enumerate() {
         m.ram[S_TARGETS as usize + i] = b;
     }
     let mut a = crate::agent::Agent::new();
@@ -976,20 +981,52 @@ fn hud_run(yaw: u16, frames: u32) -> (Machine, Vec<crate::hud::Sprite>) {
 fn the_seeker_locks_onto_a_target_in_the_reticle() {
     use crate::hud::*;
     let (m, list) = hud_run(0, 20);
-    assert_eq!((m.ram[LOCK_STATE as usize], m.ram[LOCK_STATE as usize + 1]), (0, LOCK_TICKS));
+    assert_eq!((rd16(&m, LOCK_STATE), m.ram[LOCK_STATE as usize + 2]), (7, LOCK_TICKS), "vehicle 7 locked");
     assert_eq!(m.ram[(S_SHAPES + slot::DIAMOND as u16) as usize], shape::LOCKED);
     assert!(list.iter().any(|s| s.ptr == pointer(slot::LOCK)), "LOCK shown");
     assert!(list.iter().any(|s| s.ptr == pointer(slot::BOX)), "the target boxed");
     // Part way: still closing in.
     let (m, _) = hud_run(0, 6);
-    let ticks = m.ram[LOCK_STATE as usize + 1];
+    let ticks = m.ram[LOCK_STATE as usize + 2];
     assert!(ticks > 0 && ticks < LOCK_TICKS, "{ticks}");
     assert_ne!(m.ram[(S_SHAPES + slot::DIAMOND as u16) as usize], shape::LOCKED);
     // Turned 20° away: boxed, not locked; the diamond waits at the boresight.
     let (m, list) = hud_run(20 * 182, 20);
-    assert_eq!(m.ram[LOCK_STATE as usize], NONE);
+    assert_eq!(rd16(&m, LOCK_STATE), crate::world_sim::NOBODY);
     assert!(list.iter().any(|s| s.ptr == pointer(slot::BOX)));
     assert_eq!(m.ram[(S_SHAPES + slot::DIAMOND as u16) as usize], shape::DIAMOND);
+}
+
+/// The lock stays on its vehicle: two of a formation in the reticle, taking turns at being the nearer
+/// and swapping places in the target list every frame, and the lock still builds to `LOCK` on the first.
+#[test]
+fn the_seeker_keeps_its_vehicle_as_the_formation_shuffles() {
+    use crate::hud::*;
+    let mut m = Machine::new(package());
+    init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.wu, a.wv) = (1024 << 8, 800 << 8, 10 << 8, 1024, 1200);
+    let cam = camera_at(1024.0, 800.0, 10.0, 0, 0, 0);
+    let mut first = None;
+    for f in 0..20u32 {
+        // (u, v, h, vid) each, the nearer listed first.
+        let (near, far) = if f % 2 == 0 { (7u16, 8u16) } else { (8, 7) };
+        let mut t = vec![2u8];
+        for (vid, v) in [(near, 900u16), (far, 901)] {
+            t.extend_from_slice(&1024u16.to_le_bytes());
+            t.extend_from_slice(&v.to_le_bytes());
+            t.push(3);
+            t.extend_from_slice(&vid.to_le_bytes());
+        }
+        m.ram[S_TARGETS as usize..][..t.len()].copy_from_slice(&t);
+        a.t = 100 + 8 * f;
+        m.ram[READY as usize] = 0;
+        update(&mut m, &a, &cam);
+        let on = rd16(&m, LOCK_STATE);
+        assert_eq!(*first.get_or_insert(on), on, "frame {f}: the lock moved to another vehicle");
+    }
+    assert_eq!(first, Some(7), "on the nearer at the start");
+    assert_eq!(m.ram[LOCK_STATE as usize + 2], LOCK_TICKS, "locked");
 }
 
 /// The waypoint caret sits on the waypoint when it is in view; when it is behind or off to a side, an
@@ -2154,6 +2191,8 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
         r[rec::KIND as usize] = crate::actors::kind::TANK;
         r[rec::FLAGS as usize] = ALIVE | crate::actors::ENEMY;
         r[rec::HP as usize] = 20;
+        // One tank (its platoon's others fallen).
+        r[rec::LOST as usize] = 0xFE;
         r[rec::ACTION as usize] = ws::act::HOLD;
         r[rec::U as usize..rec::U as usize + 2].copy_from_slice(&(u << 4).to_le_bytes());
         r[rec::V as usize..rec::V as usize + 2].copy_from_slice(&(v << 4).to_le_bytes());
@@ -2193,9 +2232,9 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
     m.ram[crate::actors::DYN as usize] = 0;
     crate::geom::push_dynamic(&mut m, &mut w, &mut v);
     assert!((0..w.n).any(|i| w.tri(i).shade & crate::geom::SPRITE != 0), "no sprite pushed");
-    // The other tank: locked (target 0 of the list, the first living enemy), fire 2.
-    m.ram[crate::hud::LOCK_STATE as usize] = 0;
-    m.ram[crate::hud::LOCK_STATE as usize + 1] = crate::hud::LOCK_TICKS;
+    // The other tank (platoon 9, its one vehicle): locked, fire 2.
+    m.ram[crate::hud::LOCK_STATE as usize..][..2].copy_from_slice(&ws::vehicle(9, 0).to_le_bytes());
+    m.ram[crate::hud::LOCK_STATE as usize + 2] = crate::hud::LOCK_TICKS;
     a.input = input::FIRE2;
     combat::update(&mut m, &mut a.clone(), &cam);
     assert_eq!(m.ram[(PLAYER + player::MISSILES) as usize], combat::MISSILES - 1, "no missile");
@@ -2345,13 +2384,58 @@ fn near_churn(seconds: u32) -> (u32, u32) {
 
 /// Ten minutes from the start on the deck: no unit on screen is ever dropped from the near list (units
 /// seen to vanish were faces crossing the near plane, now cut instead of dropped), and the actors' cap
-/// seldom cuts the draw list: the autopilot heads for the fight now, where a dozen units can be in view
-/// (`actors::DYN_MAX`, as many as `DYN` holds below `JOB`).
+/// (`actors::DYN_MAX`, as many as `DYN` holds below `JOB`) is reached in under a tenth of the frames
+/// (about 5½% with platoons: 247 of 4500). With platoons the cap is their level of detail: the draw
+/// list is their nearest vehicles, those in front first (`squad::expand`), and the cull takes them in
+/// that order after the projectiles (`actors::prepare`), so what it cuts is the farthest vehicles, never
+/// the player's fire (`the_cull_cuts_the_farthest_vehicles_not_the_fire`). Reached in most frames, the
+/// budget would be wrong.
+#[test]
+fn the_cull_cuts_the_farthest_vehicles_not_the_fire() {
+    use crate::actors::{ALLIED, DYN, DYN_ENTRY, DYN_MAX, ENEMY, kind, mesh_of, prepare};
+    use crate::combat::OBJLIST;
+    let mut m = Machine::new(package());
+    let cam = camera_at(1024.0, 1100.0, 10.0, 0, -11, 0);
+    // (mesh, yaw, u, v, h 1/16 texel) into the list.
+    let list = |m: &mut Machine, objs: &[(u8, u16)]| {
+        m.ram[OBJLIST as usize] = objs.len() as u8;
+        for (k, &(mesh, v)) in objs.iter().enumerate() {
+            let at = OBJLIST as usize + 1 + 8 * k;
+            m.ram[at] = mesh;
+            m.ram[at + 1] = 0;
+            m.ram[at + 2..at + 4].copy_from_slice(&(1024u16 << 4).to_le_bytes());
+            m.ram[at + 4..at + 6].copy_from_slice(&(v << 4).to_le_bytes());
+            m.ram[at + 6..at + 8].copy_from_slice(&(4u16 << 4).to_le_bytes());
+        }
+    };
+    let placed = |m: &mut Machine, objs: &[(u8, u16)]| -> Vec<Vec<u8>> {
+        list(m, objs);
+        prepare(m, &cam, OBJLIST);
+        let n = m.ram[DYN as usize] as usize;
+        (0..n).map(|k| m.ram[DYN as usize + 1 + k * DYN_ENTRY as usize..][..DYN_ENTRY as usize].to_vec()).collect()
+    };
+    // A dozen and one tanks ahead, nearest first, then a tracer and a missile in flight among them.
+    let mut objs: Vec<(u8, u16)> = (0..DYN_MAX as u16 + 1).map(|k| (mesh_of(kind::TANK, ENEMY), 1130 + 5 * k)).collect();
+    let fire = [(mesh_of(kind::TRACER, ALLIED), 1120), (mesh_of(kind::MISSILE, ALLIED), 1125)];
+    objs.extend_from_slice(&fire);
+    let all = placed(&mut m, &objs);
+    assert_eq!(all.len(), DYN_MAX as usize, "the cap reached");
+    for f in fire {
+        let alone = placed(&mut m, &[f]);
+        assert_eq!(alone.len(), 1, "in view");
+        assert!(all.contains(&alone[0]), "projectile {} cut", f.0);
+    }
+    // The vehicles drawn are the nearest: the farthest three cut.
+    for (k, &t) in objs[..DYN_MAX as usize - 2].iter().enumerate() {
+        assert!(all.contains(&placed(&mut m, &[t])[0]), "tank {k} cut");
+    }
+}
+
 #[test]
 fn units_on_screen_stay_listed() {
     let (dropped, capped) = near_churn(600);
     assert_eq!(dropped, 0, "units on screen dropped from the near list");
-    assert!(capped <= 600 * 60 / 8 / 100, "the actors' cap reached in {capped} frames (over 1%)");
+    assert!(capped <= 600 * 60 / 8 / 10, "the actors' cap reached in {capped} frames (over 10%)");
 }
 
 #[test]
@@ -2597,4 +2681,364 @@ fn the_pilot_learns_in_flight() {
     }
     assert!(after.iter().any(|&(_, p)| p != 128), "nothing learned");
     assert!(s.kills > 0);
+}
+
+/// A platoon's damage spills over its members: the hit one falls first, then the dice pick; each falls
+/// at its kind's hit points, the wounded one at what it has left; the platoon is dead with its last, and
+/// comes back (a reinforcement) at full strength.
+#[test]
+fn damage_spills_over_a_platoons_members() {
+    use crate::actors::kind::{CARRIER, TANK};
+    use crate::world_sim::{self as ws, NONE_FELL, stats};
+    let hp = stats::HP[TANK as usize];
+    let full = stats::MEMBERS[TANK as usize];
+    // Under the wounded one's hit points: none falls.
+    assert_eq!(ws::spill(TANK as usize, 30, 0, 29, 3, 7), (1, 0, NONE_FELL));
+    // Just enough: member 3 (the hit one) falls, the next is whole.
+    assert_eq!(ws::spill(TANK as usize, 30, 0, 30, 3, 7), (hp, 1 << 3, 3));
+    // More: two fall, the hit one first, and the third is wounded.
+    let (h, lost, first) = ws::spill(TANK as usize, 30, 0, 30 + hp + 5, 3, 7);
+    assert_eq!((h, first, ws::fallen(lost)), (hp - 5, 3, 2));
+    assert_ne!(lost & 1 << 3, 0);
+    // 255 is under the whole platoon's worth: some stand.
+    let (h, lost, _) = ws::spill(TANK as usize, hp, 0, 255, NONE_FELL, 1);
+    assert_eq!(ws::fallen(lost) as u16, 255 / hp as u16);
+    assert_eq!(h, hp - (255 % hp as u16) as u8);
+    // The last one falls: dead, and `lost` cleared for a respawn at full strength.
+    let (h, lost, _) = ws::spill(TANK as usize, 1, (1 << full) - 2, 1, NONE_FELL, 1);
+    assert_eq!((h, lost), (0, 0));
+    assert_eq!(ws::standing(TANK as usize, 0), full);
+    // A hit member already fallen: the dice pick a standing one.
+    let (_, lost, first) = ws::spill(TANK as usize, 5, 1 << 3, 5, 3, 9);
+    assert!(first != 3 && first < full && lost == (1 << 3 | 1 << first));
+    // A single unit falls as it always has.
+    assert_eq!(ws::spill(CARRIER as usize, 10, 0, 10, NONE_FELL, 0), (0, 0, 0));
+}
+
+/// The hits of a platoon's fire: over all the dice, each of its `n` members' shots hits with its odds
+/// (the expected number exactly); one member's, with the odds.
+#[test]
+fn a_platoons_hits_scale_with_its_members() {
+    use crate::world_sim::hits;
+    for n in 1..=12u8 {
+        for odds in [0u8, 1, 60, 90, 140, 255] {
+            let total: u32 = (0..=255u8).map(|d| hits(n, odds, d) as u32).sum();
+            assert_eq!(total, n as u32 * odds as u32, "{n} at {odds}");
+        }
+    }
+    assert_eq!((0..=255u8).filter(|&d| hits(1, 120, d) > 0).count(), 120);
+}
+
+/// The squad pass: near platoons as their standing members in formation round where they are, nearest
+/// first, at most `SLOTS`; the carrier and its deck first; a fallen member not there; the same every
+/// time.
+#[test]
+fn near_platoons_expand_into_their_vehicles() {
+    use crate::actors::kind::{APC, CARRIER, TANK};
+    use crate::squad::{self, MEMBERS, SLOTS, entry};
+    use crate::world_sim::{self as ws, ALIVE, NEAR, RECORD, rec, stats};
+    let mut m = Machine::new(package());
+    let put = |m: &mut Machine, id: u16, kind: u8, u: u16, v: u16, lost: u16, action: u8| {
+        let at = ws::UNITS as usize + id as usize * RECORD as usize;
+        let r = &mut m.reu[at..at + RECORD as usize];
+        r.fill(0);
+        r[rec::KIND as usize] = kind;
+        r[rec::FLAGS as usize] = ALIVE | crate::actors::ENEMY;
+        r[rec::HP as usize] = stats::HP[kind as usize];
+        r[rec::ACTION as usize] = action;
+        r[rec::ROUTE as usize] = 0xFF;
+        r[rec::U as usize..][..2].copy_from_slice(&(u << 4).to_le_bytes());
+        r[rec::V as usize..][..2].copy_from_slice(&(v << 4).to_le_bytes());
+        r[rec::LOST as usize..][..2].copy_from_slice(&lost.to_le_bytes());
+    };
+    // A tank platoon less member 2 near, an APC platoon further and another further still, the carrier
+    // far.
+    put(&mut m, 3, TANK, 1030, 1110, 1 << 2, ws::act::FIGHT);
+    put(&mut m, 4, APC, 1060, 1160, 0, ws::act::MOVE);
+    put(&mut m, 6, APC, 1100, 1250, 0, ws::act::MOVE);
+    put(&mut m, 5, CARRIER, 1300, 1300, 0, ws::act::MOVE);
+    m.ram[NEAR as usize] = 4;
+    for (k, id) in [3u16, 6, 4, 5].into_iter().enumerate() {
+        m.ram[NEAR as usize + 1 + 2 * k..][..2].copy_from_slice(&id.to_le_bytes());
+    }
+    squad::expand(&mut m, 100, 1024, 1100, 0);
+    let list = |m: &mut Machine| -> Vec<(u16, u8, u16, u16, u8)> {
+        let n = m.ram[MEMBERS as usize];
+        (0..n)
+            .map(|k| {
+                let e = squad::nth(m, k) as usize;
+                let w = |a: u16| u16::from_le_bytes([m.ram[e + a as usize], m.ram[e + a as usize + 1]]);
+                (w(entry::VID), m.ram[e + entry::MESH as usize], w(entry::U) >> 4, w(entry::V) >> 4, m.ram[e + entry::D as usize])
+            })
+            .collect()
+    };
+    let got = list(&mut m);
+    assert_eq!(got.len(), SLOTS as usize, "7 tanks, 20 APCs, the carrier and its deck: the nearest 20");
+    assert_eq!(got[0].0, 5, "the carrier first");
+    assert_eq!((got[1].0, got[1].1), (ws::NOBODY, crate::actors::DECK), "then its deck");
+    assert!(got[2..].windows(2).all(|w| w[0].4 <= w[1].4), "nearest first: {got:?}");
+    let tanks: Vec<u8> = got.iter().filter(|e| ws::platoon(e.0) == 3).map(|e| ws::member(e.0)).collect();
+    assert_eq!(tanks.len(), 7, "the tanks standing");
+    assert!(!tanks.contains(&2), "the fallen one is not there");
+    assert_eq!(got.iter().filter(|e| ws::platoon(e.0) == 4).count(), 10, "the nearer APCs");
+    assert_eq!(got.iter().filter(|e| ws::platoon(e.0) == 6).count(), SLOTS as usize - 2 - 7 - 10, "the nearest of the others");
+    // Spread round the platoon's place (a line abreast, across its heading).
+    let us: std::collections::HashSet<(u16, u16)> = got.iter().filter(|e| ws::platoon(e.0) == 3).map(|e| (e.2, e.3)).collect();
+    assert_eq!(us.len(), 7, "seven places: {us:?}");
+    let first = got.clone();
+    squad::expand(&mut m, 100, 1024, 1100, 0);
+    assert_eq!(list(&mut m), first, "the same every time");
+}
+
+/// The player's gun or missile on a vehicle: the hit member falls (when its hit points run out), the
+/// others stand and are still listed; a kill of a vehicle, not of the platoon.
+#[test]
+fn the_player_kills_the_vehicle_hit() {
+    use crate::actors::kind::TANK;
+    use crate::squad::{self, MEMBERS};
+    use crate::world_sim::{self as ws, ALIVE, NEAR, RECORD, rec, stats};
+    let mut m = Machine::new(package());
+    let at = ws::UNITS as usize + 3 * RECORD as usize;
+    let r = &mut m.reu[at..at + RECORD as usize];
+    r.fill(0);
+    r[rec::KIND as usize] = TANK;
+    r[rec::FLAGS as usize] = ALIVE | crate::actors::ENEMY;
+    r[rec::HP as usize] = stats::HP[TANK as usize];
+    r[rec::ROUTE as usize] = 0xFF;
+    r[rec::U as usize..][..2].copy_from_slice(&(1030u16 << 4).to_le_bytes());
+    r[rec::V as usize..][..2].copy_from_slice(&(1110u16 << 4).to_le_bytes());
+    m.ram[NEAR as usize] = 1;
+    m.ram[NEAR as usize + 1..][..2].copy_from_slice(&3u16.to_le_bytes());
+    assert!(!crate::combat::damage_unit(&mut m, ws::vehicle(3, 5), 20), "wounded");
+    assert!(crate::combat::damage_unit(&mut m, ws::vehicle(3, 5), 20), "killed");
+    let lost = u16::from_le_bytes([m.reu[at + rec::LOST as usize], m.reu[at + rec::LOST as usize + 1]]);
+    assert_eq!(lost, 1 << 5);
+    assert_ne!(m.reu[at + rec::FLAGS as usize] & ALIVE, 0, "the platoon fights on");
+    squad::expand(&mut m, 0, 1024, 1100, 0);
+    assert_eq!(m.ram[MEMBERS as usize], stats::MEMBERS[TANK as usize] - 1);
+    assert!(squad::find(&mut m, ws::vehicle(3, 5)).is_none() && squad::find(&mut m, ws::vehicle(3, 4)).is_some());
+}
+
+/// A vehicle the war kills in sight blows up where `squad::expand` drew it: at its platoon's live place
+/// and heading (moving and turning since its last step), not its record's.
+#[test]
+fn a_war_kill_explodes_where_its_vehicle_was_drawn() {
+    use crate::actors::kind::TANK;
+    use crate::combat::{FX, FX_ENTRY, FX_MAX};
+    use crate::squad::{self, entry};
+    use crate::world_sim::{self as ws, ALIVE, NEAR, NEAR_FLAG, RECORD, SHOTS, rec};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let at = ws::UNITS as usize + 3 * RECORD as usize;
+    let r = &mut m.reu[at..at + RECORD as usize];
+    r.fill(0);
+    r[rec::KIND as usize] = TANK;
+    r[rec::FLAGS as usize] = ALIVE | NEAR_FLAG | crate::actors::ENEMY;
+    r[rec::HP as usize] = 1;
+    r[rec::ACTION as usize] = ws::act::MOVE;
+    r[rec::SPEED as usize] = 8;
+    r[rec::ROUTE as usize] = 0;
+    // Heading north, turning east.
+    r[rec::COURSE as usize] = 64;
+    r[rec::U as usize..][..2].copy_from_slice(&(1030u16 << 4).to_le_bytes());
+    r[rec::V as usize..][..2].copy_from_slice(&(1110u16 << 4).to_le_bytes());
+    m.ram[NEAR as usize] = 1;
+    m.ram[NEAR as usize + 1..][..2].copy_from_slice(&3u16.to_le_bytes());
+    let now = 60;
+    squad::expand(&mut m, now, 1024, 1100, 0);
+    let drawn: Vec<(u8, u16, u16)> = (0..m.ram[squad::MEMBERS as usize])
+        .map(|k| {
+            let e = squad::nth(&mut m, k);
+            (ws::member(rd16(&m, e + entry::VID)), rd16(&m, e + entry::U), rd16(&m, e + entry::V))
+        })
+        .collect();
+    m.ram[SHOTS as usize] = 1;
+    m.ram[SHOTS as usize + 1..][..2].copy_from_slice(&3u16.to_le_bytes());
+    m.ram[SHOTS as usize + 3] = 1;
+    ws::apply_shots(&mut m, now);
+    let lost = u16::from_le_bytes([m.reu[at + rec::LOST as usize], m.reu[at + rec::LOST as usize + 1]]);
+    assert_eq!(lost.count_ones(), 1, "one fell");
+    let fell = lost.trailing_zeros() as u8;
+    let &(_, u, v) = drawn.iter().find(|d| d.0 == fell).expect("the fallen one was drawn");
+    let e = (0..FX_MAX as u16).map(|k| FX + k * FX_ENTRY).find(|&e| m.ram[e as usize] == crate::effects::effect::EXPLOSION + 1).expect("an explosion");
+    let (eu, ev) = (rd16(&m, e + 4), rd16(&m, e + 6));
+    assert!((eu as i16 - u as i16).abs() <= 16 && (ev as i16 - v as i16).abs() <= 16, "exploded at ({eu}, {ev}), drawn at ({u}, {v})");
+}
+
+/// The battle on the horizon's flashes only take free effect slots: never one from the fight at hand.
+#[test]
+fn far_fire_never_evicts_a_near_effect() {
+    use crate::combat::{FX, FX_ENTRY, FX_MAX, spawn};
+    use crate::effects::effect::{EXPLOSION, MUZZLE};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    for k in 0..FX_MAX as u16 {
+        spawn(&mut m, EXPLOSION, k, 0, 0, 100);
+    }
+    crate::world_sim::effect(&mut m, MUZZLE, 9, 9, 0, 101, false);
+    assert!((0..FX_MAX as u16).all(|k| m.ram[(FX + k * FX_ENTRY) as usize] == EXPLOSION + 1));
+    m.ram[(FX + 5 * FX_ENTRY) as usize] = 0;
+    crate::world_sim::effect(&mut m, MUZZLE, 9, 9, 0, 101, false);
+    assert_eq!(m.ram[(FX + 5 * FX_ENTRY) as usize], MUZZLE + 1, "a free slot taken");
+    // Full, the far flash the newest: the fight at hand's next effect takes the far one's slot, not its
+    // own oldest.
+    spawn(&mut m, EXPLOSION, 99, 0, 0, 102);
+    assert_eq!(rd16(&m, FX + 5 * FX_ENTRY + 4), 99, "the far flash evicted first");
+    assert!((0..FX_MAX as u16).all(|k| m.ram[(FX + k * FX_ENTRY + 1) as usize] == 0), "no far one left");
+}
+
+/// The battle on the horizon's flashes are drawn after the fight at hand's effects and the wrecks'
+/// smoke: when there are more than `FXDYN_MAX` in view, the far ones are cut.
+#[test]
+fn far_fire_is_cut_before_a_near_effect() {
+    use crate::agent::{Agent, MODE_PLAYER};
+    use crate::combat::{self, FX, FX_ENTRY, FX_MAX, FXDYN, FXDYN_ENTRY, FXDYN_MAX, spawn};
+    use crate::effects::effect::{EXPLOSION, MUZZLE};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = Agent::new();
+    (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
+    a.dyaw = (a.yaw >> 8) as u8;
+    a.t = 1000;
+    let cam = camera_at(1024.0, 1100.0, 10.0, 0, -11, 0);
+    // Far flashes in every slot but the last, spread across the view 40 texels ahead; the player's
+    // explosion in the last, to one side.
+    for k in 0..FX_MAX as u16 - 1 {
+        spawn(&mut m, MUZZLE | combat::FAR, (1010 + 2 * k) << 4, 1140 << 4, 0, 1000);
+    }
+    spawn(&mut m, EXPLOSION, 1040 << 4, 1140 << 4, 0, 1000);
+    assert_eq!(m.ram[(FX + (FX_MAX as u16 - 1) * FX_ENTRY) as usize], EXPLOSION + 1);
+    combat::fx(&mut m, &a, &cam);
+    let n = m.ram[FXDYN as usize];
+    assert_eq!(n, FXDYN_MAX, "the cap reached");
+    // The first placed is the near explosion (the far ones after it): the rightmost anchor.
+    let x = |k: u16| rd16(&m, FXDYN + 1 + k * FXDYN_ENTRY) as i16;
+    assert!((1..n as u16).all(|k| x(0) > x(k)), "the explosion placed first: {:?}", (0..n as u16).map(x).collect::<Vec<_>>());
+}
+
+/// The sound effects' placing: a source on the left is louder in the left ear; one behind is muffled
+/// (both cutoffs lower than ahead at the same range), the far ear more; a far one is quieter.
+#[test]
+fn a_sound_is_placed_by_its_bearing_and_range() {
+    use crate::sfx::place;
+    // Facing north (yaw 0): east is to the right.
+    let (l, r, cl, cr) = place(-30, 0, 0, false);
+    assert!(l > r && cl > cr, "left: ({l}, {r}) cut ({cl}, {cr})");
+    let (l, r, _, _) = place(30, 0, 0, false);
+    assert!(r > l, "right: ({l}, {r})");
+    let (al, ar, acl, acr) = place(0, 30, 0, false);
+    let (bl, br, bcl, bcr) = place(0, -30, 0, false);
+    assert_eq!((al, ar), (bl, br), "ahead and behind as loud");
+    assert!(bcl + 60 < acl && bcr + 60 < acr, "behind muffled: ahead ({acl}, {acr}), behind ({bcl}, {bcr})");
+    // Turned to face east, the same source north is now on the left.
+    let (l, r, _, _) = place(0, 30, 0x4000, false);
+    assert!(l > r, "turned: ({l}, {r})");
+    let near = place(0, 20, 0, false);
+    let far = place(0, 300, 0, false);
+    assert!(far.0 < near.0 && far.2 < near.2, "far quieter and duller: {near:?} {far:?}");
+    assert!(place(0, 300, 0, true).0 <= far.0, "the battle on the horizon quieter still");
+}
+
+/// The sound effects' pairs: two sounds at once; a near explosion takes a pair from a far muzzle flash,
+/// never the other way round; the lock sounds once a lock.
+#[test]
+fn the_sound_pairs_go_to_the_loudest_and_most_important() {
+    use crate::combat::{self, FAR, spawn};
+    use crate::effects::effect::{EXPLOSION, MUZZLE};
+    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    sfx::update(&mut m, &a);
+    let playing = |m: &Machine| -> Vec<u8> { (0..sfx::PAIRS).map(|p| m.ram[(STATE + state::PAIRS + p * PAIR + pair::PATCH) as usize]).collect() };
+    assert_eq!(playing(&m), [0, 0], "silent at first");
+    // Two far muzzle flashes: both pairs.
+    a.t += 4;
+    spawn(&mut m, MUZZLE | FAR, 1024 << 4, 1400 << 4, 0, a.t as u16 - 1);
+    spawn(&mut m, MUZZLE | FAR, 1100 << 4, 1400 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), [patch::MUZZLE + 1; 2]);
+    // A near explosion takes one.
+    a.t += 4;
+    spawn(&mut m, EXPLOSION, 1030 << 4, 1110 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert!(playing(&m).contains(&(patch::EXPLOSION + 1)), "{:?}", playing(&m));
+    // Both pairs exploding near: a far flash gets neither.
+    a.t += 4;
+    spawn(&mut m, EXPLOSION, 1020 << 4, 1105 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), [patch::EXPLOSION + 1; 2]);
+    a.t += 4;
+    spawn(&mut m, MUZZLE | FAR, 1024 << 4, 1400 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), [patch::EXPLOSION + 1; 2], "the far flash took a pair from an explosion");
+    // The lock: once, as it completes.
+    let locks = |m: &mut Machine, a: &mut crate::agent::Agent, ticks: u8| {
+        a.t += 200;
+        m.ram[crate::hud::LOCK_STATE as usize + 2] = ticks;
+        sfx::update(m, a);
+        playing(m).contains(&(patch::LOCK + 1))
+    };
+    assert!(!locks(&mut m, &mut a, 40), "not locked yet");
+    assert!(locks(&mut m, &mut a, crate::hud::LOCK_TICKS), "locked");
+    assert!(!locks(&mut m, &mut a, crate::hud::LOCK_TICKS), "only once a lock");
+}
+
+/// The gun keeps to one pair: bursts held go onto the pair already firing, and a missile launched then is
+/// heard with them on the other.
+#[test]
+fn the_gun_keeps_to_one_pair_and_a_launch_plays_with_it() {
+    use crate::combat::{self, PROJ, PROJ_ENTRY, TRACER_TTL, MISSILE_TTL, proj};
+    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    sfx::update(&mut m, &a);
+    let playing = |m: &Machine| -> Vec<u8> { (0..sfx::PAIRS).map(|p| m.ram[(STATE + state::PAIRS + p * PAIR + pair::PATCH) as usize]).collect() };
+    // A burst a frame (a new tracer each), for a few frames.
+    for k in 0..4u16 {
+        a.t += 6;
+        let p = (PROJ + (k % 2) * PROJ_ENTRY) as usize;
+        m.ram[p + proj::KIND as usize] = crate::actors::kind::TRACER;
+        m.ram[p + proj::TTL as usize] = TRACER_TTL;
+        sfx::update(&mut m, &a);
+        assert_eq!(playing(&m).iter().filter(|&&id| id == patch::GUN + 1).count(), 1, "burst {k}: {:?}", playing(&m));
+    }
+    // A missile, the gun still firing: both heard.
+    a.t += 6;
+    let p = (PROJ + 2 * PROJ_ENTRY) as usize;
+    m.ram[p + proj::KIND as usize] = crate::actors::kind::MISSILE;
+    m.ram[p + proj::TTL as usize] = MISSILE_TTL;
+    m.ram[PROJ as usize + proj::TTL as usize] = TRACER_TTL;
+    sfx::update(&mut m, &a);
+    let mut now = playing(&m);
+    now.sort();
+    assert_eq!(now, [patch::GUN + 1, patch::LAUNCH + 1]);
+}
+
+/// After a stall nothing recent reads as new (every live tracer and effect would); the next frame's are.
+#[test]
+fn a_long_stall_replays_no_sounds() {
+    use crate::combat::{self, PROJ, TRACER_TTL, proj, spawn};
+    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    sfx::update(&mut m, &a);
+    let playing = |m: &Machine| -> Vec<u8> { (0..sfx::PAIRS).map(|p| m.ram[(STATE + state::PAIRS + p * PAIR + pair::PATCH) as usize]).collect() };
+    // A tracer and an explosion of a few ticks back, then a frame 300 ticks on.
+    m.ram[PROJ as usize + proj::KIND as usize] = crate::actors::kind::TRACER;
+    m.ram[PROJ as usize + proj::TTL as usize] = TRACER_TTL - 5;
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1030 << 4, 1110 << 4, 0, 1295);
+    a.t += 300;
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), [0, 0], "a stall: nothing new");
+    // A fresh tracer the next frame plays.
+    a.t += 6;
+    m.ram[PROJ as usize + proj::TTL as usize] = TRACER_TTL;
+    sfx::update(&mut m, &a);
+    assert!(playing(&m).contains(&(patch::GUN + 1)), "{:?}", playing(&m));
 }

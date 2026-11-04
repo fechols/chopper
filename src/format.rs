@@ -175,6 +175,12 @@ const _: () = assert!(OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_DECK && OVERLAY_DE
 pub const OVERLAY_STREAM: u32 = TREES + 0x4800;
 pub const STREAM_MAX: u32 = 0x1100;
 const _: () = assert!(OVERLAY_DECK + OVERLAY2_MAX <= OVERLAY_STREAM && OVERLAY_STREAM + STREAM_MAX <= OVERLAY_WORLD3);
+/// The near platoons' vehicles (`squad`), after the sound's decoder.
+pub const OVERLAY_SQUAD: u32 = TREES + 0x6000;
+const _: () = assert!(OVERLAY_STREAM + STREAM_MAX <= OVERLAY_SQUAD && OVERLAY_SQUAD + OVERLAY_MAX <= OVERLAY_WORLD3);
+/// The sound effects (`sfx`): bank 119 (free otherwise).
+pub const OVERLAY_SFX: u32 = 119 << 16;
+const _: () = assert!(VEHICLES + 0x10000 <= OVERLAY_SFX && OVERLAY_SFX + OVERLAY_MAX <= EFFECTS_DIR);
 /// The war director's (once a lap), after the brains.
 pub const OVERLAY_WORLD4: u32 = TREES + 0x2000;
 const _: () = assert!(TREES + crate::brain::UNIT_BYTES as u32 <= OVERLAY_WORLD4 && OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_WORLD3);

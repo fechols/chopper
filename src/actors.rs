@@ -94,20 +94,32 @@ pub struct Object {
     pub h: u16,
 }
 
+/// Whether a mesh is the player's tracer's or missile's.
+#[inline(always)]
+fn projectile(mesh: u8) -> bool {
+    mesh == mesh_of(kind::TRACER, ALLIED) || mesh == mesh_of(kind::MISSILE, ALLIED)
+}
+
 /// The objects in view into [`DYN`], ready to draw: each one's centre into camera space, culled like a
-/// static object (its bounding sphere against the view, and out past its pop-in distance).
+/// static object (its bounding sphere against the view, and out past its pop-in distance). The
+/// projectiles first, then the rest in the list's order: at [`DYN_MAX`], what is cut is the last listed
+/// (the farthest vehicles: `squad::expand` lists them nearest first), never the player's own fire.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
 pub fn prepare<H: Hw + ?Sized>(hw: &mut H, cam: &crate::floor::FloorCam, list: u16) {
     use crate::hud::mul16;
     let mut n = 0u8;
-    let count = hw.peek(list);
-    for k in 0..count as u16 {
+    let count = hw.peek(list) as u16;
+    for k in 0..2 * count {
         if n >= DYN_MAX {
             break;
         }
-        // Object `k` of the list (mesh, yaw, u, v, h): read in place, not copied onto the stack.
-        let at = list + 1 + 8 * k;
+        // Object `k` of the list (mesh, yaw, u, v, h): read in place, not copied onto the stack. (Twice
+        // round: the projectiles, then the rest.)
+        let at = list + 1 + 8 * if k < count { k } else { k - count };
+        if projectile(hw.peek(at)) != (k < count) {
+            continue;
+        }
         let rd = |hw: &mut H, a: u16| hw.peek(a) as u16 | (hw.peek(a + 1) as u16) << 8;
         let o = Object { mesh: hw.peek(at), yaw: hw.peek(at + 1), u: rd(hw, at + 2), v: rd(hw, at + 4), h: rd(hw, at + 6) };
         let mut rec = [0u8; MESH_RECORD];

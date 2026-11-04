@@ -9,8 +9,8 @@
 //! `../mode7/target-c64/src/main.rs`.
 //!
 //! Needs the matching `chopper.reu` at REU address 0; until it appears the border flashes, so it may be
-//! uploaded after starting. Fire on joystick 2 takes over from the autopilot (`STATUS+MODE` toggles
-//! full / line-doubled).
+//! uploaded after starting. Any control (joystick 2 or its second button, or the keys: W A S D, SPACE,
+//! SHIFT, `controls`) takes over from the autopilot (`STATUS+MODE` toggles full / line-doubled).
 //! Performance is in the status block at `$CA80` (`layout::status`).
 
 #![no_std]
@@ -102,6 +102,8 @@ unsafe extern "C" {
     static __combattext_size: u8;
     static __fxtext_size: u8;
     static __streamtext_size: u8;
+    static __squadtext_size: u8;
+    static __sfxtext_size: u8;
     static __combatlibtext_size: u8;
     /// The second window's overlays (`.text.cockpit`, `.text.dyn`, run at `BAND_RAM`).
     static __cocktext_size: u8;
@@ -318,6 +320,74 @@ fn stream(c: &mut C64, now: u16) {
     }
 }
 
+/// The player's controls as `agent::input` bits: joystick 2 (its second button on POT X), or the keys:
+/// W, A, S, D for the stick, SPACE to fire, either SHIFT for a missile. (In the spare region: the resident
+/// code is full.)
+///
+/// The stick and POT X are read first, with CIA 1 port A as the boot left it (bits 7/6 select the
+/// paddle pair); the stick pushed, it alone (its lines would select rows of their own). Else the keyboard
+/// matrix: port A all outputs, each row low in turn, its keys low on port
+/// B. Columns already low with no row selected are joystick 1 (or noise), not keys: they are masked out
+/// (else its fire would read as SPACE). Then port A back as it was: the SID's next POT X sample, long
+/// before the next frame's read, sees the port 2 pair again.
+#[inline(never)]
+#[unsafe(link_section = ".text.spare.keys")]
+fn controls() -> u8 {
+    use chopper::agent::input::{DOWN, FIRE, FIRE2, LEFT, RIGHT, UP};
+    let mut bits = !peek(0xDC00) & 0x1F;
+    if peek(0xD419) < 0x80 {
+        bits |= FIRE2;
+    }
+    // The stick pushed: it alone. (Its lines pull port A low, selecting keyboard rows of their own: the
+    // scan would lose keys or find ones not pressed.)
+    if bits & 0x1F != 0 {
+        return bits;
+    }
+    poke(0xDC02, 0xFF);
+    poke(0xDC00, 0xFF);
+    let held = !peek(0xDC01);
+    // Row 1: W column 1, A 2, S 5, left SHIFT 7; row 2: D column 2; row 6: right SHIFT column 4; row 7:
+    // SPACE column 4. (Each row's keys moved onto their bits.)
+    poke(0xDC00, !0x02);
+    let r1 = !peek(0xDC01) & !held;
+    poke(0xDC00, !0x04);
+    let r2 = !peek(0xDC01) & !held;
+    poke(0xDC00, !0x40);
+    let r6 = !peek(0xDC01) & !held;
+    poke(0xDC00, !0x80);
+    let r7 = !peek(0xDC01) & !held;
+    port_a_paddles();
+    bits |= (r1 >> 1) & UP | (r1 >> 4) & DOWN | r1 & LEFT | r2 << 1 & RIGHT | (r1 >> 2 | r6 << 1) & FIRE2 | r7 & FIRE;
+    bits
+}
+
+/// CIA 1 port A for joystick 2's second button on POT X: bits 7/6 outputs, selecting the paddle pair
+/// (%10: port 2). At boot, and after each keyboard scan (`controls`).
+#[inline(always)]
+fn port_a_paddles() {
+    poke(0xDC02, 0xC0);
+    poke(0xDC00, 0x80);
+}
+
+/// The frame's sound effects on the SIDs (`sfx::update`), from their overlay. (In the spare region: the
+/// resident code is full.)
+#[inline(never)]
+#[unsafe(link_section = ".text.spare.sfx")]
+fn sfx(c: &mut C64, agent: &chopper::agent::Agent) {
+    hw::fetch(c, chopper::format::OVERLAY_SFX, WORK, unsafe { &raw const __sfxtext_size } as u16);
+    chopper::sfx::update(c, agent);
+}
+
+/// The near platoons' vehicles in formation (`squad::expand`), from their overlay. (In the spare region:
+/// the resident code is full.)
+#[inline(never)]
+#[unsafe(link_section = ".text.spare.squad")]
+fn squad(c: &mut C64, agent: &chopper::agent::Agent) {
+    hw::fetch(c, chopper::format::OVERLAY_SQUAD, WORK, unsafe { &raw const __squadtext_size } as u16);
+    let (pu, pv) = agent.at();
+    chopper::squad::expand(c, agent.t as u16, pu, pv, agent.yaw);
+}
+
 /// Everything before the frame buffer is first drawn: this code runs from the frame buffer itself
 /// (`.text.boot`, target-c64/link.ld), so it must not touch it. Returns the turbo probes.
 #[inline(never)]
@@ -357,9 +427,13 @@ fn boot(c: &mut C64) -> u16 {
     }
     // The HUD: hires sprites in light green in front of the view, multiplexed by asm/hud.S from an
     // empty table until the first frame's is ready.
-    // Joystick 2's second button on POT X: CIA 1 port A bits 7/6 select the paddle pair (%10: port 2).
-    poke(0xDC02, 0xC0);
-    poke(0xDC00, 0x80);
+    port_a_paddles();
+    // The sound effects' state afresh (RAM outlives a reset: the first frame sets it up and silences the
+    // SIDs), and no pitch sweeps for the IRQ till then.
+    poke(chopper::sfx::STATE + chopper::sfx::state::MAGIC, 0);
+    for p in 0..chopper::sfx::PAIRS {
+        poke(chopper::sfx::SWEEP + p * chopper::sfx::SWEEP_PAIR, 0);
+    }
     poke(0xD015, 0);
     poke(0xD017, 0);
     poke(0xD01B, 0);
@@ -434,11 +508,10 @@ pub extern "C" fn main() -> i16 {
             unsafe { write_volatile(CLOCK as *mut u32, clock) };
         }
         seen = now;
-        // The stick (joystick 2, button 2 on POT X), into the agent before its frame (the snapshot holds it).
-        let joy = !peek(0xDC00) & 0x1F;
-        agent.input = joy | if peek(0xD419) < 0x80 { chopper::agent::input::FIRE2 } else { 0 };
-        if joy & chopper::agent::input::FIRE != 0 {
-            // The player takes over from the autopilot.
+        // The stick and the keys, into the agent before its frame (the snapshot holds it).
+        agent.input = controls();
+        if agent.input != 0 {
+            // The player takes over from the autopilot: any control.
             agent.take_over();
         }
         // Three stopwatches a frame (tools/emu.py finds the frames by them): set-up, geometry, the bands.
@@ -466,8 +539,10 @@ pub extern "C" fn main() -> i16 {
             let (pu, pv) = agent.at();
             chopper::world_sim::step_page(c, t as u16, pu, pv);
         }
-        // The player's fight (combat overlay, its library over the spent band state): down, the autopilot
-        // takes over again at home. Then the effects pass (its own overlay).
+        // The near platoons' vehicles in formation (squad overlay), for the player's fight (combat overlay,
+        // its library over the spent band state): down, the autopilot takes over again at home. Then the
+        // effects pass (its own overlay).
+        squad(c, agent);
         hw::fetch(c, OVERLAY_COMBATLIB, chopper::layout::BAND_RAM, unsafe { &raw const __combatlibtext_size } as u16);
         hw::fetch(c, OVERLAY_COMBAT, WORK, unsafe { &raw const __combattext_size } as u16);
         if chopper::combat::update(c, agent, &cam) {
@@ -476,6 +551,8 @@ pub extern "C" fn main() -> i16 {
         hw::fetch(c, OVERLAY_FX, WORK, unsafe { &raw const __fxtext_size } as u16);
         let (cam, _) = agent.camera();
         chopper::combat::fx(c, agent, &cam);
+        // Its sounds (their own overlay).
+        sfx(c, agent);
         poke(0xD020, if peek(chopper::combat::PLAYER + chopper::combat::player::FLASH) != 0 { 2 } else { 0 });
         // The gauges whose readings changed, from their overlay over the (spent) band state.
         hw::fetch(c, OVERLAY_COCKPIT, cockpit_at, cockpit_size);

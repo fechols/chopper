@@ -32,7 +32,7 @@ MEMORY {
     /* Code where the VIC never looks, page-aligned and whole pages long (the boot copy moves pages). */
     lowram (rwx) : ORIGIN = 0x0200, LENGTH = 0x0200
     spanram (rwx) : ORIGIN = 0x8300, LENGTH = 0x0800   /* after the scene block (format::SCENE_MAX); then the HUD page $8B00 */
-    vicrom (rwx) : ORIGIN = 0x9B00, LENGTH = 0x0500    /* after the vertices; the VIC sees ROM there */
+    vicrom (rwx) : ORIGIN = 0x9B00, LENGTH = 0x0400    /* after the vertices; the VIC sees ROM there ($9F00: squad::MEMBERS) */
     /* llvm-mos's static stack (`.noinit`, the fixed frames of non-recursive functions): after the status
      * block, below the soft stack ($CD80-$CFFF: tools/emu.py checks how much of it a run touches).
      * Never loaded. */
@@ -99,7 +99,9 @@ SECTIONS {
      * - `.text.actors`: the frame's moving objects (actors);
      * - `.text.world`, `.text.world3`, `.text.world2`: the war's move, decide and fight phases, one a frame
      *   in turn (world_sim);
+     * - `.text.squad`: the near platoons' vehicles in formation, for the combat pass (squad);
      * - `.text.combat`: the player's fight: targets, gun, missiles, projectiles, damage (combat);
+     * - `.text.sfx`: the sound effects on the SIDs, after the effects pass (sfx);
      * - `.text.stream`: the rotor sound's decoder (asm/stream.S), at boot and while the sound streams. */
     OVERLAY 0xE000 : AT (0x10000) {
         .aitext { *(.text.ai .text.ai.*) }
@@ -111,6 +113,8 @@ SECTIONS {
         .world3text { *(.text.world3 .text.world3.*) }
         .world4text { *(.text.world4 .text.world4.*) }
         .combattext { *(.text.combat .text.combat.*) }
+        .squadtext { *(.text.squad .text.squad.*) }
+        .sfxtext { *(.text.sfx .text.sfx.*) }
         .fxtext { *(.text.fx .text.fx.*) }
         .streamtext { *(.text.stream .text.stream.*) }
     } >window
@@ -160,6 +164,10 @@ __world3text_size = SIZEOF(.world3text);
 __world4text_size = SIZEOF(.world4text);
 ASSERT(SIZEOF(.world4text) <= 0x1800, "the war director's overlay is larger than its window ($E000-$F7FF)")
 __combattext_size = SIZEOF(.combattext);
+__squadtext_size = SIZEOF(.squadtext);
+__sfxtext_size = SIZEOF(.sfxtext);
+ASSERT(SIZEOF(.sfxtext) <= 0x1800, "the sound effects overlay is larger than its window ($E000-$F7FF)")
+ASSERT(SIZEOF(.squadtext) <= 0x1800, "the squad overlay is larger than its window ($E000-$F7FF)")
 __fxtext_size = SIZEOF(.fxtext);
 __streamtext_size = SIZEOF(.streamtext);
 ASSERT(SIZEOF(.streamtext) <= 0x1100, "the sound's decoder overlaps its buffers above it ($F100)")

@@ -201,7 +201,7 @@ pub mod input {
     pub const FIRE: u8 = 16;
     pub const FIRE2: u8 = 32;
 }
-/// Who flies: the attract-mode autopilot, or the player (from the first press of fire: the main loop
+/// Who flies: the attract-mode autopilot, or the player (from the first touch of any control: the main loop
 /// switches `Agent::mode` as it reads the stick).
 pub const MODE_AUTO: u8 = 0;
 pub const MODE_PLAYER: u8 = 1;
@@ -350,7 +350,7 @@ impl Agent {
         self.h = self.h.max(DECK_EYE + DECK_TOP);
     }
 
-    /// The player takes over from the autopilot (the fire button, each frame it is held): the copilot
+    /// The player takes over from the autopilot (any control, each frame one is held): the copilot
     /// holds the heading it is on now (`dyaw`, the course's high byte in the air; riding the deck, it is
     /// the deck's, and the lift takes the course afresh), not the autopilot's waypoint.
     #[inline(always)]
@@ -561,7 +561,7 @@ impl Agent {
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
     fn step_with<R: Reu + ?Sized>(&mut self, reu: &mut R, rec: &[u8; CARRIER_RECORD]) {
-        // Too far out to sea: the autopilot takes over, for home (every tick: the fire button hands the
+        // Too far out to sea: the autopilot takes over, for home (every tick: any control held hands the
         // player the controls every frame, and beyond the limit it must not).
         if self.mode == MODE_PLAYER && self.off_map() > SEA_LIMIT {
             self.mode = MODE_AUTO;

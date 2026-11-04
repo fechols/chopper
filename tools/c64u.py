@@ -150,7 +150,9 @@ def main():
         cfg = configparser.ConfigParser(interpolation=None, delimiters=('=',))
         cfg.optionxform = str
         cfg.read(args.cfg, encoding='utf-8')
-        settings = {section: dict(cfg[section]) for section in cfg.sections()}
+        # (A value in double quotes keeps its spaces: the device spells 0 dB " 0 dB".)
+        unquote = lambda v: v[1:-1] if len(v) >= 2 and v[0] == v[-1] == '"' else v
+        settings = {section: {k: unquote(v) for k, v in cfg[section].items()} for section in cfg.sections()}
         dev.request('POST', '/v1/configs', settings)
         for section, items in settings.items():
             now = dev.request('GET', '/v1/configs/' + urllib.parse.quote(section)).get(section, {})

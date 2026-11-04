@@ -7,8 +7,9 @@
 ; pointers. Row 0 is set up in the top border (TOP_LINE), where the IRQ also swaps to the new table when
 ; READY is set.
 ;
-; Touches only A, X (saved), the VIC registers, the sprite pointers and the page: no zero page, no REU,
-; no Rust state, so it may interrupt anything. Chopper keeps $01 = $35 throughout.
+; Touches only A, X (saved), the VIC registers, the sprite pointers and the page, and the sound effects'
+; sweeps (the SIDs and chopper::sfx::SWEEP at $FF20): no zero page, no REU, no other Rust state, so it may
+; interrupt anything. Chopper keeps $01 = $35 throughout.
 
 HUD      = $8B00
 READY    = HUD + 0
@@ -37,7 +38,56 @@ hud_irq:
     sta $d019               ; acknowledge the raster interrupt
 
     ldx NEXT
-    bne 1f
+    beq 5f
+    jmp 1f                  ; (a later row: past the sweeps, out of a branch's reach)
+5:
+    ; Row 0 (once a video frame, 60 Hz): the sound effects' pitch sweeps (chopper::sfx::SWEEP, per
+    ; pair: frames left, three frequency high bytes, their deltas), onto the pair's left and right SIDs.
+    ; (A only: X is NEXT, 0, below.)
+    lda $FF20
+    beq 3f
+    dec $FF20
+    lda $FF21
+    clc
+    adc $FF24
+    sta $FF21
+    sta $D401
+    sta $D441
+    lda $FF22
+    clc
+    adc $FF25
+    sta $FF22
+    sta $D408
+    sta $D448
+    lda $FF23
+    clc
+    adc $FF26
+    sta $FF23
+    sta $D40F
+    sta $D44F
+3:
+    lda $FF27
+    beq 4f
+    dec $FF27
+    lda $FF28
+    clc
+    adc $FF2B
+    sta $FF28
+    sta $D421
+    sta $D461
+    lda $FF29
+    clc
+    adc $FF2C
+    sta $FF29
+    sta $D428
+    sta $D468
+    lda $FF2A
+    clc
+    adc $FF2D
+    sta $FF2A
+    sta $D42F
+    sta $D46F
+4:
     lda READY               ; row 0: take the new table, if there is one
     beq 1f
     lda FRONT

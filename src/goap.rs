@@ -101,8 +101,9 @@ pub const OPS: [Op; 21] = [
     Op { name: "wait", leaf: action::IDLE, need: s::GROUNDED, not: s::ROTOR, set: s::ROTOR, clear: 0, cost: 1 },
     Op { name: "lift", leaf: action::LIFT, need: s::GROUNDED | s::ROTOR, not: 0, set: s::LOW, clear: s::GROUNDED, cost: 1 },
     Op { name: "climb-up", leaf: action::CLIMB, need: s::LOW, not: AIR, set: 0, clear: s::LOW, cost: 1 },
-    // The fight: a missile at the lock, or the gun on the run in; or round again for another pass.
-    Op { name: "launch", leaf: action::LAUNCH, need: s::HUNT | s::LOCKED, not: AIR | s::LOW, set: s::ENGAGED, clear: 0, cost: 1 },
+    // The fight: a missile at the lock (never with a hill dead ahead: the launch holds its course), or the
+    // gun on the run in; or round again for another pass.
+    Op { name: "launch", leaf: action::LAUNCH, need: s::HUNT | s::LOCKED, not: AIR | s::LOW | s::BLOCKED, set: s::ENGAGED, clear: 0, cost: 1 },
     Op { name: "strafe", leaf: action::STRAFE, need: s::HUNT | s::CLOSE, not: AIR | s::LOW | s::HIGH | ALL_BLOCKS | ASIDE, set: s::ENGAGED, clear: 0, cost: 2 },
     Op { name: "run-in", leaf: action::FORWARD, need: s::HUNT, not: AIR | s::LOW | s::HIGH | ALL_BLOCKS | ASIDE | s::CLOSE, set: s::CLOSE, clear: 0, cost: 2 },
     // The waypoint inside the turning circle (the prey just overflown, home just off a side): on, wings

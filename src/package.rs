@@ -93,6 +93,8 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".world3text", OVERLAY_WORLD3, OVERLAY_MAX),
         (".world4text", OVERLAY_WORLD4, OVERLAY_MAX),
         (".combattext", OVERLAY_COMBAT, OVERLAY_MAX),
+        (".squadtext", crate::format::OVERLAY_SQUAD, OVERLAY_MAX),
+        (".sfxtext", crate::format::OVERLAY_SFX, OVERLAY_MAX),
         (".fxtext", OVERLAY_FX, OVERLAY_MAX),
         (".combatlibtext", OVERLAY_COMBATLIB, OVERLAY2_MAX),
         (".decktext", OVERLAY_DECK, OVERLAY2_MAX),
@@ -172,7 +174,7 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
 
 /// Frame `tick` of the autopilot flight in buffer 0 of a fresh model of `reu`.
 pub fn render(reu: &[u8], tick: u32, doubled: bool) -> (Machine, FloorStats) {
-    render_from(reu, tick, doubled, [crate::hud::NONE, 0, 0, 0, 0])
+    render_from(reu, tick, doubled, crate::hud::NO_LOCK)
 }
 
 /// [`render`], the HUD's lock-on carried on from `lock` (`hud::LOCK_STATE` before the frame: the lock

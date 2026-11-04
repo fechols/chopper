@@ -22,6 +22,8 @@ pub mod layout;
 pub mod floor;
 pub mod poly;
 pub mod sprite;
+pub mod squad;
+pub mod sfx;
 pub mod world_sim;
 
 #[cfg(feature = "host")]

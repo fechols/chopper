@@ -60,9 +60,13 @@ fn frame(args: &[String]) -> Result<(), String> {
     let lock = match arg(args, "--lock") {
         Some(h) => {
             let b: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0)).collect();
-            [b[0], b[1], b[2], b[3], b.get(4).copied().unwrap_or(0)]
+            let mut lock = chopper::hud::NO_LOCK;
+            for (l, &x) in lock.iter_mut().zip(&b) {
+                *l = x;
+            }
+            lock
         }
-        None => [chopper::hud::NONE, 0, 0, 0, 0],
+        None => chopper::hud::NO_LOCK,
     };
     let (m, st) = match arg(args, "--state") {
         Some(p) => {
@@ -296,7 +300,10 @@ fn war(args: &[String]) -> Result<(), String> {
         } else {
             String::new()
         };
-        println!("minute {minute:3}: enemy {:3} alive, {:3} lost; allies {:3} alive, {:3} lost; pads {pads}{fleet}", r.alive[0], r.lost[0], r.alive[1], r.lost[1]);
+        println!(
+            "minute {minute:3}: enemy {:3} alive ({:4} vehicles), {:3} lost; allies {:3} alive ({:4} vehicles), {:3} lost; pads {pads}{fleet}",
+            r.alive[0], r.vehicles[0], r.lost[0], r.alive[1], r.vehicles[1], r.lost[1]
+        );
         if !quiet && (minute % 5 == 0 || minute == minutes) {
             // North at the top: E enemy, A allied, * contested.
             for sy in (0..16).rev() {

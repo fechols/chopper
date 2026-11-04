@@ -82,12 +82,18 @@ pub const FRONT: u16 = PAGE + 1;
 pub const NEXT: u16 = PAGE + 2;
 /// u8: the table `update` wrote last (0 or `$80`).
 pub const BACK: u16 = PAGE + 3;
-/// The lock state: target (`NONE`), ticks inside the reticle, the tick of the last update (u16); then the
-/// side the waypoint arrow last pointed to (`CARET_SIDE`). Carried from frame to frame.
+/// The lock state: the target vehicle (u16, `world_sim::vehicle`; `NOBODY`: none), ticks inside the
+/// reticle, the tick of the last update (u16); then the side the waypoint arrow last pointed to
+/// (`CARET_SIDE`). Carried from frame to frame. (The vehicle, not its place in the target list: the list
+/// is nearest first, and two vehicles of a formation swap places in it.)
 pub const LOCK_STATE: u16 = PAGE + 4;
-pub const LOCK_BYTES: usize = 5;
+pub const LOCK_BYTES: usize = 6;
+/// The lock state with no lock.
+pub const NO_LOCK: [u8; LOCK_BYTES] = [0xFF, 0xFF, 0, 0, 0, 0];
+const _: () = assert!(crate::world_sim::NOBODY == 0xFFFF);
 /// u8: 1 when the waypoint was last to the right (its arrow keeps that side while it is near dead astern).
-pub const CARET_SIDE: u16 = LOCK_STATE + 4;
+pub const CARET_SIDE: u16 = LOCK_STATE + 5;
+const _: () = assert!(LOCK_STATE + LOCK_BYTES as u16 <= BUF);
 pub const NONE: u8 = 0xFF;
 pub const BUF: u16 = PAGE + 0x10;
 pub const ROWS: usize = 4;
@@ -119,10 +125,10 @@ pub const RETICLE_X: i16 = 24;
 pub const RETICLE_Y: i16 = 20;
 /// Quarter texels along the view.
 pub const LOCK_RANGE: i16 = 250 * 4;
-/// Targets: the most (`format::HUD_TARGETS`: count, then `TARGET` bytes each: u, v (i16 texels),
-/// centre height (u8 texels)) and the range a box shows within (texels).
-pub const TARGETS: usize = 16;
-pub const TARGET: usize = 5;
+/// Targets: the most (`S_TARGETS`: count, then `TARGET` bytes each: u, v (i16 texels), centre height (u8
+/// texels), the vehicle (u16, `world_sim::vehicle`)) and the range a box shows within (texels).
+pub const TARGETS: usize = 12;
+pub const TARGET: usize = 7;
 pub const BOX_RANGE: i16 = 250;
 pub const BOXES: usize = 8;
 
@@ -392,6 +398,10 @@ pub fn build<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &FloorCam) {
     hw.poke(S_SHAPES + slot::RANGE as u16, range_shape(distance(a.wu - u, a.wv - v)));
     // The targets: boxes on those in range and view; the nearest inside the reticle is the seeker's.
     let count = hw.peek(S_TARGETS).min(TARGETS as u8);
+    // The seeker keeps the vehicle it is on while that stays in the reticle (else, as the members of a
+    // formation take turns at being nearest, its lock would start over and over).
+    let rd = |hw: &mut H, at: u16| hw.peek(at) as u16 | (hw.peek(at + 1) as u16) << 8;
+    let target = rd(hw, LOCK_STATE);
     let (mut best, mut best_z, mut bx, mut by) = (NONE, i16::MAX, 0, 0);
     let mut boxes = 0;
     for k in 0..count {
@@ -409,24 +419,26 @@ pub fn build<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &FloorCam) {
         if !on_screen(x, y) {
             continue;
         }
-        if (x - 160).abs() <= RETICLE_X && (y - 68).abs() <= RETICLE_Y && c[2] <= LOCK_RANGE && c[2] < best_z {
-            (best, best_z, bx, by) = (k, c[2], x, y);
+        let z = if rd(hw, at + 5) == target { i16::MIN } else { c[2] };
+        if (x - 160).abs() <= RETICLE_X && (y - 68).abs() <= RETICLE_Y && c[2] <= LOCK_RANGE && z < best_z {
+            (best, best_z, bx, by) = (k, z, x, y);
         }
         if boxes < BOXES {
             put(hw, &mut n, place(slot::BOX, shape::BOX, x, y));
             boxes += 1;
         }
     }
-    // The seeker: the lock builds while the same target stays in the reticle.
-    let target = hw.peek(LOCK_STATE);
-    let mut ticks = hw.peek(LOCK_STATE + 1);
-    let last = hw.peek(LOCK_STATE + 2) as u16 | (hw.peek(LOCK_STATE + 3) as u16) << 8;
+    // The seeker: the lock builds while the same vehicle stays in the reticle.
+    let vid = if best == NONE { crate::world_sim::NOBODY } else { rd(hw, S_TARGETS + 1 + best as u16 * TARGET as u16 + 5) };
+    let mut ticks = hw.peek(LOCK_STATE + 2);
+    let last = rd(hw, LOCK_STATE + 3);
     let dt = (a.t as u16).wrapping_sub(last).min(255) as u8;
-    ticks = if best == NONE || best != target { 0 } else { ticks.saturating_add(dt).min(LOCK_TICKS) };
-    hw.poke(LOCK_STATE, best);
-    hw.poke(LOCK_STATE + 1, ticks);
-    hw.poke(LOCK_STATE + 2, a.t as u8);
-    hw.poke(LOCK_STATE + 3, (a.t >> 8) as u8);
+    ticks = if best == NONE || vid != target { 0 } else { ticks.saturating_add(dt).min(LOCK_TICKS) };
+    hw.poke(LOCK_STATE, vid as u8);
+    hw.poke(LOCK_STATE + 1, (vid >> 8) as u8);
+    hw.poke(LOCK_STATE + 2, ticks);
+    hw.poke(LOCK_STATE + 3, a.t as u8);
+    hw.poke(LOCK_STATE + 4, (a.t >> 8) as u8);
     if best == NONE {
         put(hw, &mut n, place(slot::DIAMOND, shape::DIAMOND, 160, 68));
     } else {
@@ -501,7 +513,8 @@ pub fn init<H: Hw + ?Sized>(hw: &mut H) {
     }
     hw.poke(BUF + row::LINE as u16, TOP_LINE);
     hw.poke(BUF + 0x80 + row::LINE as u16, TOP_LINE);
-    hw.poke(LOCK_STATE, NONE);
+    hw.poke(LOCK_STATE, 0xFF);
+    hw.poke(LOCK_STATE + 1, 0xFF);
 }
 
 // ------------------------------------------------------------------------------------- host: art
@@ -654,6 +667,7 @@ pub mod art {
             t.extend_from_slice(&(o.u.round() as i16).to_le_bytes());
             t.extend_from_slice(&(o.v.round() as i16).to_le_bytes());
             t.push((o.y + 1.5).round() as u8);
+            t.extend_from_slice(&crate::world_sim::NOBODY.to_le_bytes());
             n += 1;
         }
         t.insert(0, n);

@@ -279,10 +279,12 @@ pub fn bake(w: &World) -> Vec<u8> {
 /// outpost and the north (HQ) the enemy.
 pub const OWNERS: [u8; 5] = [ALLIED, ALLIED, ENEMY, ALLIED, ENEMY];
 
-/// What the war looks like: units alive and lost per side, and who holds each sector.
+/// What the war looks like: units (platoons) alive and lost per side, their vehicles standing, and who
+/// holds each sector.
 pub struct Report {
     pub alive: [u16; 2],
     pub lost: [u16; 2],
+    pub vehicles: [u16; 2],
     /// Each pad's owner.
     pub owner: [u8; 5],
     /// Per sector: 0 empty, 1 enemy, 2 allied, 3 contested.
@@ -297,9 +299,18 @@ pub fn report(reu: &[u8]) -> Report {
         let a = ws::SECTORS as usize + s * ws::SECTOR as usize;
         *c = (reu[a] > 0) as u8 | ((reu[a + 1] > 0) as u8) << 1;
     }
+    let mut vehicles = [0u16; 2];
+    for id in 0..COUNT as usize {
+        let r = &reu[ws::UNITS as usize + id * RECORD as usize..][..RECORD as usize];
+        if r[rec::FLAGS as usize] & ALIVE != 0 {
+            let k = r[rec::KIND as usize] as usize % kind::COUNT as usize;
+            vehicles[(r[rec::FLAGS as usize] & ws::SIDE) as usize] += ws::standing(k, u16::from_le_bytes([r[rec::LOST as usize], r[rec::LOST as usize + 1]])) as u16;
+        }
+    }
     Report {
         alive: [w(h + ws::head::ALIVE as usize), w(h + ws::head::ALIVE as usize + 2)],
         lost: [w(h + ws::head::LOST as usize), w(h + ws::head::LOST as usize + 2)],
+        vehicles,
         owner: core::array::from_fn(|p| reu[h + ws::head::OWNER as usize + p]),
         control,
     }

@@ -36,7 +36,7 @@ the enemy's HQ.
 
 ## Flow
 
-- **Title / attract:** the autopilot flies the island (as now). Fire starts the campaign.
+- **Title / attract:** the autopilot flies the island (as now). Any control (the stick, a button, or W A S D, SPACE, SHIFT) takes over.
 - **Briefing:** a text screen with the mission's name, objectives, the threats expected and the loadout. Fire to fly.
 - **Mission:** start on the home pad with the rotor spooling up (the sound's 1:20). The tach shows it, and the RPM lamp is lit until it reaches 100%.
 - **Debrief:** pass or fail, with the targets destroyed and the time taken. On a pass, the next mission's briefing follows.
@@ -99,12 +99,13 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
 
 ## The player
 
-- **Flight:** one joystick. This is the agent's flight model with the stick in place of the decision tree's turns and speeds.
+- **Flight:** one joystick, or the keyboard: W and S for forward and back, A and D for left and right. This is the agent's flight model with the stick in place of the decision tree's turns and speeds.
+  - With the stick pushed, the keys are not read: joystick 2's lines share the keyboard's, and would lose keys or invent them. The keys work whenever the stick is centred.
   - Left and right turn; the helicopter banks into the turn by itself.
   - Forward speeds up, back slows down to a hover.
   - Altitude looks after itself: it holds a cruise height over the ground and climbs over mountains in its way (the autopilot's hazard probes and climb actions).
 - **Landing:** hover (slow right down) over a pad's H and it settles onto it. Push forward to lift off again. No hard landings.
-- **Weapons:** two buttons, one weapon each.
+- **Weapons:** two buttons, one weapon each: on the keyboard, SPACE is the first (the gun) and either SHIFT the second (missiles).
 
 | Weapon | Button | Load | Behaviour |
 |---|---|---|---|
@@ -116,11 +117,21 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
   - When an enemy in range (250) is inside it, the missile system arms by itself.
   - The diamond moves onto that target and closes in as the lock builds over 1.5 s, then shows `LOCK`.
   - If the target leaves the reticle before then, the lock resets.
-  - With several targets inside, the nearest one is chosen.
+  - With several targets inside, the nearest one is chosen, and kept while it stays inside: the lock is on that vehicle, not its place in the list, so the vehicles of a formation taking turns at being nearest never restart it.
 
 - **Fuel:** a mission's worth plus a margin. Landing on home refuels.
 - **Damage:** 0–100%. At 50% the caution panel lights up; at 100% the helicopter goes down.
 - **Cockpit:** the six gauges and the caution lamps (RPM, LOW ALT, AP), with SAM, FUEL and DAMAGE lamps to come.
+
+## Sound
+
+- **The rotor:** a recorded loop, streamed from the REU to the Ultimate's sampler (`asm/stream.S`).
+- **Effects on four SIDs:** the C64U's two UltiSIDs, each split in two (`config/chopper.cfg`: range split on A5), are four SIDs: $D400 and $D420 hard left, $D440 and $D460 hard right. They make two stereo pairs, so two sounds play at once (`sfx`, its own overlay after the effects pass).
+  - **A whole chip per ear:** a sound plays the same three voices on its pair's left and right chips. Each chip's master volume is that ear's gain and its low-pass cutoff that ear's muffling, so the filter colours that one sound only.
+  - **Placed (a cheap HRTF):** its bearing from the nose pans it; behind the player both cutoffs close (muffled) and the far ear's more (the head's shadow); distance lowers the gain and dulls it. A sound playing is placed again every frame, so turning pans it.
+  - **The sounds:** the player's gun and missile launches (centred), impacts, splashes, explosions, wrecks catching fire, the war's gunfire (the far battle quieter and duller), a hit on the player, the seeker's lock.
+  - **Priorities:** a new sound takes a free pair, else the one with the least left of its sound (priority × gain, running down over its length), if it scores at least that: explosions 9, a hit 8, a launch 7, the lock 6, impacts 4, the gun and splashes 3, the war's gunfire 2, crackle 1. The gun keeps to one pair (its bursts onto the pair already firing, which nothing else takes from it), so the gun and a missile launch, say, are heard together.
+  - **Sweeps:** the patches' pitch sweeps run at 60 Hz in the HUD's raster IRQ (its top-border row); the frame triggers, releases, sweeps the cutoff and places.
 
 ## The HUD
 
@@ -158,14 +169,18 @@ Two kinds of overlay:
 ## The living world
 
 A real war, not a stage set around the player:
-- **Units:** both sides' units, 512 in all, live in the REU as 32-byte records. Each has a kind, side, health, position, route, orders, target and its own learning trail.
+- **Units:** both sides' units, 480 in all, live in the REU as 32-byte records. Each has a kind, side, health, position, route, orders, target and its own learning trail.
+- **Platoons:** each record is a platoon of up to 12 vehicles of its kind (`world_sim::stats::MEMBERS`: 8 trucks, 10 APCs, 8 tanks, 6 AA guns, 4 SAM launchers, 3 gunboats, 2 missile boats, 4 gunships; sites, the carrier and its destroyers are single). A bit mask marks its fallen; the record's health is its wounded member's. A thousand to two thousand vehicles fight at once, at the cost of a few hundred units: the war's CPU goes on records, not vehicles.
+  - **Fights:** each standing member fires, the hits rounded by the dice (`world_sim::hits`), and the damage spills over the target platoon's members, one falling at a time (`world_sim::spill`).
+  - **Near the player:** each near platoon is drawn as its vehicles in formation round where it is (`squad`): a staggered column on the move, a line abreast fighting or holding, a V in the air. The nearest 20 are listed (those in front first); the nearest dozen are drawn, and the enemies among them are targets. The player's gun or missile kills the vehicle it hits.
+  - **The battle on the horizon:** fights within 400 texels of the player show their muzzle flashes and hits wherever they are, in free effect slots only. They are marked far: the fight at hand's next effect takes a far one's slot first, and they are drawn after its effects and the wrecks' smoke, so they are what the effects' cap cuts.
 - **Paging:** they are paged into RAM 32 a frame, round-robin, so each steps and decides about **once a second**. That is a human reaction time, chosen on purpose: no perfect aim, from near or far.
 - **Away from the player:**
   - units travel along roads, sea lanes and air patrols;
   - they fight by dice against the enemies in their 128-texel sector;
   - reinforcements arrive from the enemy beachhead on the north shore and from home base;
   - sectors change hands, and wrecks stay where they fell.
-- **Near the player:** units within 320 texels are promoted into 16 active actors. Those are drawn, flown or driven every frame, boxed on the HUD, and they shoot with human aim: time to acquire, lead error that grows with crossing speed, burst spread.
+- **Near the player:** units within 320 texels are promoted into 12 near platoons, expanded into their vehicles (above). Those are drawn every frame, boxed on the HUD, and they shoot with human aim: time to acquire, lead error that grows with crossing speed, burst spread.
 - **Missions:** the eight missions are objectives over the real war, such as the actual convoy or the actual SAM sites. The war goes on between and during them.
 
 ## Learned behaviour

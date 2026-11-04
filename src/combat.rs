@@ -16,6 +16,7 @@
 
 use crate::agent::Agent;
 use crate::hw::{self, Hw};
+use crate::squad::{MEMBERS, SLOTS, entry};
 use crate::world_sim::{self as ws, ALIVE, NEAR_FLAG, RECORD, SIDE, rec};
 
 /// Projectiles in flight: [`PROJ_MAX`] entries of [`PROJ_ENTRY`] bytes: kind (`actors::kind`, 0 free),
@@ -62,10 +63,10 @@ const _: () = assert!(PLAYER + PLAYER_LEN <= crate::layout::XFORM_RAM);
 pub const STATE: u16 = PROJ;
 pub const STATE_LEN: u16 = PROJ_MAX * PROJ_ENTRY + PLAYER_LEN;
 
-/// The effects playing (`effects`): [`FX_MAX`] entries of [`FX_ENTRY`] bytes: effect + 1 (0 free), spare,
+/// The effects playing (`effects`): [`FX_MAX`] entries of [`FX_ENTRY`] bytes: effect + 1 (0 free), [`FAR`] or 0,
 /// the tick it began (u16), where (1/16 texel, u16 × 3). After the relocated `bandtext`'s last page.
 pub const FX: u16 = 0xB760;
-pub const FX_MAX: u8 = 8;
+pub const FX_MAX: u8 = 16;
 pub const FX_ENTRY: u16 = 10;
 const _: () = assert!(FX + FX_MAX as u16 * FX_ENTRY <= 0xB800);
 /// The wrecks near the player smoking (`world_sim::WRECK_TICKS`), listed by `update` for `effects`: a
@@ -80,7 +81,9 @@ const _: () = assert!(WRECKS + 1 + WRECK_MAX as u16 * WRECK_ENTRY <= crate::hud:
 /// the depth key. (After the transform tables, before the reciprocals.)
 pub const FXDYN: u16 = 0x8F84;
 pub const FXDYN_ENTRY: u16 = 8;
-pub const FXDYN_MAX: u8 = FX_MAX + WRECK_MAX;
+/// (Fewer than the effects and the wrecks: the far battle's flashes fill the free slots, and the room
+/// before the reciprocals is this.)
+pub const FXDYN_MAX: u8 = 14;
 const _: () = assert!(FXDYN >= crate::layout::XFORM_RAM + 0x84 && FXDYN + 1 + FXDYN_MAX as u16 * FXDYN_ENTRY <= crate::fixed::RECIP);
 /// Effect frames last `1 << FX_TICKS_SHIFT` ticks; looping effects (smoke, a burning wreck) play this
 /// long.
@@ -90,29 +93,40 @@ pub const FX_LIFE: u16 = 20 * 60;
 /// explosion's frame 36 of 64).
 pub const FIRE_AFTER: u16 = 36 << FX_TICKS_SHIFT;
 
-/// Start `effect` at (`u`, `v`, `h`) (1/16 texel): a free slot, or the oldest. (Resident on the C64: the
+/// Start `effect` at (`u`, `v`, `h`) (1/16 texel): a free slot, else the oldest far one, else the oldest.
+/// `effect | FAR` (the war's battle on the horizon): a free slot only, and marked (the second byte), so
+/// the fight at hand takes its slot first and draws first (`effects`). (Resident on the C64: the
 /// player's fight and the war's both start effects.) The age is signed: one not begun yet (a wreck's fire
 /// after its explosion) is the newest, never the oldest.
 #[inline(never)]
 pub fn spawn<H: Hw + ?Sized>(hw: &mut H, effect: u8, u: u16, v: u16, h: u16, now: u16) {
-    let (mut best, mut age) = (FX, i16::MIN);
+    let far = effect & FAR;
+    let (mut best, mut age) = (0, i16::MIN);
     for k in 0..FX_MAX as u16 {
         let e = FX + k * FX_ENTRY;
         if hw.peek(e) == 0 {
             best = e;
             break;
         }
-        let a = now.wrapping_sub(rd(hw, e + 2)) as i16;
-        if a >= age {
+        let a = if hw.peek(e + 1) != 0 { i16::MAX } else { now.wrapping_sub(rd(hw, e + 2)) as i16 };
+        if far == 0 && a >= age {
             (best, age) = (e, a);
         }
     }
-    hw.poke(best, effect + 1);
+    if best == 0 {
+        return;
+    }
+    hw.poke(best, (effect & !FAR) + 1);
+    hw.poke(best + 1, far);
     wr(hw, best + 2, now);
     wr(hw, best + 4, u);
     wr(hw, best + 6, v);
     wr(hw, best + 8, h);
 }
+
+/// [`spawn`]'s mark for an effect far off.
+pub const FAR: u8 = 0x80;
+const _: () = assert!((crate::effects::EFFECTS as u8) < FAR);
 
 /// Is (`u`, `v`) (1/16 texel) over the sea (the hazard map's bit 7)?
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
@@ -128,12 +142,15 @@ fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16) {
     use crate::effects::{FRAMES, HEIGHT_Q4, LOOPS, record, scale_for};
     let mut n = 0u8;
     let wrecks = hw.peek(WRECKS).min(WRECK_MAX) as u16;
-    for k in 0..FX_MAX as u16 + wrecks {
-        // The effects playing, then the wrecks' smoke columns.
-        let (effect, f, e) = if k < FX_MAX as u16 {
-            let e = FX + k * FX_ENTRY;
+    // The fight at hand's effects, then the wrecks' smoke columns, then the battle on the horizon's (so
+    // those are what the cap cuts).
+    let later = FX_MAX as u16 + wrecks;
+    for k in 0..later + FX_MAX as u16 {
+        let (effect, f, e) = if k < FX_MAX as u16 || k >= later {
+            let far = k >= later;
+            let e = FX + (if far { k - later } else { k }) * FX_ENTRY;
             let id = hw.peek(e);
-            if id == 0 {
+            if id == 0 || (hw.peek(e + 1) != 0) != far {
                 continue;
             }
             let effect = (id - 1) % crate::effects::EFFECTS as u8;
@@ -157,6 +174,10 @@ fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16) {
             let e = WRECKS + 1 + (k - FX_MAX as u16) * WRECK_ENTRY;
             (crate::effects::effect::SMOKE, (rd(hw, e + 6) >> FX_TICKS_SHIFT) & (FRAMES[crate::effects::effect::SMOKE as usize] as u16 - 1), e)
         };
+        // (Full: the rest still freed when done, not drawn.)
+        if n >= FXDYN_MAX {
+            continue;
+        }
         let p = [(rd(hw, e) >> 2) as i16, (rd(hw, e + 4) >> 2) as i16, (rd(hw, e + 2) >> 2) as i16];
         let c = crate::hud::to_camera(eye, p);
         if c[2] < crate::hud::NEAR {
@@ -183,6 +204,9 @@ pub const GUN_EVERY: u8 = 6;
 pub const GUN_RANGE: i16 = 80 * 4;
 pub const GUN_HIT: u8 = 180;
 pub const GUN_DAMAGE: u8 = 2;
+/// The gun's range as a vehicle's listed distance (`squad::entry::D`, texels / 2: `GUN_RANGE` is in
+/// quarter texels), with `world_sim::dist`'s overestimate of up to an eighth.
+const CONE_D: u8 = (GUN_RANGE / 8 + GUN_RANGE / 64 + 1) as u8;
 pub const CONE_X: i16 = 12;
 pub const CONE_Y: i16 = 10;
 pub const MISSILES: u8 = 8;
@@ -228,26 +252,37 @@ pub fn reu_put<H: Hw + ?Sized>(hw: &mut H, addr: u32, v: u8) {
     hw::stash(hw, crate::layout::BOUNCE, addr, 1);
 }
 
-/// Damage unit `id` (in the REU): its hit points down, its damage taken up (for its learning); dead at 0,
-/// with the bookkeeping. Whether it died.
+/// Damage vehicle `vid` (`world_sim::vehicle`; its platoon's record in the REU): its platoon's hit points
+/// down, the hit member falling first (`world_sim::spill`), the damage taken up (for its learning); the
+/// platoon dead with its last member, with the bookkeeping. Whether a member fell.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
-pub fn damage_unit<H: Hw + ?Sized>(hw: &mut H, id: u16, dmg: u8) -> bool {
-    let base = ws::UNITS + id as u32 * RECORD as u32;
-    let flags = reu_get(hw, base + rec::FLAGS as u32);
+pub fn damage_unit<H: Hw + ?Sized>(hw: &mut H, vid: u16, dmg: u8) -> bool {
+    let base = ws::UNITS + ws::platoon(vid) as u32 * RECORD as u32;
+    // The record in one, back in one (through the bounce buffer).
+    let b = crate::layout::BOUNCE;
+    hw::fetch(hw, base, b, RECORD);
+    let flags = hw.peek(b + rec::FLAGS);
     if flags & ALIVE == 0 {
         return false;
     }
-    let hp = reu_get(hw, base + rec::HP as u32).saturating_sub(dmg);
-    reu_put(hw, base + rec::HP as u32, hp);
-    let taken = reu_get(hw, base + rec::TAKEN as u32).saturating_add(dmg);
-    reu_put(hw, base + rec::TAKEN as u32, taken);
+    let kind = hw.peek(b + rec::KIND) as usize % crate::actors::kind::COUNT as usize;
+    // (The dice rolled on, as the war's shots roll them.)
+    let seed = ws::roll(hw.peek(b + rec::SEED));
+    hw.poke(b + rec::SEED, seed);
+    let (hp, lost, fell) = ws::spill(kind, hw.peek(b + rec::HP), rd(hw, b + rec::LOST), dmg, ws::member(vid), seed);
+    hw.poke(b + rec::HP, hp);
+    wr(hw, b + rec::LOST, lost);
+    let taken = hw.peek(b + rec::TAKEN).saturating_add(dmg);
+    hw.poke(b + rec::TAKEN, taken);
     if hp > 0 {
-        return false;
+        hw::stash(hw, b, base, RECORD);
+        return fell != ws::NONE_FELL;
     }
-    reu_put(hw, base + rec::FLAGS as u32, flags & !(ALIVE | NEAR_FLAG));
+    hw.poke(b + rec::FLAGS, flags & !(ALIVE | NEAR_FLAG));
     let side = (flags & SIDE) as u32;
-    let sector = reu_get(hw, base + rec::SECTOR as u32);
+    let sector = hw.peek(b + rec::SECTOR);
+    hw::stash(hw, b, base, RECORD);
     let c = ws::SECTORS + sector as u32 * ws::SECTOR as u32 + ws::sec::COUNT as u32 + side;
     let n = reu_get(hw, c);
     reu_put(hw, c, n.saturating_sub(1));
@@ -292,11 +327,10 @@ fn heading(dx: i16, dy: i16) -> u8 {
     ws::heading_inline(dx, dy)
 }
 
-/// [`ws::live`] for the combat pass, in its library (the deck's overlay is not in then).
-#[inline(never)]
-#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.combatlib"))]
-fn live(r: &[u8; ws::CARRIER_RECORD], now: u16) -> (u16, u16, u16) {
-    ws::live_inline(r, now)
+/// Whether a mesh (`squad::entry::MESH`) is a living enemy's.
+#[inline(always)]
+fn enemy(mesh: u8) -> bool {
+    mesh < 2 * crate::actors::kind::COUNT && mesh & 1 == crate::actors::ENEMY
 }
 
 /// The frame's fight, after the war's page and before the HUD: the targets for the HUD, the gun and
@@ -310,65 +344,43 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
     let now = a.t as u16;
     let dt = now.wrapping_sub(rd(hw, PLAYER + player::LAST)).min(255) as u8;
     wr(hw, PLAYER + player::LAST, now);
-    // The targets: living enemy units near, where they are now.
-    let n = hw.peek(ws::NEAR).min(ws::NEAR_MAX);
+    let (pu, pv) = a.at();
+    // (On the C64 the main loop runs the squad pass, from its own overlay, just before.)
+    #[cfg(not(target_arch = "mos"))]
+    crate::squad::expand(hw, now, pu, pv, a.yaw);
+    // The targets: the enemy vehicles near (`squad::MEMBERS`, nearest first), where they are now; the
+    // nearest drawn.
+    let n = hw.peek(MEMBERS).min(SLOTS);
     let mut count = 0u8;
-    let mut wrecks = 0u8;
-    let mut decks = 0u8;
-    let mut in_cone = ws::NOBODY;
+    let mut in_cone = (ws::NOBODY, 0u16);
     let mut cone_z = i16::MAX;
     // The autopilot's prey: the one it had, while it lives and is near; else the nearest in range that no
     // missile is after.
     let auto = a.mode == crate::agent::MODE_AUTO;
-    let (pu, pv) = a.at();
     let had = rd(hw, PLAYER + player::PREY);
+    let (hs, hc) = (crate::camera::sin(a.yaw) as i16, crate::camera::cos(a.yaw) as i16);
+    use crate::fixed::mul14;
     let mut prey = (ws::NOBODY, 0i16, 0i16, PREY_RANGE);
-    let mut r = [0u8; ws::CARRIER_RECORD];
-    for k in 0..n as u16 {
-        let id = rd(hw, ws::NEAR + 1 + 2 * k);
-        hw::read_into(hw, ws::UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut r);
-        let flags = r[rec::FLAGS as usize];
-        let alive = flags & ALIVE != 0;
-        // Where it is now: moved on from its last step (the dead stay where they fell).
-        let (u, v, yaw) = live(&r, now);
-        let yaw = (yaw >> 8) as u8;
+    for k in 0..n {
+        let e = crate::squad::nth(hw, k);
         // Drawn: (mesh, yaw, u, v, h) into the list.
-        let o = OBJLIST + 1 + 8 * k;
-        let kind = r[rec::KIND as usize];
-        hw.poke(o, if alive { crate::actors::mesh_of(kind, flags & SIDE) } else { crate::actors::wreck_of(kind) });
-        if alive && kind == crate::actors::kind::CARRIER && decks == 0 {
-            // Its flight deck with it, after the near units.
-            let dk = OBJLIST + 1 + 8 * n as u16;
-            hw.poke(dk, crate::actors::DECK);
-            hw.poke(dk + 1, yaw);
-            wr(hw, dk + 2, u);
-            wr(hw, dk + 4, v);
-            wr(hw, dk + 6, (r[rec::H as usize] as u16) << 4);
-            decks = 1;
+        if k < OBJLIST_UNITS {
+            for i in 0..8 {
+                let b = hw.peek(e + entry::MESH + i);
+                hw.poke(OBJLIST + 1 + 8 * k as u16 + i, b);
+            }
         }
-        hw.poke(o + 1, yaw);
-        wr(hw, o + 2, u);
-        wr(hw, o + 4, v);
-        wr(hw, o + 6, (r[rec::H as usize] as u16) << 4);
-        // A wreck: its smoke column, while it lasts.
-        let age = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]]));
-        if !alive && age < ws::WRECK_TICKS && wrecks < WRECK_MAX {
-            let w = WRECKS + 1 + wrecks as u16 * WRECK_ENTRY;
-            wr(hw, w, u);
-            wr(hw, w + 2, v);
-            // (Rising from a texel and a half up: the wreck shows under it.)
-            wr(hw, w + 4, ((r[rec::H as usize] as u16) << 4) + 24);
-            wr(hw, w + 6, age);
-            wrecks += 1;
-        }
-        if !alive || flags & SIDE != crate::actors::ENEMY || count as usize >= TARGETS {
+        if !enemy(hw.peek(e + entry::MESH)) || count as usize >= TARGETS {
             continue;
         }
-        let (tu, tv, th) = ((u >> 4) as i16, (v >> 4) as i16, r[rec::H as usize] as i16 + 1);
+        let id = rd(hw, e + entry::VID);
+        let (u, v) = (rd(hw, e + entry::U), rd(hw, e + entry::V));
+        let (tu, tv, th) = ((u >> 4) as i16, (v >> 4) as i16, (rd(hw, e + entry::H) >> 4) as i16 + 1);
         let at = S_TARGETS + 1 + count as u16 * TARGET as u16;
         wr(hw, at, tu as u16);
         wr(hw, at + 2, tv as u16);
         hw.poke(at + 4, th as u8);
+        wr(hw, at + 5, id);
         count += 1;
         if auto {
             let (dx, dy) = ((tu - pu).abs(), (tv - pv).abs());
@@ -379,18 +391,22 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
                 prey = (id, tu, tv, d);
             }
         }
-        // In the gun's cone?
-        let c = to_camera(&eye, [tu << 2, th << 2, tv << 2]);
-        if c[2] >= NEAR && c[2] <= GUN_RANGE {
-            let (x, y) = screen(c);
-            if on_screen(x, y) && (x - 160).abs() <= CONE_X && (y - 68).abs() <= CONE_Y && c[2] < cone_z {
-                (in_cone, cone_z) = (id, c[2]);
+        // In the gun's cone? (Only one within its range, ahead and near the nose's line, is worth the
+        // transform: within a quarter of the way ahead and 4 texels to either side, where the cone is
+        // under a tenth, and pitch and roll do not turn the nose's line off the heading.)
+        let (fwd, lat) = (mul14(hs, tu - pu) + mul14(hc, tv - pv), mul14(hc, tu - pu) - mul14(hs, tv - pv));
+        if hw.peek(e + entry::D) <= CONE_D && fwd > 0 && lat.unsigned_abs() * 4 <= fwd as u16 + 16 {
+            let c = to_camera(&eye, [tu << 2, th << 2, tv << 2]);
+            if c[2] >= NEAR && c[2] <= GUN_RANGE {
+                let (x, y) = screen(c);
+                if on_screen(x, y) && (x - 160).abs() <= CONE_X && (y - 68).abs() <= CONE_Y && c[2] < cone_z {
+                    (in_cone, cone_z) = ((id, e), c[2]);
+                }
             }
         }
     }
     hw.poke(S_TARGETS, count);
-    hw.poke(WRECKS, wrecks);
-    hw.poke(OBJLIST, n + decks);
+    hw.poke(OBJLIST, n.min(OBJLIST_UNITS));
     // The gun.
     let input = a.input;
     let cool = hw.peek(PLAYER + player::COOL).saturating_sub(dt);
@@ -402,14 +418,13 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
         let bursts = hw.peek(PLAYER + player::BURSTS).wrapping_add(1);
         hw.poke(PLAYER + player::BURSTS, bursts);
         launch(hw, crate::actors::kind::TRACER, TRACER_TTL, a, ws::NOBODY);
-        if in_cone != ws::NOBODY && (bursts.wrapping_mul(97) ^ now as u8) < GUN_HIT {
-            let mut t = [0u8; 9];
-            hw::read_into(hw, ws::UNITS + in_cone as u32 * RECORD as u32, crate::layout::BOUNCE, &mut t);
-            let (tu, tv, th) = (u16::from_le_bytes([t[4], t[5]]), u16::from_le_bytes([t[6], t[7]]), (t[8] as u16) << 4);
+        if in_cone.0 != ws::NOBODY && (bursts.wrapping_mul(97) ^ now as u8) < GUN_HIT {
+            let e = in_cone.1;
+            let (tu, tv, th) = (rd(hw, e + entry::U), rd(hw, e + entry::V), rd(hw, e + entry::H));
             let fx = if sea(hw, tu, tv) { crate::effects::effect::SPLASH } else { crate::effects::effect::IMPACT };
             spawn(hw, fx, tu, tv, th, now);
             dealt(hw, GUN_DAMAGE);
-            if damage_unit(hw, in_cone, GUN_DAMAGE) {
+            if damage_unit(hw, in_cone.0, GUN_DAMAGE) {
                 let k = rd(hw, PLAYER + player::KILLS);
                 wr(hw, PLAYER + player::KILLS, k + 1);
                 dealt(hw, KILL_BONUS);
@@ -422,28 +437,13 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
     let fire2 = if auto { (a.action == crate::agent::action::LAUNCH) as u8 } else { input & crate::agent::input::FIRE2 };
     let was = hw.peek(PLAYER + player::FIRE2);
     hw.poke(PLAYER + player::FIRE2, fire2);
-    let locked = hw.peek(crate::hud::LOCK_STATE + 1) >= crate::hud::LOCK_TICKS;
-    let target = hw.peek(crate::hud::LOCK_STATE);
+    let locked = hw.peek(crate::hud::LOCK_STATE + 2) >= crate::hud::LOCK_TICKS;
+    // The locked vehicle (`hud::LOCK_STATE`), while still listed.
+    let id = rd(hw, crate::hud::LOCK_STATE);
     let missiles = hw.peek(PLAYER + player::MISSILES);
-    if fire2 != 0 && was == 0 && locked && missiles > 0 && target < count {
-        // The locked target's unit: the target list follows the near list, enemies only.
-        let mut j = 0;
-        let mut id = ws::NOBODY;
-        for k in 0..n as u16 {
-            let u = rd(hw, ws::NEAR + 1 + 2 * k);
-            let f = reu_get(hw, ws::UNITS + u as u32 * RECORD as u32 + rec::FLAGS as u32);
-            if f & ALIVE != 0 && f & SIDE == crate::actors::ENEMY {
-                if j == target {
-                    id = u;
-                    break;
-                }
-                j += 1;
-            }
-        }
-        if id != ws::NOBODY {
-            hw.poke(PLAYER + player::MISSILES, missiles - 1);
-            launch(hw, crate::actors::kind::MISSILE, MISSILE_TTL, a, id);
-        }
+    if fire2 != 0 && was == 0 && locked && missiles > 0 && id != ws::NOBODY && crate::squad::find(hw, id).is_some() {
+        hw.poke(PLAYER + player::MISSILES, missiles - 1);
+        launch(hw, crate::actors::kind::MISSILE, MISSILE_TTL, a, id);
     }
     // Projectiles that arrived (the effects pass moved them): missiles at their targets, tracers in the
     // ground or the sea.
@@ -457,9 +457,9 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
             hw.poke(p + proj::KIND, 0);
         } else if kind == crate::actors::kind::MISSILE {
             let id = rd(hw, p + proj::TARGET);
-            let mut t = [0u8; 9];
-            hw::read_into(hw, ws::UNITS + id as u32 * RECORD as u32, crate::layout::BOUNCE, &mut t);
-            let (tu, tv, th) = (u16::from_le_bytes([t[4], t[5]]), u16::from_le_bytes([t[6], t[7]]), (t[8] as u16) << 4);
+            // Its target where it is now, while listed (else it flies on, lost).
+            let Some(e) = crate::squad::find(hw, id) else { continue };
+            let (tu, tv, th) = (rd(hw, e + entry::U), rd(hw, e + entry::V), rd(hw, e + entry::H));
             if ((tu >> 4) as i16 - (u >> 4) as i16).abs() < 3 && ((tv >> 4) as i16 - (v >> 4) as i16).abs() < 3 && ((th >> 4) as i16 - (h >> 4) as i16).abs() < 3 {
                 spawn(hw, crate::effects::effect::EXPLOSION, tu, tv, th, now);
                 dealt(hw, MISSILE_DAMAGE);
@@ -515,7 +515,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
             (a.wu, a.wv) = (crate::agent::HOME.0 as i16, crate::agent::HOME.1 as i16);
             prey.0 = ws::NOBODY;
         } else if prey.0 != ws::NOBODY {
-            flags = HUNT | if locked && missiles > 0 && target < count { LOCKED } else { 0 };
+            flags = HUNT | if locked && missiles > 0 && id != ws::NOBODY { LOCKED } else { 0 };
             (a.wu, a.wv) = (prey.1, prey.2);
         }
     }
@@ -616,12 +616,10 @@ pub fn fx<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) {
         let mut yaw = hw.peek(p + proj::YAW);
         let mut climb = hw.peek(p + proj::CLIMB) as i8 as i16;
         let speed = if kind == crate::actors::kind::MISSILE { MISSILE_SPEED } else { TRACER_SPEED };
-        if kind == crate::actors::kind::MISSILE {
-            let id = rd(hw, p + proj::TARGET);
-            let base = ws::UNITS + id as u32 * RECORD as u32;
-            let mut t = [0u8; 9];
-            hw::read_into(hw, base, crate::layout::BOUNCE, &mut t);
-            let (tu, tv, th) = (u16::from_le_bytes([t[4], t[5]]) as i16, u16::from_le_bytes([t[6], t[7]]) as i16, (t[8] as i16) << 4);
+        // A missile turns toward its target, while it is listed (else it flies on, lost).
+        let target = rd(hw, p + proj::TARGET);
+        if let Some(e) = if kind == crate::actors::kind::MISSILE { crate::squad::find(hw, target) } else { None } {
+            let (tu, tv, th) = (rd(hw, e + entry::U) as i16, rd(hw, e + entry::V) as i16, rd(hw, e + entry::H) as i16);
             let (dx, dy, dh) = ((tu >> 4) - (u >> 4), (tv >> 4) - (v >> 4), th - h);
             // Turn toward it: 8 a tick at most; climb toward its height.
             let want = heading(dx, dy);
@@ -671,8 +669,9 @@ pub fn fx<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) {
 /// the near units (the main pass), then the projectiles (the effects pass). In the cell buffer, free
 /// until the geometry.
 pub const OBJLIST: u16 = crate::layout::CELL_RAM;
-/// The near units, the carrier's deck, the projectiles.
+/// The nearest vehicles (`squad::MEMBERS`: the carrier's deck among them), the projectiles.
 pub const OBJLIST_UNITS: u8 = crate::world_sim::NEAR_MAX + 1;
+const _: () = assert!(OBJLIST_UNITS <= SLOTS);
 pub const OBJLIST_MAX: u8 = OBJLIST_UNITS + PROJ_MAX as u8;
 const _: () = assert!(1 + 8 * OBJLIST_MAX as u16 <= crate::layout::CELL_MAX * 8);
 

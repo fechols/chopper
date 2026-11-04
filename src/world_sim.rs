@@ -71,7 +71,11 @@ pub mod rec {
     pub const TRAIL: u16 = 23;
     /// Its sector (`sx | sy << 4`).
     pub const SECTOR: u16 = 29;
+    /// Its platoon's fallen members (u16, bit per member; `stats::MEMBERS`): 0 at full strength. `HP` is
+    /// the wounded member's.
+    pub const LOST: u16 = 30;
 }
+const _: () = assert!(rec::LOST + 2 <= RECORD);
 pub const ALIVE: u8 = 0x80;
 pub const NEAR_FLAG: u8 = 0x40;
 pub const SIDE: u8 = 0x01;
@@ -213,7 +217,110 @@ pub mod stats {
     pub const TURN: [u8; COUNT as usize] = [4, 4, 4, 4, 0, 0, 3, 3, 5, 0, 0, 0, 2, 0, 0];
     /// Kinds that fly.
     pub const AIR: u8 = crate::actors::kind::GUNSHIP;
+    /// A platoon's vehicles (each record is a platoon of its kind; one: a single unit, as the sites, the
+    /// carrier and its escorts are).
+    pub const MEMBERS: [u8; COUNT as usize] = [8, 10, 8, 6, 4, 1, 3, 2, 4, 1, 1, 1, 1, 1, 1];
+    /// [`MEMBERS`] at run time: in the spare region on the C64 (resident data is full).
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.spare.members"))]
+    static MEMBERS_AT: [u8; COUNT as usize] = MEMBERS;
+    #[inline(always)]
+    pub fn members(kind: usize) -> u8 {
+        MEMBERS_AT[kind]
+    }
+    /// The learning's reward shift: a platoon's damage dealt and taken is about its size's times a single
+    /// unit's (log2 of `MEMBERS`; worked out, not a table: the overlays' tables would be resident).
+    #[inline(always)]
+    pub fn reward_shift(kind: usize) -> u8 {
+        let m = members(kind);
+        (m >= 2) as u8 + (m >= 4) as u8 + (m >= 8) as u8
+    }
+    const _: () = {
+        let mut k = 0;
+        while k < COUNT as usize {
+            assert!(MEMBERS[k] >= 1 && MEMBERS[k] <= super::MEMBERS_MAX);
+            k += 1;
+        }
+    };
 }
+
+/// The most members a platoon has: a vehicle's id is its platoon's | its member `<< MEMBER_SHIFT`.
+pub const MEMBERS_MAX: u8 = 12;
+pub const MEMBER_SHIFT: u16 = 12;
+/// A dead platoon's wreck is listed as this member (no vehicle's: a missile at member 0 of a platoon that
+/// dies on its way flies on lost, as at any other).
+pub const WRECK_MEMBER: u8 = 15;
+const _: () = assert!(COUNT <= 1 << MEMBER_SHIFT && MEMBERS_MAX < WRECK_MEMBER && vehicle(COUNT - 1, WRECK_MEMBER) != NOBODY);
+
+/// A vehicle's id: member `m` of platoon `id`.
+#[inline(always)]
+pub const fn vehicle(id: u16, m: u8) -> u16 {
+    id | (m as u16) << MEMBER_SHIFT
+}
+
+/// A vehicle's platoon, and its member.
+#[inline(always)]
+pub const fn platoon(vid: u16) -> u16 {
+    vid & ((1 << MEMBER_SHIFT) - 1)
+}
+
+#[inline(always)]
+pub const fn member(vid: u16) -> u8 {
+    (vid >> MEMBER_SHIFT) as u8
+}
+
+/// The members `lost` bits mark.
+#[inline(always)]
+pub fn fallen(mut lost: u16) -> u8 {
+    let mut n = 0;
+    while lost != 0 {
+        lost &= lost - 1;
+        n += 1;
+    }
+    n
+}
+
+/// A platoon's members standing: its kind's, less its fallen.
+#[inline(always)]
+pub fn standing(kind: usize, lost: u16) -> u8 {
+    stats::members(kind).saturating_sub(fallen(lost))
+}
+
+/// A member to fall (of `members`, `lost` fallen): the first standing from one the dice pick.
+#[inline(always)]
+pub fn pick(members: u8, lost: u16, dice: u8) -> u8 {
+    let mut m = dice % members;
+    while lost & (1 << m) != 0 {
+        m = if m + 1 >= members { 0 } else { m + 1 };
+    }
+    m
+}
+
+/// Damage `dmg` to a platoon of `kind` whose wounded member has `hp` and `lost` fallen: it spills over
+/// its members, each falling at 0 (`fall`, or the dice's pick: `pick`). Returns the hit points and fallen
+/// after it (`lost` 0 and `hp` 0: all of it fell), and the first member to fall (`NONE_FELL` none).
+#[inline(always)]
+pub fn spill(kind: usize, mut hp: u8, mut lost: u16, mut dmg: u8, fall: u8, mut dice: u8) -> (u8, u16, u8) {
+    let members = stats::members(kind);
+    let mut left = standing(kind, lost);
+    let mut first = NONE_FELL;
+    let mut m = fall;
+    while left > 0 && dmg >= hp {
+        dmg -= hp;
+        if m >= members || lost & (1 << m) != 0 {
+            dice = roll(dice);
+            m = pick(members, lost, dice);
+        }
+        if first == NONE_FELL {
+            first = m;
+        }
+        lost |= 1 << m;
+        m = NONE_FELL;
+        left -= 1;
+        hp = stats::HP[kind];
+    }
+    if left == 0 { (0, 0, first) } else { (hp - dmg, lost, first) }
+}
+pub const NONE_FELL: u8 = 0xFF;
 
 /// Where a unit is now (1/16 texel) and its heading (1/65536 of a turn): moved on from its last step,
 /// turning from `YAW` toward `COURSE` at its kind's rate round its turning circle, then on along the
@@ -391,7 +498,7 @@ fn reu_put16<H: Hw + ?Sized>(hw: &mut H, addr: u32, w: u16) {
 
 /// An 8-bit xorshift.
 #[inline(always)]
-fn roll(s: u8) -> u8 {
+pub(crate) fn roll(s: u8) -> u8 {
     let mut x = if s == 0 { 0xA5 } else { s };
     x ^= x << 3;
     x ^= x >> 5;
@@ -502,8 +609,8 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
     }
     let kind = hw.peek(r + rec::KIND) % crate::actors::kind::COUNT;
     let k = kind as usize;
-    // What its last decisions brought: damage dealt minus taken.
-    let reward = (hw.peek(r + rec::DEALT) as i16 - hw.peek(r + rec::TAKEN) as i16).clamp(-15, 15) as i8;
+    // What its last decisions brought: damage dealt minus taken (a platoon's, as a unit's).
+    let reward = ((hw.peek(r + rec::DEALT) as i16 - hw.peek(r + rec::TAKEN) as i16) >> stats::reward_shift(k)).clamp(-15, 15) as i8;
     hw.poke(r + rec::DEALT, 0);
     hw.poke(r + rec::TAKEN, 0);
     let t = r + rec::TRAIL;
@@ -523,7 +630,10 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
     }
     let mut seed = hw.peek(r + rec::SEED);
     let mut f = [0u8; unit::FEATURES];
-    f[unit::WOUNDED] = ((hw.peek(r + rec::HP) as u16) * 2 < stats::HP[k] as u16) as u8;
+    // Wounded: under half its platoon's hit points (its standing members', the wounded one's as it is).
+    let (hp, full) = (stats::HP[k] as u16, stats::members(k) as u16);
+    let pool = (standing(k, rd(hw, r + rec::LOST)) as u16).saturating_sub(1) * hp + hw.peek(r + rec::HP) as u16;
+    f[unit::WOUNDED] = (pool * 2 < full * hp) as u8;
     f[unit::FOES] = (foes > 0) as u8;
     f[unit::OUTNUMBERED] = (foes > friends) as u8;
     f[unit::READY] = (hw.peek(r + rec::COOL) == 0) as u8;
@@ -959,6 +1069,8 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i
     // human aim (the odds halved, and halved again when the player is fast).
     let (u, v) = ((rd(hw, r + rec::U) >> 4) as i16, (rd(hw, r + rec::V) >> 4) as i16);
     let range = (u - pu).unsigned_abs() + (v - pv).unsigned_abs();
+    // Its members standing: each fires.
+    let n = standing(kind, rd(hw, r + rec::LOST));
     if cool == 0 && fighting && side == crate::actors::ENEMY && flags & NEAR_FLAG != 0 && stats::TARGETS[kind] & 2 != 0 && range < PLAYER_RANGE {
         let seed = roll(hw.peek(r + rec::SEED));
         hw.poke(r + rec::SEED, seed);
@@ -966,15 +1078,19 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i
         let odds = stats::HIT[kind] >> (1 + fast as u8);
         hw.poke(r + rec::COOL, stats::RELOAD[kind]);
         // Its muzzle flash: who is shooting.
-        muzzle(hw, r, now);
-        if seed < odds {
+        muzzle(hw, r, seed, now, true);
+        // Its members' shots, the hits rounded by the dice (at most `PLAYER_HITS`: a platoon's fire is
+        // spread over the sky).
+        let hits = hits(n, odds, seed).min(PLAYER_HITS);
+        if hits > 0 {
             use crate::combat::{PLAYER, player};
-            let d = hw.peek(PLAYER + player::DAMAGE).saturating_add(stats::DAMAGE[kind]);
+            let dmg = hits * stats::DAMAGE[kind];
+            let d = hw.peek(PLAYER + player::DAMAGE).saturating_add(dmg);
             hw.poke(PLAYER + player::DAMAGE, d);
-            let t = hw.peek(PLAYER + player::TAKEN).wrapping_add(stats::DAMAGE[kind]);
+            let t = hw.peek(PLAYER + player::TAKEN).wrapping_add(dmg);
             hw.poke(PLAYER + player::TAKEN, t);
             hw.poke(PLAYER + player::FLASH, 12);
-            let dealt = hw.peek(r + rec::DEALT).saturating_add(stats::DAMAGE[kind]);
+            let dealt = hw.peek(r + rec::DEALT).saturating_add(dmg);
             hw.poke(r + rec::DEALT, dealt);
         }
         return;
@@ -984,11 +1100,24 @@ fn fight_unit<H: Hw + ?Sized>(hw: &mut H, first: u16, slot: u16, now: u16, pu: i
     } else if present && fighting && foe < COUNT {
         let seed = roll(hw.peek(r + rec::SEED));
         hw.poke(r + rec::SEED, seed);
-        if fight(hw, first, id, kind, foe, seed, now) {
+        if fight(hw, first, id, kind, n, foe, seed, now, range < FIRE_RANGE) {
             hw.poke(r + rec::COOL, stats::RELOAD[kind]);
         }
     }
 }
+
+/// The hits of `n` shots each with `odds` in 256, the expected number rounded by the `dice` (up with its
+/// fraction's chance): one shot hits with the odds.
+#[inline(always)]
+pub(crate) fn hits(n: u8, odds: u8, dice: u8) -> u8 {
+    ((n as u16 * odds as u16 + dice as u16) >> 8) as u8
+}
+
+/// The most hits a platoon's fire scores on the player at once.
+pub const PLAYER_HITS: u8 = 2;
+/// Fights within this many texels of the player (|du| + |dv|) are seen: their flashes and hits, far off
+/// (the battle on the horizon), as well as the near units'.
+pub const FIRE_RANGE: u16 = 400;
 
 /// A unit's sector from its position.
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world"))]
@@ -1002,11 +1131,14 @@ fn sector_of<H: Hw + ?Sized>(hw: &mut H, r: u16) -> u8 {
 pub const SHOTS: u16 = crate::layout::STAGE;
 const _: () = assert!(1 + 3 * PAGE <= crate::layout::ROW_STRIDE);
 
-/// Unit `id` (of `kind`) fires at `foe` if it can hit its kind: a hit with the kind's chance, for its
-/// damage (listed, to be applied after the page is written back). Whether it fired.
+/// Platoon `id` (of `kind`, `n` members standing) fires at `foe` if it can hit its kind: each member with
+/// the kind's chance, the hits rounded by the dice, each for its damage (listed, to be applied after the
+/// page is written back). Seen (near the player, or `far`: within `FIRE_RANGE`): its flash and the hit.
+/// Whether it fired.
+#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16, dice: u8, now: u16) -> bool {
+fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, n: u8, foe: u16, dice: u8, now: u16, far: bool) -> bool {
     let base = UNITS + foe as u32 * RECORD as u32;
     // The foe's kind, flags and where it is, in one.
     let mut f = [0u8; rec::H as usize + 1];
@@ -1017,19 +1149,21 @@ fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16,
     }
     let me = at(id.wrapping_sub(first));
     wr(hw, me + rec::TARGET, foe);
-    // Near the player, the fire is seen: the shot, and the hit.
-    let seen = (hw.peek(me + rec::FLAGS) | foe_flags) & NEAR_FLAG != 0;
-    if seen {
-        muzzle(hw, me, now);
+    // Near the player, the fire is seen: the shot, and the hit. Far off, only in a free effect's slot.
+    let near = (hw.peek(me + rec::FLAGS) | foe_flags) & NEAR_FLAG != 0;
+    if near || far {
+        muzzle(hw, me, dice, now, near);
     }
-    if dice >= stats::HIT[kind] {
+    let hits = hits(n, stats::HIT[kind], dice);
+    if hits == 0 {
         return true;
     }
-    if seen {
+    if near || far {
         let p = |k: u16| u16::from_le_bytes([f[k as usize], f[k as usize + 1]]);
-        crate::combat::spawn(hw, crate::effects::effect::IMPACT, p(rec::U), p(rec::V), (f[rec::H as usize] as u16 + 1) << 4, now);
+        let (u, v) = (p(rec::U).wrapping_add(jitter(dice ^ 0x5A)), p(rec::V).wrapping_add(jitter(dice.rotate_left(3))));
+        effect(hw, crate::effects::effect::IMPACT, u, v, (f[rec::H as usize] as u16 + 1) << 4, now, near);
     }
-    let dmg = stats::DAMAGE[kind];
+    let dmg = hits * stats::DAMAGE[kind];
     let dealt = hw.peek(me + rec::DEALT).saturating_add(dmg);
     hw.poke(me + rec::DEALT, dealt);
     let n = hw.peek(SHOTS);
@@ -1044,7 +1178,7 @@ fn fight<H: Hw + ?Sized>(hw: &mut H, first: u16, id: u16, kind: usize, foe: u16,
 /// bookkeeping.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn apply_shots<H: Hw + ?Sized>(hw: &mut H, now: u16) {
+pub(crate) fn apply_shots<H: Hw + ?Sized>(hw: &mut H, now: u16) {
     let n = hw.peek(SHOTS).min(PAGE as u8);
     for k in 0..n as u16 {
         let foe = rd(hw, SHOTS + 1 + 3 * k);
@@ -1057,18 +1191,31 @@ fn apply_shots<H: Hw + ?Sized>(hw: &mut H, now: u16) {
         if flags & ALIVE == 0 {
             continue;
         }
-        let hp = hw.peek(b + rec::HP).saturating_sub(dmg);
+        // Over its members (the dice's pick falls first).
+        let kind = hw.peek(b + rec::KIND) as usize % crate::actors::kind::COUNT as usize;
+        let seed = roll(hw.peek(b + rec::SEED));
+        hw.poke(b + rec::SEED, seed);
+        let (hp, lost, fell) = spill(kind, hw.peek(b + rec::HP), rd(hw, b + rec::LOST), dmg, NONE_FELL, seed);
         hw.poke(b + rec::HP, hp);
+        wr(hw, b + rec::LOST, lost);
         let taken = hw.peek(b + rec::TAKEN).saturating_add(dmg);
         hw.poke(b + rec::TAKEN, taken);
+        if fell != NONE_FELL && flags & NEAR_FLAG != 0 {
+            // One killed in sight: it blows up where it was drawn in its formation (where the platoon is
+            // now, as `squad::expand` places it, while still alive), then burns.
+            let mut head = [0u8; CARRIER_RECORD];
+            for (i, x) in head.iter_mut().enumerate() {
+                *x = hw.peek(b + i as u16);
+            }
+            // (`live` in the deck's overlay: in through the war's phases.)
+            let (pu, pv, yaw) = live(&head, now);
+            let (du, dv) = crate::squad::offset(kind, head[rec::ACTION as usize], yaw, fell);
+            let (u, v, h) = (pu.wrapping_add(du as u16), pv.wrapping_add(dv as u16), (head[rec::H as usize] as u16) << 4);
+            crate::combat::spawn(hw, crate::effects::effect::EXPLOSION, u, v, h, now);
+            crate::combat::spawn(hw, crate::effects::effect::WRECK_FIRE, u, v, h, now.wrapping_add(crate::combat::FIRE_AFTER));
+        }
         if hp == 0 {
             hw.poke(b + rec::FLAGS, flags & !(ALIVE | NEAR_FLAG));
-            if flags & NEAR_FLAG != 0 {
-                // Killed in sight: it blows up, then burns.
-                let (u, v, h) = (rd(hw, b + rec::U), rd(hw, b + rec::V), (hw.peek(b + rec::H) as u16) << 4);
-                crate::combat::spawn(hw, crate::effects::effect::EXPLOSION, u, v, h, now);
-                crate::combat::spawn(hw, crate::effects::effect::WRECK_FIRE, u, v, h, now.wrapping_add(crate::combat::FIRE_AFTER));
-            }
         }
         let sector = hw.peek(b + rec::SECTOR);
         hw::stash(hw, b, base, RECORD);
@@ -1079,12 +1226,26 @@ fn apply_shots<H: Hw + ?Sized>(hw: &mut H, now: u16) {
     }
 }
 
-/// A muzzle flash at the unit whose page record is at `r` (a little above it).
+/// A muzzle flash at the platoon whose page record is at `r` (a little above it, among its members by
+/// the `dice`): `near`, in the oldest effect's slot if none is free; else only in a free one.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world2"))]
-fn muzzle<H: Hw + ?Sized>(hw: &mut H, r: u16, now: u16) {
-    let (u, v, h) = (rd(hw, r + rec::U), rd(hw, r + rec::V), (hw.peek(r + rec::H) as u16 + 1) << 4);
-    crate::combat::spawn(hw, crate::effects::effect::MUZZLE, u, v, h, now);
+fn muzzle<H: Hw + ?Sized>(hw: &mut H, r: u16, dice: u8, now: u16, near: bool) {
+    let (u, v, h) = (rd(hw, r + rec::U).wrapping_add(jitter(dice)), rd(hw, r + rec::V).wrapping_add(jitter(dice.rotate_left(4))), (hw.peek(r + rec::H) as u16 + 1) << 4);
+    effect(hw, crate::effects::effect::MUZZLE, u, v, h, now, near);
+}
+
+/// An effect from the war: `near`, as the player's; far off, marked [`crate::combat::FAR`] (in a free
+/// slot only, evicted and cut first: the battle on the horizon never takes one from the fight at hand).
+#[inline(always)]
+pub(crate) fn effect<H: Hw + ?Sized>(hw: &mut H, fx: u8, u: u16, v: u16, h: u16, now: u16, near: bool) {
+    crate::combat::spawn(hw, if near { fx } else { fx | crate::combat::FAR }, u, v, h, now);
+}
+
+/// An offset among a platoon's members from the dice (1/16 texel, -8 to +8 texels).
+#[inline(always)]
+fn jitter(d: u8) -> u16 {
+    (d as i8 as i16) as u16
 }
 
 /// Keep unit `id` in the near list or out of it; whether it is listed now (`NEAR_FLAG` follows that,
