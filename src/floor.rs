@@ -118,6 +118,16 @@ pub const ERR: i32 = 2;
 const FX5: u8 = 5;
 const _: () = assert!(FX == 16 * FX5 as i32 && HAZE_TEXELS == 64 * FX5 as i32 && FY < 256);
 
+/// `((c · h) >> l) as i32` (the i64 product's), for `l <= 16`, in two 32-bit products of 16-bit operands
+/// (an i64 product is libcrt's `__muldi3`, 234 resident bytes on the C64; these stay `__mulsi3` libcalls,
+/// which `asm/fixed.S` gives a 16 × 16 fast path). With `c = hi · 2^16 + lo`, `hi · h · 2^16` is a multiple
+/// of `2^l`, so the shift splits exactly; the wrapping sums agree with the i64 result modulo 2^32.
+#[inline(always)]
+fn scale_h(c: i32, h: u16, l: u32) -> i32 {
+    let (hi, lo) = (c >> 16, (c & 0xFFFF) as u32);
+    (hi * h as i32).wrapping_shl(16 - l).wrapping_add(((lo * h as u32) >> l) as i32)
+}
+
 /// `n / d`, truncated. On the C64 the i32 divide is still the `__divsi3` libcall (so `Rays::new` keeps
 /// its static frame: a call to an asm extern would put it on the soft stack), which `asm/fixed.S`
 /// provides with a fast path for divisors that fit a byte.
@@ -141,7 +151,7 @@ impl Rays {
         let mut ay = up.map(|c| div8(-(c * 256), FY as u8));
         let mut a0: [i32; 3] = core::array::from_fn(|k| fwd[k] * 256 + div8(right[k] * (-78 * 256 / 16), FX5) + div8(up[k] * (CY_HALF * 128), FY as u8));
         let l = 16 - cam.h.leading_zeros();
-        let scale = |c: &mut i32| *c = ((*c as i64 * cam.h as i64) >> l) as i32;
+        let scale = |c: &mut i32| *c = scale_h(*c, cam.h, l);
         for v in [&mut a0, &mut ay, &mut bb] {
             scale(&mut v[0]);
             scale(&mut v[2]);
@@ -499,5 +509,33 @@ fn rays_divisors_reduced_exactly() {
     }
     for h in 0..=u16::MAX {
         assert_eq!(div8((h as i32) << 8, FX5), ((h as i32) << 14) / HAZE_TEXELS, "w_haze {h}");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn scale_h_is_the_i64_shifted_product() {
+    let mut seed = 0x2545_F491u32;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let reference = |c: i32, h: u16, l: u32| ((c as i64 * h as i64) >> l) as i32;
+    let edges = [0i32, 1, -1, 0xFFFF, 0x1_0000, -0x1_0000, -0x1_0001, 0x7F_FFFF, -0x80_0000, 10_400_000, -10_400_000, i32::MAX, i32::MIN];
+    // Every altitude (with its own shift, as `Rays::new` takes it) for the edges and some random c.
+    let mut cs: Vec<i32> = edges.to_vec();
+    cs.extend((0..40).map(|_| rnd() as i32 >> (rnd() % 8)));
+    for &c in &cs {
+        for h in 0..=u16::MAX {
+            let l = 16 - h.leading_zeros();
+            assert_eq!(scale_h(c, h, l), reference(c, h, l), "c {c} h {h}");
+        }
+    }
+    // Random c, h and every shift.
+    for _ in 0..200_000 {
+        let (c, h, l) = (rnd() as i32 >> (rnd() % 12), rnd() as u16, rnd() % 17);
+        assert_eq!(scale_h(c, h, l), reference(c, h, l), "c {c} h {h} l {l}");
     }
 }

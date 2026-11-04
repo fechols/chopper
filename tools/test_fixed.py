@@ -58,6 +58,39 @@ def main():
         div_clamp(mem, syms['m7_div_clamp'], rng, args.cases)
     if '__wrap___divsi3' in syms:
         divsi3(mem, syms['__wrap___divsi3'], rng, args.cases)
+    if '__wrap___mulsi3' in syms:
+        mulsi3(mem, syms['__wrap___mulsi3'], rng, args.cases)
+
+
+def call32(mem, entry, a, b):
+    """Run a libcall (a, b: i32) -> i32 to its return; the result and the cycles it took."""
+    u, v = a & 0xFFFFFFFF, b & 0xFFFFFFFF
+    cpu = Cpu(mem, [(0x02, 0x40), (0x80, 0x9C), (0x100, 0x200), (0xCB00, 0xD000)])
+    mem[0x02], mem[0x03] = 0x00, 0xD0  # the soft stack (libcrt's routines may use it)
+    cpu.a, cpu.x = u & 255, u >> 8 & 255
+    mem[0x04:0x0A] = bytes((u >> 16 & 255, u >> 24, v & 255, v >> 8 & 255, v >> 16 & 255, v >> 24))
+    cpu.pc = entry
+    cpu.push((RETURN - 1) >> 8)
+    cpu.push((RETURN - 1) & 0xFF)
+    while cpu.pc != RETURN:
+        cpu.step()
+    return cpu.a | cpu.x << 8 | mem[RC2] << 16 | mem[RC3] << 24, cpu.cycles
+
+
+def mulsi3(mem, entry, rng, n_cases):
+    """__wrap___mulsi3 (asm/fixed.S) against the low 32 bits of a * b (one to three 16 x 16 products)."""
+    edge = (0, 1, -1, 2, 255, 256, 0xFFFF, -0xFFFF, 0x10000, -0x10000, -0x10001, 0x7FFFFFFF, -0x80000000, 12345, -32768)
+    cases = [(a, b) for a in edge for b in edge]
+    cases += [(rng.randrange(-65535, 65536), rng.randrange(-65535, 65536)) for _ in range(n_cases)]
+    cases += [(rng.randrange(-2 ** 31, 2 ** 31), rng.randrange(-2 ** 31, 2 ** 31) >> rng.randrange(32)) for _ in range(n_cases // 4)]
+    fast, total = 0, 0
+    for a, b in cases:
+        got, cycles = call32(mem, entry, a, b)
+        if got != (a * b) & 0xFFFFFFFF:
+            raise SystemExit(f'__mulsi3: {a} * {b}: got {got:#010x}, want {(a * b) & 0xFFFFFFFF:#010x}')
+        if 0 <= a < 65536 and 0 <= b < 65536:
+            fast, total = fast + 1, total + cycles
+    print(f'__mulsi3: {len(cases)} products exact; {total / max(fast, 1):.0f} cycles each for unsigned 16-bit operands')
 
 
 def divsi3(mem, entry, rng, n_cases):

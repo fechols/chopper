@@ -353,6 +353,81 @@ sd_neg:
 .size __wrap___divsi3, .-__wrap___divsi3
 
 
+; __wrap___mulsi3(a: i32, b: i32) -> i32: the i32 multiply libcall (`--wrap=__mulsi3`, target-c64/build.rs),
+; in place of libcrt's (~1440 cycles, 103 bytes): the low 32 bits of a * b, the same signed or not, are
+; aL * bL + ((aL * bH + aH * bL) mod 2^16) * 2^16 in unsigned 16-bit halves: m7_umul16 for each, the cross
+; products skipped when their high half is 0 (one product for 16-bit operands, ~350 cycles).
+; It needs the quarter-square tables: no i32 multiply may run before `fixed::init_tables` (which builds
+; them by sums for that reason).
+MW_A0 = __rc8           ; aL
+MW_A1 = __rc9
+MW_A2 = __rc10          ; aH
+MW_A3 = __rc11
+MW_C0 = __rc12          ; the cross products' sum, low 16 bits
+MW_C1 = __rc13
+.section .text.__wrap___mulsi3,"ax",@progbits
+.globl __wrap___mulsi3
+.type __wrap___mulsi3,@function
+__wrap___mulsi3:
+    sta MW_A0
+    stx MW_A1
+    lda __rc2
+    sta MW_A2
+    lda __rc3
+    sta MW_A3
+    lda #0
+    sta MW_C0
+    sta MW_C1
+    ; aL * bH
+    lda __rc6
+    ora __rc7
+    beq 1f
+    lda __rc6
+    sta __rc2
+    lda __rc7
+    sta __rc3
+    lda MW_A0
+    ldx MW_A1
+    jsr m7_umul16
+    sta MW_C0
+    stx MW_C1
+    ; + aH * bL
+1:  lda MW_A2
+    ora MW_A3
+    beq 2f
+    lda __rc4
+    sta __rc2
+    lda __rc5
+    sta __rc3
+    lda MW_A2
+    ldx MW_A3
+    jsr m7_umul16
+    clc
+    adc MW_C0
+    sta MW_C0
+    txa
+    adc MW_C1
+    sta MW_C1
+    ; aL * bL, its high half plus the cross sum
+2:  lda __rc4
+    sta __rc2
+    lda __rc5
+    sta __rc3
+    lda MW_A0
+    ldx MW_A1
+    jsr m7_umul16
+    pha
+    clc
+    lda __rc2
+    adc MW_C0
+    sta __rc2
+    lda __rc3
+    adc MW_C1
+    sta __rc3
+    pla
+    rts
+.size __wrap___mulsi3, .-__wrap___mulsi3
+
 ; Point the table pointers' high bytes at the tables (once, at boot; nothing else writes $80-$87).
 .section .text.m7_umul_init,"ax",@progbits
 .globl m7_umul_init

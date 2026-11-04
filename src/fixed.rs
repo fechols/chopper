@@ -109,14 +109,20 @@ pub fn sar(v: i32, s: u8) -> i32 {
 #[cfg(target_arch = "mos")]
 pub fn init_tables() {
     unsafe {
+        // n² by running sums, not products: the i32 multiply libcall is asm/fixed.S's, built on these
+        // very tables (`__wrap___mulsi3`), so nothing here may multiply.
+        let mut sq = 0u32;
         for n in 0..512u16 {
-            let q = ((n as u32 * n as u32) >> 2) as u16;
+            let q = (sq >> 2) as u16;
             core::ptr::write_volatile((SQ_LO + n) as *mut u8, q as u8);
             core::ptr::write_volatile((SQ_HI + n) as *mut u8, (q >> 8) as u8);
-            let d = n.abs_diff(255) as u32;
-            let g = ((d * d) >> 2) as u16;
-            core::ptr::write_volatile((SQ_NEG_LO + n) as *mut u8, g as u8);
-            core::ptr::write_volatile((SQ_NEG_HI + n) as *mut u8, (g >> 8) as u8);
+            sq += 2 * n as u32 + 1;
+        }
+        // ⌊(n − 255)² / 4⌋ is the table's entry at |n − 255| (under 512).
+        for n in 0..512u16 {
+            let d = n.abs_diff(255);
+            core::ptr::write_volatile((SQ_NEG_LO + n) as *mut u8, core::ptr::read_volatile((SQ_LO + d) as *const u8));
+            core::ptr::write_volatile((SQ_NEG_HI + n) as *mut u8, core::ptr::read_volatile((SQ_HI + d) as *const u8));
         }
         for m in MANTISSA..2 * MANTISSA {
             let r = recip_value(m);
