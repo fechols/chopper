@@ -670,9 +670,11 @@ fn the_planner_lifts_off_and_climbs_or_steers() {
     assert_eq!(first(s::BLOCKED | s::BLOCKED_L | s::BLOCKED_R), "climb-over");
     assert_eq!(first(s::WP_L), "turn-l");
     assert_eq!(first(s::HIGH), "descend");
-    // Every state out of the fight has a plan.
-    let fight = s::HUNT | s::LOCKED | s::HURT;
-    assert!((0..1u32 << crate::goap::N).filter(|st| st & fight == 0).all(|st| crate::goap::goal(st) || plan(st).is_some()));
+    // Hurt, home beyond a hill: over it, not round (home is ringed by hills: round them, it circles).
+    assert_eq!(first(s::HURT | s::BLOCKED | s::BLOCKED_FAR), "climb-over");
+    // Every state has a plan, the fight's too: planless, the table flies FORWARD, into whatever is ahead.
+    let planless: Vec<u32> = (0..1u32 << crate::goap::N).filter(|&st| !crate::goap::goal(st) && plan(st).is_none()).collect();
+    assert!(planless.is_empty(), "{} states without a plan, the first {:#07x}", planless.len(), planless[0]);
 }
 
 #[test]
@@ -1153,6 +1155,45 @@ fn the_copilot_climbs_over_what_is_ahead() {
     assert!((-2..3).contains(&alt), "{alt} texels off cruise after it");
     let off = a.yaw as i16;
     assert!(off.abs() < 10 * DEG, "course {}° off north after it", off / DEG);
+}
+
+/// Hands off across the hills: from south of each mountain well inside the map, heading north, the
+/// copilot never flies into the ground, always gets past (no circling back to a point behind it), and is
+/// heading back on its course afterwards (nearly always within 10°), down at cruise height (the hills
+/// north of home go on: well past them, not just past the one it set out at).
+#[test]
+fn hands_off_the_copilot_crosses_the_hills_on_course() {
+    const DEG: f64 = 182.04;
+    let mut reu: &[u8] = package();
+    let mountains = crate::goap::mountains(&crate::world::generate(1983));
+    let (mut runs, mut on_course, mut worst_end, mut highest) = (0u32, 0u32, 0f64, 0f64);
+    for &(mu, mv, mr, mh) in mountains.iter().filter(|m| (300.0..1750.0).contains(&m.0) && (400.0..1600.0).contains(&m.1)) {
+        let mut a = player_at(mu as i32, (mv - mr - 220.0) as i32, 0);
+        a.input = 0;
+        let (mut wide, mut passed) = (0f64, 0u32);
+        while passed < 4000 {
+            a.step(&mut reu);
+            let (u, v, h) = (a.u as f64 / 256.0, a.v as f64 / 256.0, a.h as f64 / 256.0);
+            let d = ((u - mu).powi(2) + (v - mv).powi(2)).sqrt();
+            assert!(d >= mr || h > mh * (1.0 - d / mr), "({mu:.0}, {mv:.0}): into it at tick {}", a.t);
+            if (v - mv).abs() < mr {
+                wide = wide.max((u - mu).abs());
+            }
+            passed += (v > mv + mr + 40.0) as u32;
+            assert!(a.t < crate::agent::LIFT + 100 + 12000, "({mu:.0}, {mv:.0}): never past, at ({u:.0}, {v:.0}), yaw {:.0}°", (a.yaw as i16) as f64 / DEG);
+        }
+        let end = ((a.yaw as i16) as f64 / DEG).abs();
+        let line = (a.u as f64 / 256.0 - mu).abs();
+        let high = a.h as f64 / 256.0;
+        println!("({mu:.0}, {mv:.0}) r {mr:.0} h {mh:.0}: {wide:.0} off its middle, then {line:.0} texels off the line, {end:.0}° off course, {high:.0} up");
+        highest = highest.max(high);
+        runs += 1;
+        on_course += (end < 10.0) as u32;
+        worst_end = worst_end.max(end);
+    }
+    println!("{on_course} of {runs} within 10° of the course after, worst {worst_end:.0}°, highest {highest:.0}");
+    assert!(runs >= 40 && on_course * 10 >= runs * 9 && worst_end < 40.0, "{on_course} of {runs} back on course, worst {worst_end:.0}°");
+    assert!(highest < (crate::agent::CRUISE + 4) as f64, "as high as {highest:.0} after");
 }
 
 /// The moving objects: the demo convoy and gunship seen from close by, drawn among the static scene (the
@@ -1744,7 +1785,7 @@ fn the_sea_lamp_warns_and_the_autopilot_turns_back() {
     let mut a = Agent::new();
     (a.t, a.u, a.v, a.h, a.yaw, a.grounded) = (LIFT + 100, 1900 << 8, 1024 << 8, EYE + ((CRUISE as i32) << 8), 0x4000, 0);
     (a.mode, a.throttle, a.vf) = (MODE_PLAYER, THROTTLE_MAX, 8192);
-    (a.wu, a.wv) = a.at();
+    a.dyaw = (a.yaw >> 8) as u8;
     let lamp_on = |a: &Agent| {
         let mut k = [0u8; gauge::COUNT];
         readings(a, &mut k);
@@ -1862,7 +1903,7 @@ fn landing_on_the_deck_or_in_the_sea() {
     let hover = |u: i32, v: i32| {
         let mut a = Agent::new();
         (a.u, a.v, a.h, a.grounded, a.mode, a.t, a.yaw) = (u, v, EYE + DECK_TOP + (3 << 8), 0, MODE_PLAYER, 6000, d.yaw);
-        (a.wu, a.wv) = a.at();
+        a.dyaw = (a.yaw >> 8) as u8;
         a.input = input::DOWN;
         a
     };
@@ -2045,7 +2086,7 @@ fn wrecks_smoke_then_go() {
     combat::init(&mut m);
     let mut a = Agent::new();
     (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
-    (a.wu, a.wv) = a.at();
+    a.dyaw = (a.yaw >> 8) as u8;
     let at = ws::UNITS as usize + 7 * RECORD as usize;
     let r = &mut m.reu[at..at + RECORD as usize];
     r.fill(0);
@@ -2082,7 +2123,7 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
     // Two enemy tanks ahead (north) of a player 10 texels up at (1024, 1100), hovering, facing north.
     let mut a = Agent::new();
     (a.u, a.v, a.h, a.grounded, a.mode) = (1024 << 8, 1100 << 8, 10 << 8, 0, MODE_PLAYER);
-    (a.wu, a.wv) = a.at();
+    a.dyaw = (a.yaw >> 8) as u8;
     let put = |m: &mut Machine, id: u16, u: u16, v: u16| {
         let at = ws::UNITS as usize + id as usize * RECORD as usize;
         let r = &mut m.reu[at..at + RECORD as usize];
@@ -2379,10 +2420,12 @@ struct Sortie {
 
 /// The autopilot from boot for `seconds` of clock, framed as the C64 frames it (8 ticks a frame, the war
 /// and the gauges taking turns): the agent, the war's page, the fight, the effects, the HUD's seeker.
-/// `hurt` pokes that much damage once, a minute after lift-off.
+/// `hurt` pokes that much damage once, a minute after lift-off. Never inside a mountain (fighting,
+/// hunting or going home hurt, as roaming: `the_flight_waits_for_the_rotor_then_roams_clear_of_the_mountains`).
 fn sortie(m: &mut Machine, seconds: u32, hurt: Option<u8>) -> Sortie {
-    use crate::agent::{HOME, LIFT, combat::HURT};
+    use crate::agent::{HOME, LIFT};
     use crate::combat::{MISSILES, PLAYER, player};
+    let hills = crate::goap::mountains(&crate::world::generate(1983));
     crate::package::setup(m, BUFFERS[0]);
     crate::combat::init(m);
     crate::hud::init(m);
@@ -2393,6 +2436,12 @@ fn sortie(m: &mut Machine, seconds: u32, hurt: Option<u8>) -> Sortie {
         t += 8;
         let reu = m.reu.clone();
         a.fly(&mut &reu[..], t);
+        let (u, v, h) = (a.u as f64 / 256.0, a.v as f64 / 256.0, a.h as f64 / 256.0);
+        for &(mu, mv, r, top) in &hills {
+            // (The cone's peak may sit up to 0.075 r off the centre.)
+            let d = ((u - mu).hypot(v - mv) - 0.08 * r).max(0.0);
+            assert!(d >= r || h > top * (1.0 - d / r), "tick {}: into the mountain at ({mu:.0}, {mv:.0}), {}, combat {}", a.t, crate::agent::action::NAMES[a.action as usize], a.combat);
+        }
         if turn == 0 {
             let (pu, pv) = a.at();
             crate::world_sim::step_page(m, a.t as u16, pu, pv);

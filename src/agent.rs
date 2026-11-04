@@ -207,10 +207,8 @@ pub const MODE_AUTO: u8 = 0;
 pub const MODE_PLAYER: u8 = 1;
 /// The player's stick: full throttle (64 ticks from a hover), the bank of a turn, the flare when slowing.
 pub const THROTTLE_MAX: u8 = 64;
-/// The player's course: the copilot flies to a waypoint this far ahead on it (texels), placed anew
-/// once within `CARROT_NEAR` of it (`feature::DIST`, 8-texel units: 128 texels).
+/// The player's course: the copilot flies to a waypoint this far ahead on it (texels).
 const CARROT: i16 = 256;
-const CARROT_NEAR: u8 = 16;
 const PLAYER_BANK: i16 = 25 * DEG;
 const FLARE: i16 = 768;
 /// Hurt, the autopilot flies no faster than this pitch's speed (half the cruise).
@@ -353,36 +351,32 @@ impl Agent {
     }
 
     /// The player takes over from the autopilot (the fire button, each frame it is held): the copilot
-    /// holds the course it is on now, not the autopilot's waypoint (one here, where it is, is placed
-    /// anew on the course at the next decision).
+    /// holds the heading it is on now (`dyaw`, the course's high byte in the air; riding the deck, it is
+    /// the deck's, and the lift takes the course afresh), not the autopilot's waypoint.
     #[inline(always)]
     pub fn take_over(&mut self) {
         if self.mode != MODE_PLAYER {
             self.mode = MODE_PLAYER;
-            (self.wu, self.wv) = self.at();
-        }
-    }
-
-    /// The player's copilot is the same pilot, flying to a carrot on the course: [`CARROT`] texels
-    /// ahead. `think` places it anew while the stick turns (and when near it, or just taken over), and
-    /// leaves it otherwise, so the pilot comes back onto the course after dodging a mountain. (In the
-    /// deck's overlay, in with the AI's: that one is full.)
-    #[inline(never)]
-    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
-    fn carrot(&mut self, fresh: bool) {
-        // Afresh (turning, lifting off, just taken over): from here, on the course it heads, kept
-        // (`dyaw`: in the air, the course's high byte; riding the deck, it is the deck's). Else on from
-        // the last carrot along the course: it keeps to its line, whatever a dodge did to the heading.
-        let (u, v) = if fresh {
             if self.deck != ON_DECK {
                 self.dyaw = (self.yaw >> 8) as u8;
             }
-            self.at()
-        } else {
-            (self.wu, self.wv)
-        };
-        // (Riding the deck, it means nothing: the copilot only lifts off there, and its first decision in
-        // the air, after a lift, places the carrot afresh.)
+        }
+    }
+
+    /// The player's copilot is the same pilot, flying to a carrot [`CARROT`] texels ahead of it on the
+    /// course, laid at every decision. So it is always ahead: after a dodge the pilot turns back onto the
+    /// course's heading (on a line beside the old one), never round to a point it has passed. Turning
+    /// or lifting off (or taken over, `take_over`), the course is the heading now, kept in `dyaw` (in the
+    /// air, the course's high byte; riding the deck it is the deck's, and the carrot means nothing there:
+    /// the first decision in the air, after the lift, takes the course afresh). (In the deck's overlay,
+    /// in with the AI's: that one is full.)
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.deck"))]
+    fn carrot(&mut self) {
+        if (self.input & (input::LEFT | input::RIGHT) != 0 || self.action == action::LIFT) && self.deck != ON_DECK {
+            self.dyaw = (self.yaw >> 8) as u8;
+        }
+        let (u, v) = self.at();
         let (du, dv) = turn(0, CARROT, (self.dyaw as u16) << 8, true);
         (self.wu, self.wv) = (u + du, v + dv);
     }
@@ -392,7 +386,7 @@ impl Agent {
     /// a dodge the stick overrides becomes a climb (never into a mountain, whatever the stick does).
     #[inline(never)]
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.ai"))]
-    fn copilot(&self, a: u8) -> u8 {
+    fn copilot(&self, a: u8, bearing: u8) -> u8 {
         let i = self.input;
         if self.grounded != 0 {
             // (The pilot's own choice there: a lift once the rotor is up to speed.)
@@ -400,6 +394,9 @@ impl Agent {
         } else if self.throttle == 0 && self.vf < 256 && i & input::DOWN != 0 {
             action::LAND
         } else if i & (input::LEFT | input::RIGHT) != 0 && a.wrapping_sub(action::EVADE_L) < 2 {
+            action::CLIMB
+        } else if a == action::FORWARD && bearing != 128 {
+            // Off the line with high ground on its side (no turn back allowed): up over it, not on away.
             action::CLIMB
         } else {
             a
@@ -525,25 +522,21 @@ impl Agent {
     fn think<R: Reu + ?Sized>(&mut self, reu: &mut R) {
         let mut f = [0u8; feature::BLOCK];
         let player = self.mode == MODE_PLAYER;
+        if player {
+            self.carrot();
+        }
         self.features(reu, &mut f);
         let (mut a, mut learned) = brain::walk(reu, AI_TREES, brain::PILOT, &f);
-        // At the waypoint: the next (unless the fight owns it: the prey, or home). The player's: a carrot
-        // anew on the course while the stick turns, and when near it (or just taken over: it is here).
-        // (Afresh: turning; just taken over, or off the ground: the last decision a lift.)
-        let fresh = self.input & (input::LEFT | input::RIGHT) != 0 || self.action == action::LIFT || f[feature::DIST] == 0;
-        let replan = if player {
-            fresh || f[feature::DIST] < CARROT_NEAR
-        } else {
-            a == action::NEXT_WP && self.combat & (combat::HUNT | combat::HURT) == 0
-        };
-        if replan {
-            if player { self.carrot(fresh) } else { self.next_waypoint(reu) }
+        // At the waypoint: the next (unless the fight owns it: the prey, or home; the player's carrot is
+        // always ahead).
+        if !player && a == action::NEXT_WP && self.combat & (combat::HUNT | combat::HURT) == 0 {
+            self.next_waypoint(reu);
             self.features(reu, &mut f);
             (a, learned) = brain::walk(reu, AI_TREES, brain::PILOT, &f);
         }
         let mut a = if a == action::NEXT_WP { action::FORWARD } else { a };
         if player {
-            a = self.copilot(a);
+            a = self.copilot(a, f[feature::BEARING]);
         }
         self.action = a;
         if learned != 0 {

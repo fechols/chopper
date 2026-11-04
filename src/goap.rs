@@ -109,14 +109,16 @@ pub const OPS: [Op; 21] = [
     // level, out of the circle; then round onto it.
     Op { name: "extend", leaf: action::FORWARD, need: s::INSIDE, not: AIR | s::LOW | s::BLOCKED, set: 0, clear: s::INSIDE | s::CLOSE | s::ARRIVED, cost: 2 },
     // Home: slow over it (only what is dead ahead matters), then straight down onto it (a hill off to
-    // a side, seen by the side probes, does not).
+    // a side, seen by the side probes, does not; nor being high: over the hills round home, it comes in
+    // high).
     Op { name: "slow", leaf: action::SLOW, need: s::HURT | s::CLOSE, not: AIR | s::ARRIVED | s::BLOCKED | ASIDE, set: s::ARRIVED, clear: 0, cost: 1 },
-    Op { name: "land", leaf: action::LAND, need: s::HURT | s::ARRIVED, not: AIR | s::HIGH, set: s::GROUNDED, clear: s::LOW, cost: 1 },
+    Op { name: "land", leaf: action::LAND, need: s::HURT | s::ARRIVED, not: AIR, set: s::GROUNDED, clear: s::LOW, cost: 1 },
     // Hurt and landed away from home: up again.
     Op { name: "relift", leaf: action::LIFT, need: s::GROUNDED | s::ROTOR | s::HURT, not: s::ARRIVED, set: s::LOW, clear: s::GROUNDED, cost: 1 },
-    // Steer round: away from the obstacle, past it, back toward the waypoint.
-    Op { name: "evade-l", leaf: action::EVADE_L, need: 0, not: AIR | s::LOW | s::BLOCKED_L, set: s::WP_R | s::BLOCKED_R, clear: s::BLOCKED | s::BLOCKED_FAR | s::WP_L, cost: 2 },
-    Op { name: "evade-r", leaf: action::EVADE_R, need: 0, not: AIR | s::LOW | s::BLOCKED_R, set: s::WP_L | s::BLOCKED_L, clear: s::BLOCKED | s::BLOCKED_FAR | s::WP_R, cost: 2 },
+    // Steer round: away from the obstacle, past it, back toward the waypoint. (Not hurt: home is ringed
+    // by hills, and steering round one only meets the next; hurt, it climbs over them.)
+    Op { name: "evade-l", leaf: action::EVADE_L, need: 0, not: AIR | s::LOW | s::HURT | s::BLOCKED_L, set: s::WP_R | s::BLOCKED_R, clear: s::BLOCKED | s::BLOCKED_FAR | s::WP_L, cost: 2 },
+    Op { name: "evade-r", leaf: action::EVADE_R, need: 0, not: AIR | s::LOW | s::HURT | s::BLOCKED_R, set: s::WP_L | s::BLOCKED_L, clear: s::BLOCKED | s::BLOCKED_FAR | s::WP_R, cost: 2 },
     Op { name: "pass", leaf: action::FORWARD, need: 0, not: AIR | s::LOW | s::BLOCKED, set: 0, clear: s::BLOCKED_L | s::BLOCKED_R | s::BLOCKED_FAR, cost: 2 },
     // Or climb over it, and back down once clear.
     Op { name: "climb-over", leaf: action::CLIMB, need: 0, not: AIR | s::LOW, set: s::HIGH | s::OVER, clear: ALL_BLOCKS, cost: 6 },
@@ -128,8 +130,9 @@ pub const OPS: [Op; 21] = [
     Op { name: "fly-to-high", leaf: action::FORWARD, need: s::HIGH, not: AIR | ALL_BLOCKS | ASIDE, set: s::ARRIVED, clear: 0, cost: 4 },
     // Should the waypoint be behind a blocked side with the way ahead clear: hold on until it is not.
     Op { name: "hold", leaf: action::FORWARD, need: 0, not: AIR | s::LOW | s::BLOCKED, set: 0, clear: s::BLOCKED_L | s::BLOCKED_R, cost: 3 },
-    // Over a hold-up below (no landing on it): on past it.
-    Op { name: "overfly", leaf: action::FORWARD, need: s::OVER, not: AIR | s::HIGH, set: 0, clear: s::OVER | s::ARRIVED, cost: 4 },
+    // Over a hold-up below (no landing on it): on past it, high or not (so a climb over, which is both,
+    // has a way on to a landing).
+    Op { name: "overfly", leaf: action::FORWARD, need: s::OVER, not: AIR, set: 0, clear: s::OVER | s::ARRIVED, cost: 4 },
 ];
 
 /// The close calls the pilot learns in flight: operator pairs (by name) whose plans cost within
