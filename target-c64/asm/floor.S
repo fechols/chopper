@@ -49,7 +49,8 @@ FETCH   = $91
 RECORD  = 12
 COLS    = 40
 
-; Mid and bank written when they change (X = how many did).
+; Mid written when it changes (X = 1 if it did). The bank is written by `lookup`, when it changes: a new
+; bank means a new tile, so a new u or v texel too (steps here are under a texel).
 .macro SHADOWS
     ldx #0
     lda VH
@@ -58,18 +59,11 @@ COLS    = 40
     sta $df05
     sta SHMID
     inx
-4:  lda BK
-    cmp SHBANK
-    beq 5f
-    sta $df06
-    sta SHBANK
-    inx
-5:
+4:
 .endm
 
-; u += du, v += dv; a new tile coordinate means a new bank.
+; u += du, v += dv; a new tile coordinate means a new bank (looked up again for each axis that moved).
 .macro STEP
-    ldx #0
     clc
     lda UL
     adc DUL
@@ -82,7 +76,7 @@ COLS    = 40
     cmp UHH
     beq 6f
     sta UHH
-    inx
+    jsr lookup
 6:  clc
     lda VL
     adc DVL
@@ -95,11 +89,8 @@ COLS    = 40
     cmp VHH
     beq 7f
     sta VHH
-    inx
-7:  txa
-    beq 8f
     jsr lookup
-8:
+7:
 .endm
 
 .section .text.floor_draw,"ax",@progbits
@@ -226,20 +217,58 @@ ground:
     adc #0
     beq magnified
 plain:
-    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned), auto-incremented by each fetch.
+    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned), auto-incremented by each fetch. Each
+    ; step writes the next byte's mid (always) and lo (last); `lookup` writes the bank.
     lda XB
     sta $df02
-pbyte:
-    SHADOWS
+    lda VH
+    sta $df05
     lda UH
     sta $df04
+pbyte:
     lda #FETCH
     sta $df01
-    STEP
     dec REM
-    beq 9f
+    beq pdone
+    clc
+    lda UL
+    adc DUL
+    sta UL
+    lda UH
+    adc DUH
+    sta UH
+    lda UHH
+    adc DUS
+    cmp UHH
+    bne ptile_u
+pv: clc
+    lda VL
+    adc DVL
+    sta VL
+    lda VH
+    adc DVH
+    sta VH
+    sta $df05
+    lda VHH
+    adc DVS
+    cmp VHH
+    bne ptile_v
+plo:
+    lda UH
+    sta $df04
     jmp pbyte
-9:  clc
+ptile_u:
+    sta UHH
+    jsr lookup
+    jmp pv
+ptile_v:
+    sta VHH
+    jsr lookup
+    jmp plo
+pdone:
+    lda VH
+    sta SHMID
+    clc
     lda XB
     adc LEN
     sta XB
@@ -313,7 +342,11 @@ lookup:
     tay
     lda (TP),y
     sta BK
-    rts
+    cmp SHBANK
+    beq 1f
+    sta $df06
+    sta SHBANK
+1:  rts
 .size floor_line, .-floor_line
 
 ; floor_copy(A = band line 0..7, X = doubled): LINEBUF into STAGE column by column (+8 a column), and
