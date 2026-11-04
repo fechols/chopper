@@ -56,6 +56,41 @@ def main():
             run(mem, syms[name], name, cases, want)
     if 'm7_div_clamp' in syms:
         div_clamp(mem, syms['m7_div_clamp'], rng, args.cases)
+    if '__wrap___divsi3' in syms:
+        divsi3(mem, syms['__wrap___divsi3'], rng, args.cases)
+
+
+def divsi3(mem, entry, rng, n_cases):
+    """__wrap___divsi3 (asm/fixed.S, the i32 divide libcall) against n / d truncated toward zero: the byte-divisor loop and
+    the builtin __udivsi3 path."""
+    def want(n, d):
+        q = abs(n) // abs(d)
+        return -q if (n < 0) != (d < 0) else q
+    ds = (1, 2, 3, 5, 7, 128, 133, 254, 255, 256, 257, 320, 65535, 65536, 2 ** 31 - 1, -1, -5, -133, -255, -256, -2 ** 31)
+    ns = (0, 1, -1, 4, -4, 255, 256, 2 ** 31 - 1, -2 ** 31, -2 ** 31 + 1, 16384 * 17280, -16384 * 17280)
+    cases = [(n, d) for d in ds for n in ns + (d - 1, d, d + 1, -d) if not (n == -2 ** 31 and d == -1)]
+    cases += [(rng.randrange(-2 ** 31, 2 ** 31), rng.randrange(1, 256) * rng.choice((1, -1))) for _ in range(n_cases)]
+    cases += [(rng.randrange(-2 ** 31, 2 ** 31), rng.randrange(-2 ** 31, 2 ** 31) >> rng.randrange(32) or 3) for _ in range(n_cases // 4)]
+    cases += [(rng.randrange(-16384, 16385) * rng.choice((64, -1248, 256, -256, 17280)), rng.choice((5, 133))) for _ in range(n_cases)]
+    total = 0
+    for n, d in cases:
+        n = max(-2 ** 31, min(2 ** 31 - 1, n))
+        u, v = n & 0xFFFFFFFF, d & 0xFFFFFFFF
+        cpu = Cpu(mem, [(0x02, 0x40), (0x80, 0x9C), (0x100, 0x200), (0xCB00, 0xD000)])
+        mem[0x02], mem[0x03] = 0x00, 0xD0  # the soft stack (the builtin may use it)
+        cpu.a, cpu.x = u & 255, u >> 8 & 255
+        mem[0x04:0x0A] = bytes((u >> 16 & 255, u >> 24, v & 255, v >> 8 & 255, v >> 16 & 255, v >> 24))
+        cpu.pc = entry
+        cpu.push((RETURN - 1) >> 8)
+        cpu.push((RETURN - 1) & 0xFF)
+        while cpu.pc != RETURN:
+            cpu.step()
+        got = cpu.a | cpu.x << 8 | mem[RC2] << 16 | mem[RC3] << 24
+        got -= 1 << 32 if got & 0x80000000 else 0
+        if got != want(n, d):
+            raise SystemExit(f'__divsi3: {n} / {d}: got {got}, want {want(n, d)}')
+        total += cpu.cycles
+    print(f'__divsi3: {len(cases)} quotients exact; {total / len(cases):.0f} cycles each')
 
 
 def div_clamp(mem, entry, rng, n_cases):

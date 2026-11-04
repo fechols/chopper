@@ -247,6 +247,112 @@ dq_clamp:
     rts
 .size m7_div_clamp, .-m7_div_clamp
 
+; __wrap___divsi3(n: i32, d: i32) -> i32: the i32 divide libcall (`--wrap=__divsi3`, target-c64/build.rs;
+; libcrt's takes ~3400 cycles here): n / d
+; truncated toward zero (Rust has ruled out d = 0 and MIN / -1). For 0 < |d| < 256 (`floor::Rays::new`'s
+; divisors) the magnitude's 32 bits are shifted through a 9-bit remainder, each quotient bit taking the
+; place of the dividend bit shifted out; wider divisors go to libcrt's `__udivsi3`.
+SD_N0 = __rc8
+SD_N1 = __rc9
+SD_N2 = __rc10
+SD_N3 = __rc11
+SD_SG = __rc12          ; bit 7: the quotient is negative
+.section .text.__wrap___divsi3,"ax",@progbits
+.globl __wrap___divsi3
+.type __wrap___divsi3,@function
+__wrap___divsi3:
+    sta SD_N0
+    stx SD_N1
+    lda __rc2
+    sta SD_N2
+    lda __rc3
+    sta SD_N3
+    eor __rc7
+    sta SD_SG
+    lda SD_N3
+    bpl 1f
+    jsr sd_neg
+1:  lda __rc7
+    bpl 2f
+    sec
+    lda #0
+    sbc __rc4
+    sta __rc4
+    lda #0
+    sbc __rc5
+    sta __rc5
+    lda #0
+    sbc __rc6
+    sta __rc6
+    lda #0
+    sbc __rc7
+    sta __rc7
+2:  lda __rc5
+    ora __rc6
+    ora __rc7
+    bne sd_wide
+    ldx #32
+    lda #0
+3:  asl SD_N0
+    rol SD_N1
+    rol SD_N2
+    rol SD_N3
+    rol a
+    bcs 4f
+    cmp __rc4
+    bcc 5f
+4:  sbc __rc4
+    inc SD_N0
+5:  dex
+    bne 3b
+sd_done:
+    bit SD_SG
+    bpl 6f
+    jsr sd_neg
+6:  lda SD_N2
+    sta __rc2
+    lda SD_N3
+    sta __rc3
+    lda SD_N0
+    ldx SD_N1
+    rts
+sd_wide:
+    lda SD_SG
+    pha
+    lda SD_N2
+    sta __rc2
+    lda SD_N3
+    sta __rc3
+    lda SD_N0
+    ldx SD_N1
+    jsr __udivsi3
+    sta SD_N0
+    stx SD_N1
+    lda __rc2
+    sta SD_N2
+    lda __rc3
+    sta SD_N3
+    pla
+    sta SD_SG
+    jmp sd_done
+sd_neg:
+    sec
+    lda #0
+    sbc SD_N0
+    sta SD_N0
+    lda #0
+    sbc SD_N1
+    sta SD_N1
+    lda #0
+    sbc SD_N2
+    sta SD_N2
+    lda #0
+    sbc SD_N3
+    sta SD_N3
+    rts
+.size __wrap___divsi3, .-__wrap___divsi3
+
+
 ; Point the table pointers' high bytes at the tables (once, at boot; nothing else writes $80-$87).
 .section .text.m7_umul_init,"ax",@progbits
 .globl m7_umul_init

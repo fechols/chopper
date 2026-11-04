@@ -113,6 +113,19 @@ pub struct Rays {
 /// keeps it under about 0.4 texel.
 pub const ERR: i32 = 2;
 
+/// `Rays::new`'s divisors as bytes: `FX / 16` and `HAZE_TEXELS / 64` (both 5), and `FY`. (Changing
+/// FX, FY or HAZE_TEXELS means redoing these reductions.)
+const FX5: u8 = 5;
+const _: () = assert!(FX == 16 * FX5 as i32 && HAZE_TEXELS == 64 * FX5 as i32 && FY < 256);
+
+/// `n / d`, truncated. On the C64 the i32 divide is still the `__divsi3` libcall (so `Rays::new` keeps
+/// its static frame: a call to an asm extern would put it on the soft stack), which `asm/fixed.S`
+/// provides with a fast path for divisors that fit a byte.
+#[inline(always)]
+fn div8(n: i32, d: u8) -> i32 {
+    n / d as i32
+}
+
 impl Rays {
     /// `cam.h` must be at least 64 (a quarter texel). (On the C64 in the geometry set-up's overlay.)
     #[inline(never)]
@@ -122,9 +135,11 @@ impl Rays {
         let (right, up, fwd) = (col(0), col(1), col(2));
         // Q14 → Q22 is ×256. Byte step: 4 pixels / FX. Byte 0's centre: pixel 2, (2 − 80)/80 = −78/80.
         // Line 0's centre: (CY_HALF/2)/FY above the axis.
-        let mut bb = right.map(|c| c * (256 * 4) / FX);
-        let mut ay = up.map(|c| -(c * 256) / FY);
-        let mut a0: [i32; 3] = core::array::from_fn(|k| fwd[k] * 256 + right[k] * (-78 * 256) / FX + up[k] * (CY_HALF * 128) / FY);
+        // (Divided by bytes, the factors 16 of FX and 64 of HAZE_TEXELS taken out: exact, as truncation
+        // of 16x / 80 is that of x / 5.)
+        let mut bb = right.map(|c| div8(c * (256 * 4 / 16), FX5));
+        let mut ay = up.map(|c| div8(-(c * 256), FY as u8));
+        let mut a0: [i32; 3] = core::array::from_fn(|k| fwd[k] * 256 + div8(right[k] * (-78 * 256 / 16), FX5) + div8(up[k] * (CY_HALF * 128), FY as u8));
         let l = 16 - cam.h.leading_zeros();
         let scale = |c: &mut i32| *c = ((*c as i64 * cam.h as i64) >> l) as i32;
         for v in [&mut a0, &mut ay, &mut bb] {
@@ -132,7 +147,7 @@ impl Rays {
             scale(&mut v[2]);
         }
         // A ray of length ~1 (Q22 = 2^22) reaches HAZE_TEXELS when w = H/HAZE_TEXELS (H in 8.8 texels).
-        let w_haze = ((cam.h as i32) << 14) / HAZE_TEXELS;
+        let w_haze = div8((cam.h as i32) << 8, FX5);
         // |Δw per byte| ≤ 2^22 / 20; ERR · 4^5 · that stays within i32.
         let dw = core::array::from_fn(|k| bb[1] << k);
         // w1 = w0 − dw[k]: `w1 ≥ w_haze` and `limit ≤ w0 + w1 = 2·w0 − dw[k]`.
@@ -470,4 +485,19 @@ pub fn mul_small(a: i32, b: u8) -> i32 {
     let hi = mul((a >> 16) as i16, b as i16);
     let lo = mulsu(b as i16, a as u16);
     (hi << 16).wrapping_add(lo)
+}
+
+#[cfg(test)]
+#[test]
+fn rays_divisors_reduced_exactly() {
+    // Every Q14 rotation entry, and every altitude: the reduced forms give the original quotients.
+    for c in -16384..=16384i32 {
+        assert_eq!(div8(c * (256 * 4 / 16), FX5), c * (256 * 4) / FX, "bb {c}");
+        assert_eq!(div8(-(c * 256), FY as u8), -(c * 256) / FY, "ay {c}");
+        assert_eq!(div8(c * (-78 * 256 / 16), FX5), c * (-78 * 256) / FX, "a0 right {c}");
+        assert_eq!(div8(c * (CY_HALF * 128), FY as u8), c * (CY_HALF * 128) / FY, "a0 up {c}");
+    }
+    for h in 0..=u16::MAX {
+        assert_eq!(div8((h as i32) << 8, FX5), ((h as i32) << 14) / HAZE_TEXELS, "w_haze {h}");
+    }
 }

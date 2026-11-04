@@ -41,4 +41,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-T");
     println!("cargo:rustc-link-arg={}", root.join("link.ld").display());
     println!("cargo:rustc-link-arg=-Wl,-Map,{}", out.join("chopper.map").display());
+    // The i32 divide libcall goes to asm/fixed.S's `__wrap___divsi3` (a byte-divisor fast path; libcrt's
+    // divmod object, which every divide pulls in, still provides `__real___divsi3`).
+    println!("cargo:rustc-link-arg=-Wl,--wrap=__divsi3");
 }
