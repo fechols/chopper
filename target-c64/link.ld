@@ -31,7 +31,7 @@ MEMORY {
     hudblocks (r) : ORIGIN = 0x5A80, LENGTH = 0x0180
     /* Code where the VIC never looks, page-aligned and whole pages long (the boot copy moves pages). */
     lowram (rwx) : ORIGIN = 0x0200, LENGTH = 0x0200
-    spanram (rwx) : ORIGIN = 0x8300, LENGTH = 0x0800   /* after the scene block (format::SCENE_MAX); then the HUD page $8B00 */
+    spanram (rwx) : ORIGIN = 0x8300, LENGTH = 0x0710   /* after the scene block (format::SCENE_MAX); then actors::MESHBUF ($8A10) */
     vicrom (rwx) : ORIGIN = 0x9B00, LENGTH = 0x0400    /* after the vertices; the VIC sees ROM there ($9F00: squad::MEMBERS) */
     /* llvm-mos's static stack (`.noinit`, the fixed frames of non-recursive functions): after the status
      * block, below the soft stack ($CD80-$CFFF: tools/emu.py checks how much of it a run touches).
@@ -69,7 +69,7 @@ SECTIONS {
         *(.text.umul .text.geo_orow)
     } >lowram AT>boot
     .spantext : {
-        *(.text.span_line .rodata.span_tables .text.geo_bin .text.band_publish .text.bt_build .text._ZN7chopper2hw5fetch*)
+        *(.text.span_line .rodata.span_tables .text.geo_bin .text.bt_build .text._ZN7chopper2hw5fetch*)
     } >spanram AT>boot
     .victext : {
         *(.text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable)

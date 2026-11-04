@@ -68,7 +68,12 @@ def main():
     ap.add_argument('--render', action='store_true', help='profile the band loop instead of the geometry')
     ap.add_argument('--setup', action='store_true', help='profile the frame set-up instead of the geometry')
     ap.add_argument('--callers', metavar='NAME', help='also list the call paths (3 deep) into functions named NAME')
+    ap.add_argument('--start', type=int, help='start the flight at this tick (as emu.py --start)')
+    ap.add_argument('--skip', type=int, default=1, help='with --start: frames run before profiling')
+    ap.add_argument('--mode', choices=['full', 'doubled'], help='hold MODE (else AUTO picks it)')
+    ap.add_argument('--dma-us', type=float, default=2.0, help='C64U cost of one REU command, in us (the emulator charges none)')
     args = ap.parse_args()
+    start = emu.host_agent('dist/chopper.reu', args.start) if args.start is not None else None
     prg = Path('dist/chopper.prg').read_bytes()
     mem = bytearray(0x10000)
     mem[0x801:0x801 + len(prg) - 2] = prg[2:]
@@ -98,10 +103,28 @@ def main():
     names = {a: n for a, n in syms}
     frames, total = 0, 0
     stack, paths = [], collections.Counter()
-    while frames < args.frames:
+    skip = args.skip if args.start is not None else 0
+    dmas = [0, 0]  # REU commands and bytes in the profiled phase
+    inside = False
+    exec0 = cpu.reu_exec
+
+    def counted(command):
+        if inside:
+            r = cpu.regs
+            dmas[0] += 1
+            dmas[1] += (r[7] | r[8] << 8) or 0x10000
+        exec0(command)
+    cpu.reu_exec = counted
+    while frames < args.frames + skip:
+        if start is not None and cpu.mem[emu.STATUS] == 0xC1:
+            cpu.mem[emu.AGENT:emu.AGENT + len(start)] = start
+            cpu.mem[emu.AGENT + len(start):emu.AGENT + len(start) + 4] = args.start.to_bytes(4, 'little')
+            start = None
+        if args.mode and cpu.mem[emu.STATUS] == 0xC1:
+            cpu.mem[emu.STATUS + 7] = 1 if args.mode == 'doubled' else 0
         n = len(cpu.watch)
         # set-up: events 1-2; geometry: 3-4; the band loop: 5-6
-        inside = n % 6 == (5 if args.render else 1 if args.setup else 3)
+        inside = frames >= skip and n % 6 == (5 if args.render else 1 if args.setup else 3)
         pc, c0 = cpu.pc, cpu.cycles
         cpu.step()
         if inside:
@@ -124,6 +147,9 @@ def main():
         per = f'{n:7.0f} calls {c / args.frames / n:6.0f} cyc' if n else ''
         print(f'{c / total * 100:5.1f}%  {c / args.frames / 64000:6.2f} ms  {name:12s} {per}')
     print(f'total {total / args.frames / 64000:.2f} ms a frame')
+    d = dmas[0] / args.frames
+    print(f'REU: {d:.0f} commands, {dmas[1] / args.frames:.0f} bytes a frame '
+          f'(~{d * args.dma_us / 1000:.2f} ms more on the C64U at {args.dma_us} us a command)')
     for path, n in paths.most_common(25):
         print(f'{n / args.frames:7.1f}  {path}')
 
