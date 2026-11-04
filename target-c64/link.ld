@@ -11,9 +11,9 @@
  * - Relocated code (copied there at boot by asm/startup.S, whole pages): $0200-$03FF, $8300-$8BFF,
  *   $9B00-$9FFF, $AF00-$B7FF, $BB00-$BEFF, $F800-$FEFF. Boot-only code (`.text.boot`) and the
  *   relocated code's load images sit in $5C00-$82FF, the frame buffer and the scene area, free until
- *   the boot is done. The REU overlays (`.text.ai`, `.text.hud`) run at $E000 and are not in the PRG
- *   (see `reuimage`); the cockpit overlay (`.text.cockpit`) runs and loads at $A000 (see `cockpit`). asm/audio.S runs once at boot from $C000 (loaded there with the PRG, after
- *   padding over $8300-$BFFF that the relocation then overwrites).
+ *   the boot is done. The REU overlays (`.text.ai`, `.text.hud`, .. and asm/stream.S's `.text.stream`)
+ *   run at $E000 and are not in the PRG (see `reuimage`); the cockpit overlay (`.text.cockpit`) runs and
+ *   loads at $A000 (see `cockpit`).
  * Zero page: the compiler's $02-$7F, fixed.S's $80-$9B, the kernels' $A0-$FF.
  * $01 = $35 (RAM everywhere except I/O); no ROM routines are used. */
 __basic_zp_start = 0x0002;
@@ -50,9 +50,6 @@ MEMORY {
     /* Free in the PRG (was the cockpit overlay's load image; it is an REU overlay now, `.cocktext`). */
     cockpit (r) : ORIGIN = 0xA000, LENGTH = 0x0F00
     gap3 (r) : ORIGIN = 0xAF00, LENGTH = 0x1100
-    /* asm/audio.S, run once at boot, loaded in place: the floor's tiles and runs live here afterwards
-     * (layout::TILES, SPANS, below RAYS). */
-    audio (rx) : ORIGIN = 0xC000, LENGTH = 0x0640
     /* REU overlays' load images: never in the PRG. `chopper bake --elf` copies each overlay's bytes from
      * the ELF into the REU (format::OVERLAY_AI, OVERLAY_HUD). */
     reuimage (r) : ORIGIN = 0x10000, LENGTH = 0x20000
@@ -78,7 +75,11 @@ SECTIONS {
         *(.text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable)
     } >vicrom AT>boot
     .sparetext : {
-        *(.text.floor_draw)
+        *(.text.floor_draw .text.spare .text.spare.*)
+    } >spare
+    /* asm/stream.S's state, after it (resident: the decoder is an overlay). */
+    .streambss (NOLOAD) : {
+        *(.bss.stream_state)
     } >spare
     .bandtext : {
         *(.text.geo_walk .text.geo_xform)
@@ -98,7 +99,8 @@ SECTIONS {
      * - `.text.actors`: the frame's moving objects (actors);
      * - `.text.world`, `.text.world3`, `.text.world2`: the war's move, decide and fight phases, one a frame
      *   in turn (world_sim);
-     * - `.text.combat`: the player's fight: targets, gun, missiles, projectiles, damage (combat). */
+     * - `.text.combat`: the player's fight: targets, gun, missiles, projectiles, damage (combat);
+     * - `.text.stream`: the rotor sound's decoder (asm/stream.S), at boot and while the sound streams. */
     OVERLAY 0xE000 : AT (0x10000) {
         .aitext { *(.text.ai .text.ai.*) }
         .hudtext { *(.text.hud .text.hud.*) }
@@ -110,6 +112,7 @@ SECTIONS {
         .world4text { *(.text.world4 .text.world4.*) }
         .combattext { *(.text.combat .text.combat.*) }
         .fxtext { *(.text.fx .text.fx.*) }
+        .streamtext { *(.text.stream .text.stream.*) }
     } >window
     /* The second window, over the band state at $A000 (layout::BAND_RAM: spent from the last band to
      * geo_bin), REU overlays too:
@@ -125,9 +128,6 @@ SECTIONS {
     OVERLAY 0xF010 : AT (0x28000) {
         .cliptext { *(.text.clip .text.clip.*) }
     } >window3
-    .audiotext : {
-        *(.text.audio_boot)
-    } >audio
     .noinit (NOLOAD) : {
         *(.noinit .noinit.* NULL INIT ZPSAVE)
     } >frames
@@ -161,6 +161,8 @@ __world4text_size = SIZEOF(.world4text);
 ASSERT(SIZEOF(.world4text) <= 0x1800, "the war director's overlay is larger than its window ($E000-$F7FF)")
 __combattext_size = SIZEOF(.combattext);
 __fxtext_size = SIZEOF(.fxtext);
+__streamtext_size = SIZEOF(.streamtext);
+ASSERT(SIZEOF(.streamtext) <= 0x1100, "the sound's decoder overlaps its buffers above it ($F100)")
 __combatlibtext_size = SIZEOF(.combatlibtext);
 ASSERT(SIZEOF(.fxtext) <= 0x1800, "the effects overlay is larger than its window ($E000-$F7FF)")
 ASSERT(SIZEOF(.combatlibtext) <= 0x0F00, "the combat library overlay is larger than its window ($A000-$AEFF)")
@@ -195,11 +197,5 @@ OUTPUT_FORMAT {
     FULL(tables)
     FULL(spare)
     FULL(hudblocks)
-    FULL(boot)
-    FULL(gap)
-    FULL(aiload)
-    FULL(gap2)
-    FULL(cockpit)
-    FULL(gap3)
-    TRIM(audio)
+    TRIM(boot)
 }

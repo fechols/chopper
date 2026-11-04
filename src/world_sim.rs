@@ -1067,7 +1067,7 @@ fn apply_shots<H: Hw + ?Sized>(hw: &mut H, now: u16) {
                 // Killed in sight: it blows up, then burns.
                 let (u, v, h) = (rd(hw, b + rec::U), rd(hw, b + rec::V), (hw.peek(b + rec::H) as u16) << 4);
                 crate::combat::spawn(hw, crate::effects::effect::EXPLOSION, u, v, h, now);
-                crate::combat::spawn(hw, crate::effects::effect::WRECK_FIRE, u, v, h, now.wrapping_add(40));
+                crate::combat::spawn(hw, crate::effects::effect::WRECK_FIRE, u, v, h, now.wrapping_add(crate::combat::FIRE_AFTER));
             }
         }
         let sector = hw.peek(b + rec::SECTOR);

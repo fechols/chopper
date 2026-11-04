@@ -2006,13 +2006,13 @@ fn the_war_teaches_the_brains() {
 /// fetches more than `SPRITE_CHUNK_LEN`, and the slots past an effect's frames are empty.
 #[test]
 fn effect_records_point_inside_their_blocks() {
-    use crate::effects::{EFFECTS, FRAMES, MAX_FRAMES, SCALES, lines};
+    use crate::effects::{EFFECTS, FRAMES, SCALES, lines};
     use crate::effects_bake::{band_chunk, read_record};
     use crate::format::{EFFECTS_BLOCKS, EFFECTS_BLOCKS_END, FRAME_RECORD, MAX_SPRITE_SIZE, REU_BANK};
     let reu = package();
     for e in 0..EFFECTS as u8 {
         for s in 0..SCALES as u8 {
-            for f in 0..MAX_FRAMES as u8 {
+            for f in 0..1u8 << crate::effects::SLOT_SHIFT[e as usize] {
                 let at = crate::effects::record(e, s, f) as usize;
                 if f >= FRAMES[e as usize] {
                     assert!(reu[at..at + FRAME_RECORD as usize].iter().all(|&b| b == 0), "effect {e} scale {s}: slot {f} not empty");
@@ -2028,7 +2028,8 @@ fn effect_records_point_inside_their_blocks() {
                 for (p, &(wb, block, len)) in r.phase.iter().enumerate() {
                     assert_eq!(wb as u16, (r.w + p as u16).div_ceil(4));
                     let end = block + len as u32;
-                    assert!(block >= EFFECTS_BLOCKS && end <= EFFECTS_BLOCKS_END, "effect {e} scale {s} frame {f} phase {p}: ${block:06X}");
+                    let low = block >= EFFECTS_BLOCKS && end <= crate::format::EFFECTS_LOW_END;
+                    assert!(low || block >= crate::format::EFFECTS_HIGH && end <= EFFECTS_BLOCKS_END, "effect {e} scale {s} frame {f} phase {p}: ${block:06X}");
                     assert_eq!(block / REU_BANK, (end - 1) / REU_BANK, "effect {e} scale {s} frame {f} phase {p} crosses a 512 KiB region");
                     let bytes = &reu[block as usize..end as usize];
                     for b in 0..nbands as usize {
@@ -2073,6 +2074,28 @@ fn effect_scale_follows_the_projected_height() {
     }
     assert_eq!(scale_for(0, h), SCALES as u8 - 1);
     assert_eq!(scale_for(1 << 20, h), 0);
+}
+
+/// With every effect slot taken, a new effect takes the oldest playing one's, never a wreck's fire still
+/// waiting for its explosion to turn to smoke.
+#[test]
+fn a_waiting_wreck_fire_keeps_its_slot() {
+    use crate::combat::{self, FIRE_AFTER, FX, FX_ENTRY, FX_MAX, spawn};
+    use crate::effects::effect;
+    use crate::hw::Hw;
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let now = 1000u16;
+    // A kill: its explosion and its fire to come; then the rest of the slots, muzzle flashes, newer.
+    spawn(&mut m, effect::EXPLOSION, 0, 0, 0, now);
+    spawn(&mut m, effect::WRECK_FIRE, 0, 0, 0, now.wrapping_add(FIRE_AFTER));
+    for k in 0..FX_MAX as u16 - 2 {
+        spawn(&mut m, effect::MUZZLE, 0, 0, 0, now + 1 + k);
+    }
+    spawn(&mut m, effect::IMPACT, 0, 0, 0, now + 20);
+    let ids: Vec<u8> = (0..FX_MAX as u16).map(|k| m.peek(FX + k * FX_ENTRY)).collect();
+    assert!(ids.contains(&(effect::WRECK_FIRE + 1)), "the fire was taken: {ids:?}");
+    assert!(!ids.contains(&(effect::EXPLOSION + 1)), "the oldest (the explosion) should have gone: {ids:?}");
 }
 
 /// Wrecks: a unit dead near the player is drawn as its kind's wreck with a smoke column (placed with the

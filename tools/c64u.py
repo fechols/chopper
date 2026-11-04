@@ -3,6 +3,7 @@
 frame and dump it for `chopper compare`. Device class (REST + DMA socket) from ../talonhd/tools/c64u.py,
 itself adapted from impact/tools/c64u_device.py (MIT).
 
+    python tools/c64u.py config [config/chopper.cfg]
     python tools/c64u.py run dist/chopper.prg
     python tools/c64u.py upload-reu dist/chopper.reu [--no-reset]
     python tools/c64u.py status
@@ -10,9 +11,14 @@ itself adapted from impact/tools/c64u_device.py (MIT).
     python tools/c64u.py pop PIXELS
     python tools/c64u.py dump dist/dump [--hold]
 
+`config` applies chopper's settings (NTSC, 64 MHz turbo, the 16 MB REU without a preload image, the
+Ultimate Audio sampler mapped at $DF20 and audible) to the running configuration, not to flash: run it
+before `upload-reu`/`run` when another project may have left its own on the machine.
+
 Host from --host or C64U_HOST (default 192.168.66.178); password (if any) from C64U_PASSWORD.
 """
 import argparse
+import configparser
 import json
 import os
 from pathlib import Path
@@ -126,6 +132,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--host', default=os.environ.get('C64U_HOST', '192.168.66.178'))
     sub = ap.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('config').add_argument('cfg', nargs='?', default=str(Path(__file__).resolve().parent.parent / 'config/chopper.cfg'))
     sub.add_parser('run').add_argument('prg')
     u = sub.add_parser('upload-reu')
     u.add_argument('reu')
@@ -139,7 +146,19 @@ def main():
     d.add_argument('--hold', action='store_true', help='freeze the path tick first (status HOLD)')
     args = ap.parse_args()
     dev = Device(args.host)
-    if args.cmd == 'run':
+    if args.cmd == 'config':
+        cfg = configparser.ConfigParser(interpolation=None, delimiters=('=',))
+        cfg.optionxform = str
+        cfg.read(args.cfg, encoding='utf-8')
+        settings = {section: dict(cfg[section]) for section in cfg.sections()}
+        dev.request('POST', '/v1/configs', settings)
+        for section, items in settings.items():
+            now = dev.request('GET', '/v1/configs/' + urllib.parse.quote(section)).get(section, {})
+            for item, value in items.items():
+                if str(now.get(item)).strip() != value.strip():
+                    raise SystemExit(f'{section} / {item}: {now.get(item)!r}, not {value!r}')
+        print(f'{sum(map(len, settings.values()))} settings from {args.cfg}')
+    elif args.cmd == 'run':
         dev.run_prg(args.prg)
     elif args.cmd == 'upload-reu':
         data = Path(args.reu).read_bytes()

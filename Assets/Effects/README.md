@@ -9,7 +9,10 @@ sprites at 31 sizes each (`src/effects.rs`, `src/effects_bake.rs`).
 1. `ludo image create`: four stills per effect, `sprite-vfx`, Cel-Shaded, side view (`*_still-v1..4.png`).
 2. `ludo sprite animate`: the chosen still animated with Hydra, 3 s, up to 16 frames, full resolution
    (`*_anim-1.png` the sheet, `-2.mp4` the video, `-3.mp3` Hydra's sound; `anim.json` the job's result).
-3. `python tools/effects.py`: picks the frames, crops them to one box, and downscales every size from
+   The explosion and the smoke are longer cuts (2026-11-03, below): one 64-frame Hydra sheet, and
+   two 64-frame halves chained through the still into a 128-frame loop.
+3. `python tools/effects.py`: picks the frames (or takes whole sheets in sequence, each registered on
+   the first by its first frame: Ludo crops every sheet to its own animation), crops them to one box, and downscales every size from
    that high-res master (area average, premultiplied alpha), squashed to the projection's pixel aspect
    (80 multicolour pixels : 133 lines), alpha-thresholded at 50% and mapped by nearest reference colour
    onto the view's codes: 1 light blue (flash, foam, highlights), 2 brown (fire body, dirt, dust),
@@ -21,10 +24,10 @@ sprites at 31 sizes each (`src/effects.rs`, `src/effects_bake.rs`).
 
 | Effect | Still | Frames of the sheet | Loops |
 |---|---|---|---|
-| explosion | v1 | 1 3 4 6 8 10 12 14 | no |
+| explosion | v1 | all 64 of `explosion64` | no |
 | impact | v2 (Ludo's ground strip cut away) | 0 1 3 5 7 9 | no |
 | splash | v1 | 1 3 4 6 9 10 | no |
-| smoke | v1 | 0 2 4 6 8 10 14 15 | yes |
+| smoke | v1 | all 64 of `smoke128_a`, then all 64 of `smoke128_b` | yes (128) |
 | muzzle | v3 | 14 0 2 3 | no |
 | wreck_fire | v1 | 0 1 3 5 7 9 13 15 | yes |
 
@@ -63,7 +66,23 @@ ludo sprite animate --model hydra --duration 3 --frames 16 --image-type sprite-v
 | muzzle | `--no-loop` | A gun flash: the spark flashes, flickers quickly and vanishes. The camera does not move. |
 | wreck_fire | `--loop` | The fire burns: flames flicker and dance while dark smoke billows upward in a seamless loop. The camera does not move. |
 
+Longer cuts (2026-11-03; Hydra, 4 s, 64 frames, `--frame-size 0`, each job's result saved as
+`<name>.json` beside its sheet). The smoke: twice from the still back to it (`--no-loop` with the still
+as both `--initial-image` and `--final-image`), so the two halves join seamlessly either way round:
+
+```sh
+ludo sprite animate --model hydra --duration 4 --frames 64 --image-type sprite-vfx --frame-size 0   --no-loop --initial-image Assets/Effects/ludo/smoke/smoke_still-v1.png   --final-image Assets/Effects/ludo/smoke/smoke_still-v1.png --out Assets/Effects/ludo/smoke   --name smoke128_a --motion-prompt   "The smoke column billows and rises continuously, puffs swelling and drifting upward, returning to its starting shape at the end. The camera does not move."
+# and again with --name smoke128_b
+ludo sprite animate --model hydra --duration 4 --frames 64 --image-type sprite-vfx --frame-size 0   --no-loop --initial-image Assets/Effects/ludo/explosion/explosion_still-v1.png   --out Assets/Effects/ludo/explosion --name explosion64 --motion-prompt   "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+```
+
 ## Credits
 
 Stills 6 × 2 = 12, animations 6 × 9 = 54: 66 credits held; the account went from about 1150 to
-1088.21 (Hydra charges the seconds actually produced).
+1088.21 (Hydra charges the seconds actually produced). The longer cuts: 3 × 12 = 36 credits.
+
+## In the REU
+
+Every frame at every size, 4 phases each: 7.37 MB of blocks (smoke 3.87, explosion 2.53), below and
+above the rotor sound's ring (`format::EFFECTS_BLOCKS`, `EFFECTS_HIGH`; the ring is only the loop's
+length since the sound streams: `asm/stream.S`).

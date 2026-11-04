@@ -20,7 +20,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use chopper::floor::{self, Rays, SpanArgs, VIEW_BANDS};
 use chopper::cockpit;
-use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_DECK, OVERLAY_CLIP, OVERLAY_FX, PACKAGE_VERSION, SCENE, SCENE_MAX};
+use chopper::format::{COLORS, H_BUILD, HEADER, MAGIC, OVERLAY_ACTORS, OVERLAY_AI, OVERLAY_COCKPIT, OVERLAY_DYN, OVERLAY_GEOM, OVERLAY_HUD, OVERLAY_WORLD, OVERLAY_WORLD2, OVERLAY_WORLD3, OVERLAY_WORLD4, OVERLAY_COMBAT, OVERLAY_COMBATLIB, OVERLAY_DECK, OVERLAY_CLIP, OVERLAY_FX, OVERLAY_STREAM, PACKAGE_VERSION, SCENE, SCENE_MAX};
 use chopper::geom::{self, Obj, Verts, View, Work, geo_args};
 use chopper::hw::{self, Hw};
 use chopper::layout::{self, AGENT, BOUNCE, CLOCK, BUFFERS, GAUGES, GEO_ARGS, PATS, POLY_ARGS, RAYS, SCENE_RAM, STATUS, STATUS_MAGIC, TILES, WALK_ARGS, WORK, status};
@@ -29,9 +29,19 @@ use chopper::poly::{Row, args};
 
 unsafe extern "C" {
     fn reu_execute(command: u8);
-    /// `asm/audio.S`: decode the rotor sound into the REU and start the sampler on it (1), or find no
-    /// sampler (0).
-    fn audio_boot() -> u8;
+    /// `asm/stream.S` (the `.text.stream` overlay, at `WORK`): the rotor sound's decoder. `stream_init`
+    /// finds the sampler (1) or not (0: nothing streams); `stream_run` decodes pages into the ring up to
+    /// half a lap ahead of the playback `frames` NTSC frames after the sampler's start (0: its budget spent,
+    /// 1: there, 2: the stream has ended);
+    /// `stream_start` starts the sampler round the ring. `stream_state`'s first byte: the stream has ended
+    /// (or never began).
+    fn stream_init() -> u8;
+    fn stream_run(frames_lo: u8, frames_hi: u8) -> u8;
+    fn stream_start(divider_lo: u8, divider_hi: u8);
+    /// `asm/stream.S`: the sampler's clock divider for 16 kHz, measured with CIA 2 (which the frame clock
+    /// then takes over).
+    fn stream_calibrate() -> u16;
+    static stream_state: u8;
     /// `asm/floor.S`: once a frame `floor_begin`; per view line `floor_line` (the runs at `SPANS` into
     /// the line buffer) and `floor_copy` (into band line `line` of `STAGE`, and the next when doubled).
     /// `asm/spans.S`: the runs of the line whose ray is `RAYS.a` into `SPANS` (`floor::make_line`).
@@ -91,6 +101,7 @@ unsafe extern "C" {
     static __world4text_size: u8;
     static __combattext_size: u8;
     static __fxtext_size: u8;
+    static __streamtext_size: u8;
     static __combatlibtext_size: u8;
     /// The second window's overlays (`.text.cockpit`, `.text.dyn`, run at `BAND_RAM`).
     static __cocktext_size: u8;
@@ -296,6 +307,17 @@ fn video_init(c: &mut C64) {
     poke(0xD011, layout::D011);
 }
 
+/// While the rotor sound streams (its first ~80 s): its decoder's overlay fetched and the ring filled on
+/// to half a lap ahead of the playback (`now` frames since the sampler started). Then never again.
+#[inline(never)]
+#[unsafe(link_section = ".text.spare.stream")]
+fn stream(c: &mut C64, now: u16) {
+    if unsafe { read_volatile(&raw const stream_state) } == 0 {
+        hw::fetch(c, OVERLAY_STREAM, WORK, unsafe { &raw const __streamtext_size } as u16);
+        unsafe { stream_run(now as u8, (now >> 8) as u8) };
+    }
+}
+
 /// Everything before the frame buffer is first drawn: this code runs from the frame buffer itself
 /// (`.text.boot`, target-c64/link.ld), so it must not touch it. Returns the turbo probes.
 #[inline(never)]
@@ -304,13 +326,21 @@ fn boot(c: &mut C64) -> u16 {
     let probes = wait_turbo();
     hw::init(c);
     wait_image(c);
-    // The frame clock starts with the sound, so the flight's time is the sound's (`agent`): CIA 2 timer
-    // A underflows once an NTSC frame, timer B counts the underflows.
+    // The rotor sound: its ring filled ahead by the decoder's overlay (in the window, free until the first
+    // frame), then the sampler started round it.
+    hw::fetch(c, OVERLAY_STREAM, WORK, unsafe { &raw const __streamtext_size } as u16);
+    if unsafe { stream_init() } != 0 {
+        let divider = unsafe { stream_calibrate() };
+        while unsafe { stream_run(0, 0) } == 0 {}
+        unsafe { stream_start(divider as u8, (divider >> 8) as u8) };
+    }
+    // The frame clock starts with the sound, so the flight's time is the sound's (`agent`) and the frames
+    // since are how far it has played (the decoder's pacing): CIA 2 timer A underflows once an NTSC frame,
+    // timer B counts the underflows.
     poke16(0xDD04, FRAME_CYCLES - 1);
     poke16(0xDD06, 0xFFFF);
     poke(0xDD0F, 0x51); // B: start, force load, count A underflows
     poke(0xDD0E, 0x11); // A: start, force load, continuous
-    unsafe { audio_boot() };
     chopper::fixed::init_tables();
     scene_load(c);
     // Shade patterns for asm/geom.S: even bytes, then odd.
@@ -461,6 +491,7 @@ pub extern "C" fn main() -> i16 {
         // The moving objects (actors overlay, over the HUD's).
         hw::fetch(c, OVERLAY_ACTORS, WORK, actors_size);
         chopper::actors::update(c, &cam);
+        stream(c, now);
         // The floor's rays and the grids' set-up from their overlay (then the window is the frame's
         // geometry again).
         hw::fetch(c, OVERLAY_GEOM, WORK, geom_size);

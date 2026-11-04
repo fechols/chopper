@@ -6,7 +6,7 @@
 
 use crate::effects::{EFFECTS, FRAMES, MAX_FRAMES, NAMES, SCALES, lines, record};
 use crate::encode::{Block, SpriteImage, bands, encode_block_banded};
-use crate::format::{EFFECTS_BLOCKS, EFFECTS_BLOCKS_END, REU_BANK, frame, phase};
+use crate::format::{EFFECTS_BLOCKS, EFFECTS_BLOCKS_END, EFFECTS_HIGH, EFFECTS_LOW_END, REU_BANK, frame, phase};
 use crate::hw::Hw;
 use crate::layout::{self, BUFFERS};
 use crate::model::Machine;
@@ -136,6 +136,11 @@ pub fn install(reu: &mut [u8]) -> Usage {
                 rec[frame::AY] = sc.ay;
                 for (p, block) in blocks.iter().enumerate() {
                     let len = block.bytes.len() as u32;
+                    // Not into the rotor sound's PCM: on above it.
+                    if at < EFFECTS_HIGH && at + len > EFFECTS_LOW_END {
+                        u.padding += EFFECTS_LOW_END.saturating_sub(at);
+                        at = EFFECTS_HIGH;
+                    }
                     // Keep every block inside one 512 KiB region: no DMA into it wraps.
                     if at / REU_BANK != (at + len - 1) / REU_BANK {
                         let next = (at / REU_BANK + 1) * REU_BANK;

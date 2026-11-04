@@ -46,8 +46,9 @@ pub fn bake(world: &World) -> Vec<u8> {
     reu[HAZARD as usize..][..hazard.len()].copy_from_slice(&hazard);
     let dlt = crate::digital::ROTOR;
     let d = crate::digital::Dlt5::parse(dlt).expect("rotor.dlt");
-    // asm/audio.S decodes whole 8-frame groups only.
-    assert!(dlt.len() <= AUDIO_MAX as usize && d.frames == crate::digital::ROTOR_LOOP_END && d.frames % crate::digital::GROUP == 0);
+    // asm/stream.S decodes whole pages (256 frames: 32 groups) only, into a ring the loop's length.
+    assert!(dlt.len() <= AUDIO_MAX as usize && d.frames == crate::digital::ROTOR_LOOP_END && d.frames % 256 == 0);
+    assert_eq!(crate::digital::ROTOR_LOOP_END - crate::digital::ROTOR_LOOP_START, crate::format::AUDIO_RING);
     reu[AUDIO_DLT as usize..][..dlt.len()].copy_from_slice(dlt);
     for (at, v) in [
         (H_AUDIO_BYTES, dlt.len() as u32),
@@ -95,6 +96,7 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".fxtext", OVERLAY_FX, OVERLAY_MAX),
         (".combatlibtext", OVERLAY_COMBATLIB, OVERLAY2_MAX),
         (".decktext", OVERLAY_DECK, OVERLAY2_MAX),
+        (".streamtext", crate::format::OVERLAY_STREAM, crate::format::STREAM_MAX),
     ] {
         let code = crate::elf::section(elf, name)?;
         if code.len() as u32 > max {

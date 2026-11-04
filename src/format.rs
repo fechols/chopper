@@ -115,11 +115,24 @@ pub const MIX_LEN: u16 = 4;
 /// The rotor sound (DLT5, `digital::ROTOR`), from bank 96.
 pub const AUDIO_DLT: u32 = 96 << 16;
 pub const AUDIO_MAX: u32 = 0xB_0000;
-/// Where the boot decodes it (`asm/audio.S`): signed 8-bit PCM from `AUDIO_PCM`, after `HAAS` zero
-/// bytes the right voice starts in (10 ms at 16 kHz: the Haas delay). Outside the image.
+/// Where it is decoded to (`asm/stream.S`): signed 8-bit PCM into a ring from `AUDIO_PCM`, `AUDIO_RING`
+/// samples (the loop's length: `digital::ROTOR_LOOP_END - ROTOR_LOOP_START`, checked in `package`), sample
+/// n at n mod `AUDIO_RING`; before it `HAAS` zero bytes the right voice starts in (10 ms at 16 kHz: the
+/// Haas delay). Zeros in the image until the boot and the main loop decode into it.
 pub const AUDIO_PCM: u32 = 0xC0_0000;
+pub const AUDIO_RING: u32 = 412_138;
 pub const HAAS: u32 = 160;
-/// The sampler's clock divider: about 6.25 MHz / 16 kHz.
+const _: () = assert!(AUDIO_PCM / REU_BANK == (AUDIO_PCM + AUDIO_RING - 1) / REU_BANK);
+/// The decoder (asm/stream.S) keeps half the ring ahead of the playback, so half a lap short of it round
+/// the ring: the frame clock's estimate of where the sampler is (it has no readback) may be out by ~16%
+/// over the stream either way. It runs at most `STREAM_BUDGET` pages (256 samples) a call. (These four
+/// are for the record: asm/stream.S has its own copies.)
+pub const STREAM_MARGIN: u32 = AUDIO_RING / 2;
+pub const STREAM_BUDGET: u8 = 8;
+/// Samples the sampler plays a tick, as the decoder paces it (16,000 Hz / 60 Hz is 266.7, the sampler
+/// calibrated to 16 kHz at boot: the estimate runs a little early, well inside the margin).
+pub const SAMPLES_PER_TICK: u32 = 267;
+/// The sampler's clock divider, nominal (about 6.25 MHz / 16 kHz): the calibration's start and fallback.
 pub const AUDIO_DIVIDER: u16 = 390;
 const _: () = assert!(SPRITE_BLOCKS_END <= AUDIO_DLT && AUDIO_DLT + AUDIO_MAX <= AUDIO_PCM - HAAS);
 
@@ -158,6 +171,10 @@ pub const OVERLAY_COMBATLIB: u32 = TREES + 0xE000;
 /// The carrier's deck (the second window, with the AI), after the director's.
 pub const OVERLAY_DECK: u32 = TREES + 0x3800;
 const _: () = assert!(OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_DECK && OVERLAY_DECK + OVERLAY2_MAX <= OVERLAY_WORLD3);
+/// The rotor sound's decoder (`.text.stream`, asm/stream.S), after the deck's.
+pub const OVERLAY_STREAM: u32 = TREES + 0x4800;
+pub const STREAM_MAX: u32 = 0x1100;
+const _: () = assert!(OVERLAY_DECK + OVERLAY2_MAX <= OVERLAY_STREAM && OVERLAY_STREAM + STREAM_MAX <= OVERLAY_WORLD3);
 /// The war director's (once a lap), after the brains.
 pub const OVERLAY_WORLD4: u32 = TREES + 0x2000;
 const _: () = assert!(TREES + crate::brain::UNIT_BYTES as u32 <= OVERLAY_WORLD4 && OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_WORLD3);
@@ -182,15 +199,20 @@ pub const TREES: u32 = 117 << 16;
 pub const VEHICLES: u32 = 118 << 16;
 
 /// The effect sprites (`effects`, baked by `effects_bake`): the frame directory (`FRAME_RECORD` bytes per
-/// frame, `effects::record`) in bank 119, the blocks from bank 120 (each inside one 512 KiB region).
-pub const EFFECTS_DIR: u32 = 119 << 16;
-pub const EFFECTS_BLOCKS: u32 = 120 << 16;
-pub const EFFECTS_BLOCKS_END: u32 = 146 << 16;
-const _: () = assert!(VEHICLES + 0x10000 <= EFFECTS_DIR && EFFECTS_DIR + 0x10000 <= EFFECTS_BLOCKS);
+/// frame, `effects::record`) from bank 120 (a 512 KiB region's start), the blocks (each inside one 512
+/// KiB region) from bank 125 up to the rotor sound's ring, then on above it (`EFFECTS_HIGH`) to the end of
+/// the REU. (Bank 119 is free.)
+pub const EFFECTS_DIR: u32 = 120 << 16;
+pub const EFFECTS_BLOCKS: u32 = 125 << 16;
+pub const EFFECTS_LOW_END: u32 = AUDIO_PCM - HAAS;
+/// Past the rotor sound's ring.
+pub const EFFECTS_HIGH: u32 = 199 << 16;
+const _: () = assert!(AUDIO_PCM + AUDIO_RING <= EFFECTS_HIGH);
+pub const EFFECTS_BLOCKS_END: u32 = REU_SIZE;
+const _: () = assert!(VEHICLES + 0x10000 <= EFFECTS_DIR && EFFECTS_DIR % REU_BANK == 0);
 
-/// The image ends here: upload only this much.
+/// The image ends here: upload this much. (The rotor sound's ring in it is zeros until it is decoded.)
 pub const IMAGE_END: u32 = EFFECTS_BLOCKS_END;
-const _: () = assert!(IMAGE_END <= AUDIO_PCM - HAAS);
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);
 

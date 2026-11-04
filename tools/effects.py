@@ -24,6 +24,7 @@ import json
 import os
 import sys
 
+import numpy as np
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,7 +35,7 @@ BAKED = os.path.join(ROOT, "Assets", "Effects", "baked")
 MIN_LINES, STEP_LINES, SCALES = 4, 2, 31
 # Multicolour pixels per line for a square in the world: `geom`'s projection, sx = 80 X/Z, sy = 133 Y/Z.
 ASPECT = 80 / 133
-MAX_FRAMES = 8
+MAX_FRAMES = 128
 
 # Reference colours (source RGB) -> code, per effect: each pixel takes the code of its nearest reference.
 FIRE = [
@@ -73,10 +74,11 @@ FLASH = [
 # master crop: fraction of the cell cut off at the bottom (Ludo's ground strip), and the share of the
 # alpha mass the box keeps at either side (stray debris far out is cut).
 EFFECTS = [
-    dict(name="explosion", frames=[1, 3, 4, 6, 8, 10, 12, 14], ref=FIRE, anchor="base", cut_bottom=0.0, keep=0.995),
+    dict(name="explosion", sheets=["explosion64"], ref=FIRE, anchor="base", cut_bottom=0.0, keep=0.995),
     dict(name="impact", frames=[0, 1, 3, 5, 7, 9], ref=DIRT, anchor="base", cut_bottom=0.0, keep=0.99, ground=True),
     dict(name="splash", frames=[1, 3, 4, 6, 9, 10], ref=WATER, anchor="base", cut_bottom=0.0, keep=0.995),
-    dict(name="smoke", frames=[0, 2, 4, 6, 8, 10, 14, 15], ref=SMOKE, anchor="base", cut_bottom=0.0, keep=0.998),
+    # Two 64-frame halves, each from the still back to it: one seamless 128-frame loop.
+    dict(name="smoke", sheets=["smoke128_a", "smoke128_b"], ref=SMOKE, anchor="base", cut_bottom=0.0, keep=0.998),
     dict(name="muzzle", frames=[14, 0, 2, 3], ref=FLASH, anchor="centre", cut_bottom=0.0, keep=1.0),
     dict(name="wreck_fire", frames=[0, 1, 3, 5, 7, 9, 13, 15], ref=FLAMES, anchor="base", cut_bottom=0.0, keep=0.998),
 ]
@@ -84,17 +86,49 @@ EFFECTS = [
 ALPHA = 128  # opaque from half coverage
 
 
-def frames_of(e):
-    d = os.path.join(LUDO, e["name"])
-    meta = json.load(open(os.path.join(d, "anim.json")))["result"]
-    sheet = Image.open(os.path.join(d, f"{e['name']}_anim-1.png")).convert("RGBA")
+def cells_of(d, meta_file, sheet_file):
+    meta = json.load(open(os.path.join(d, meta_file)))["result"]
+    sheet = Image.open(os.path.join(d, sheet_file)).convert("RGBA")
     cols, rows = meta["num_cols"], meta["num_rows"]
     cw, ch = sheet.width // cols, sheet.height // rows
     cells = [sheet.crop((c * cw, r * ch, (c + 1) * cw, (r + 1) * ch)) for r in range(rows) for c in range(cols)]
-    cells = cells[: meta["num_frames"]]
-    out = [cells[i] for i in e["frames"]]
-    if e.get("ground"):
-        out = strip_ground(out)
+    return cells[: meta["num_frames"]]
+
+
+def bbox(im):
+    """The opaque pixels' box (x0, y0, x1, y1)."""
+    a = np.asarray(im.getchannel("A")) >= ALPHA
+    ys, xs = np.nonzero(a)
+    return xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+
+
+def frames_of(e):
+    d = os.path.join(LUDO, e["name"])
+    if "sheets" not in e:
+        cells = cells_of(d, "anim.json", f"{e['name']}_anim-1.png")
+        out = [cells[i] for i in e["frames"]]
+        if e.get("ground"):
+            out = strip_ground(out)
+        return out
+    # Ludo's sheets in sequence (each `<sheet>-1.png` with its job's `<sheet>.json`), every frame. Ludo
+    # crops each sheet to its own animation, so each is registered on the first's: its first frame
+    # (the same still) scaled and moved onto the first's, bottom centre on bottom centre.
+    sheets = [cells_of(d, f"{n}.json", f"{n}-1.png") for n in e["sheets"]]
+    rx0, ry0, rx1, ry1 = bbox(sheets[0][0])
+    pad = 64
+    W, H = sheets[0][0].width + 2 * pad, sheets[0][0].height + 2 * pad
+    out = []
+    for cells in sheets:
+        x0, y0, x1, y1 = bbox(cells[0])
+        k = (ry1 - ry0) / (y1 - y0)
+        dx = round(pad + (rx0 + rx1) / 2 - k * (x0 + x1) / 2)
+        dy = round(pad + ry1 - k * y1)
+        for c in cells:
+            if k != 1:
+                c = c.resize((round(c.width * k), round(c.height * k)), Image.LANCZOS)
+            canvas = Image.new("RGBA", (W, H))
+            canvas.alpha_composite(c, (dx, dy))
+            out.append(canvas)
     return out
 
 
@@ -128,17 +162,13 @@ def box(frames, keep):
     """One crop box for all frames: rows/columns from the union's alpha mass, `keep` of it."""
     w = max(f.width for f in frames)
     h = max(f.height for f in frames)
-    colmass = [0] * w
-    rowmass = [0] * h
+    colmass = np.zeros(w, np.int64)
+    rowmass = np.zeros(h, np.int64)
     for f in frames:
-        a = f.getchannel("A")
-        px = a.load()
-        for y in range(f.height):
-            for x in range(f.width):
-                v = px[x, y]
-                if v >= ALPHA:
-                    colmass[x] += 1
-                    rowmass[y] += 1
+        a = np.asarray(f.getchannel("A")) >= ALPHA
+        colmass[: f.width] += a.sum(axis=0)
+        rowmass[: f.height] += a.sum(axis=1)
+    colmass, rowmass = colmass.tolist(), rowmass.tolist()
 
     def span(mass, keep):
         total = sum(mass)

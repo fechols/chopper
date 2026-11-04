@@ -24,10 +24,22 @@ pub mod effect {
 }
 pub const EFFECTS: usize = 6;
 pub const NAMES: [&str; EFFECTS] = ["explosion", "impact", "splash", "smoke", "muzzle", "wreck_fire"];
-/// Frames per effect (the directory has [`MAX_FRAMES`] slots for each; the rest are zero). `SMOKE` and
-/// `WRECK_FIRE` loop; the others play once.
-pub const FRAMES: [u8; EFFECTS] = [8, 6, 6, 8, 4, 8];
-pub const MAX_FRAMES: usize = 8;
+/// Frames per effect (the directory has `1 << SLOT_SHIFT[e]` slots for each at every scale; the rest
+/// are zero). `SMOKE` and `WRECK_FIRE` loop (a power of two each, so the frame wraps with a mask); the
+/// others play once.
+pub const FRAMES: [u8; EFFECTS] = [64, 6, 6, 128, 4, 8];
+pub const SLOT_SHIFT: [u8; EFFECTS] = [6, 3, 3, 7, 3, 3];
+pub const MAX_FRAMES: usize = 128;
+/// Each effect's first directory slot (`record`): the slots of the effects before it, at every scale.
+pub const BASE: [u16; EFFECTS] = {
+    let mut b = [0u16; EFFECTS];
+    let mut i = 1;
+    while i < EFFECTS {
+        b[i] = b[i - 1] + ((SCALES as u16) << SLOT_SHIFT[i - 1]);
+        i += 1;
+    }
+    b
+};
 pub const LOOPS: [bool; EFFECTS] = [false, false, false, true, false, true];
 /// The effects' sizes in the world (the height of the whole frame, 1/16 texel): what [`scale_for`] takes.
 /// A vehicle is about 0.7 texel tall.
@@ -42,13 +54,17 @@ const _: () = assert!(MAX_LINES == 64);
 const _: () = {
     let mut i = 0;
     while i < EFFECTS {
-        assert!(FRAMES[i] as usize <= MAX_FRAMES);
+        assert!(FRAMES[i] as usize <= MAX_FRAMES && FRAMES[i] as u16 <= 1 << SLOT_SHIFT[i]);
+        assert!(!LOOPS[i] || FRAMES[i] as u16 == 1 << SLOT_SHIFT[i]);
         i += 1;
     }
 };
-/// The directory fits its bank.
-pub const DIR_LEN: u32 = (EFFECTS * SCALES * MAX_FRAMES) as u32 * FRAME_RECORD;
-const _: () = assert!(DIR_LEN <= 0x10000);
+/// The directory: up to the blocks, inside one 512 KiB region (no record's DMA wraps).
+pub const DIR_LEN: u32 = (BASE[EFFECTS - 1] as u32 + ((SCALES as u32) << SLOT_SHIFT[EFFECTS - 1])) * FRAME_RECORD;
+const _: () = assert!(
+    EFFECTS_DIR + DIR_LEN <= crate::format::EFFECTS_BLOCKS
+        && EFFECTS_DIR / crate::format::REU_BANK == (EFFECTS_DIR + DIR_LEN - 1) / crate::format::REU_BANK
+);
 
 /// Lines of scale `s`.
 pub const fn lines(scale: u8) -> u16 {
@@ -57,7 +73,8 @@ pub const fn lines(scale: u8) -> u16 {
 
 /// REU address of the directory record of `frame` of `effect` at `scale`.
 pub const fn record(effect: u8, scale: u8, frame: u8) -> u32 {
-    EFFECTS_DIR + ((effect as u32 * SCALES as u32 + scale as u32) * MAX_FRAMES as u32 + frame as u32) * FRAME_RECORD
+    let e = effect as usize;
+    EFFECTS_DIR + (BASE[e] as u32 + ((scale as u32) << SLOT_SHIFT[e]) + frame as u32) * FRAME_RECORD
 }
 
 /// The scale whose height is nearest an effect `height_q4` tall (1/16 texel) seen at depth `depth_q4`

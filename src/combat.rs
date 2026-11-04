@@ -86,15 +86,23 @@ const _: () = assert!(FXDYN >= crate::layout::XFORM_RAM + 0x84 && FXDYN + 1 + FX
 /// long.
 pub const FX_TICKS_SHIFT: u32 = 2;
 pub const FX_LIFE: u16 = 20 * 60;
+/// A wreck's fire starts this many ticks after its explosion: once the fireball has turned to smoke (the
+/// explosion's frame 36 of 64).
+pub const FIRE_AFTER: u16 = 36 << FX_TICKS_SHIFT;
 
 /// Start `effect` at (`u`, `v`, `h`) (1/16 texel): a free slot, or the oldest. (Resident on the C64: the
-/// player's fight and the war's both start effects.)
+/// player's fight and the war's both start effects.) The age is signed: one not begun yet (a wreck's fire
+/// after its explosion) is the newest, never the oldest.
 #[inline(never)]
 pub fn spawn<H: Hw + ?Sized>(hw: &mut H, effect: u8, u: u16, v: u16, h: u16, now: u16) {
-    let (mut best, mut age) = (0u16, 0u16);
+    let (mut best, mut age) = (FX, i16::MIN);
     for k in 0..FX_MAX as u16 {
         let e = FX + k * FX_ENTRY;
-        let a = if hw.peek(e) == 0 { 0xFFFF } else { now.wrapping_sub(rd(hw, e + 2)) };
+        if hw.peek(e) == 0 {
+            best = e;
+            break;
+        }
+        let a = now.wrapping_sub(rd(hw, e + 2)) as i16;
         if a >= age {
             (best, age) = (e, a);
         }
@@ -141,13 +149,13 @@ fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16) {
                     hw.poke(e, 0);
                     continue;
                 }
-                // (The looping effects have 8 frames.)
-                f &= 7;
+                // (The looping effects' frames are a power of two.)
+                f &= frames - 1;
             }
             (effect, f, e + 4)
         } else {
             let e = WRECKS + 1 + (k - FX_MAX as u16) * WRECK_ENTRY;
-            (crate::effects::effect::SMOKE, (rd(hw, e + 6) >> FX_TICKS_SHIFT) & 7, e)
+            (crate::effects::effect::SMOKE, (rd(hw, e + 6) >> FX_TICKS_SHIFT) & (FRAMES[crate::effects::effect::SMOKE as usize] as u16 - 1), e)
         };
         let p = [(rd(hw, e) >> 2) as i16, (rd(hw, e + 4) >> 2) as i16, (rd(hw, e + 2) >> 2) as i16];
         let c = crate::hud::to_camera(eye, p);
@@ -406,7 +414,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
                 wr(hw, PLAYER + player::KILLS, k + 1);
                 dealt(hw, KILL_BONUS);
                 spawn(hw, crate::effects::effect::EXPLOSION, tu, tv, th, now);
-                spawn(hw, crate::effects::effect::WRECK_FIRE, tu, tv, th, now.wrapping_add(40));
+                spawn(hw, crate::effects::effect::WRECK_FIRE, tu, tv, th, now.wrapping_add(FIRE_AFTER));
             }
         }
     }
@@ -459,7 +467,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
                     let k = rd(hw, PLAYER + player::KILLS);
                     wr(hw, PLAYER + player::KILLS, k + 1);
                     dealt(hw, KILL_BONUS);
-                    spawn(hw, crate::effects::effect::WRECK_FIRE, tu, tv, th, now.wrapping_add(40));
+                    spawn(hw, crate::effects::effect::WRECK_FIRE, tu, tv, th, now.wrapping_add(FIRE_AFTER));
                 }
                 hw.poke(p + proj::KIND, 0);
             }
