@@ -102,6 +102,7 @@ SECTIONS {
      * - `.text.squad`: the near platoons' vehicles in formation, for the combat pass (squad);
      * - `.text.combat`: the player's fight: targets, gun, missiles, projectiles, damage (combat);
      * - `.text.sfx`: the sound effects on the SIDs, after the effects pass (sfx);
+     * - `.text.sfxeng`: the engines on the SIDs, after the sound effects (sfx);
      * - `.text.stream`: the rotor sound's decoder (asm/stream.S), at boot and while the sound streams. */
     OVERLAY 0xE000 : AT (0x10000) {
         .aitext { *(.text.ai .text.ai.*) }
@@ -115,18 +116,22 @@ SECTIONS {
         .combattext { *(.text.combat .text.combat.*) }
         .squadtext { *(.text.squad .text.squad.*) }
         .sfxtext { *(.text.sfx .text.sfx.*) }
+        .sfxengtext { *(.text.sfxeng .text.sfxeng.*) }
         .fxtext { *(.text.fx .text.fx.*) }
         .streamtext { *(.text.stream .text.stream.*) }
     } >window
     /* The second window, over the band state at $A000 (layout::BAND_RAM: spent from the last band to
      * geo_bin), REU overlays too:
      * - `.text.cockpit`: the gauges and the HUD's first and last steps, in the set-up;
-     * - `.text.dyn`: the moving objects pushed into the depth buckets, after geo_walk. */
-    OVERLAY 0xA000 : AT (0x20000) {
+     * - `.text.dyn`: the moving objects pushed into the depth buckets, after geo_walk;
+     * - `.text.sfxlib`: the sounds' placing and starting, with `.text.sfx` and `.text.sfxeng` (after the
+     *   effects pass). (Their load images after the first window's, which outgrew $10000 bytes.) */
+    OVERLAY 0xA000 : AT (0x22000) {
         .cocktext { *(.text.cockpit .text.cockpit.*) }
         .dyntext { *(.text.dyn .text.dyn.*) }
         .combatlibtext { *(.text.combatlib .text.combatlib.*) }
         .decktext { *(.text.deck .text.deck.*) }
+        .sfxlibtext { *(.text.sfxlib .text.sfxlib.*) }
     } >window2
     /* `.text.clip`: the near-plane clipping (geom::clip, geo_clip), from the walk to push_dynamic. */
     OVERLAY 0xF010 : AT (0x28000) {
@@ -166,6 +171,8 @@ ASSERT(SIZEOF(.world4text) <= 0x1800, "the war director's overlay is larger than
 __combattext_size = SIZEOF(.combattext);
 __squadtext_size = SIZEOF(.squadtext);
 __sfxtext_size = SIZEOF(.sfxtext);
+__sfxengtext_size = SIZEOF(.sfxengtext);
+ASSERT(SIZEOF(.sfxengtext) <= 0x1800, "the engine sounds' overlay is larger than its window ($E000-$F7FF)")
 ASSERT(SIZEOF(.sfxtext) <= 0x1800, "the sound effects overlay is larger than its window ($E000-$F7FF)")
 ASSERT(SIZEOF(.squadtext) <= 0x1800, "the squad overlay is larger than its window ($E000-$F7FF)")
 __fxtext_size = SIZEOF(.fxtext);
@@ -186,6 +193,8 @@ ASSERT(SIZEOF(.hudtext) <= 0x1800, "the HUD overlay is larger than its window ($
 __cocktext_size = SIZEOF(.cocktext);
 __dyntext_size = SIZEOF(.dyntext);
 __decktext_size = SIZEOF(.decktext);
+__sfxlibtext_size = SIZEOF(.sfxlibtext);
+ASSERT(SIZEOF(.sfxlibtext) <= 0x0F00, "the sounds' library overlay is larger than its window ($A000-$AEFF)")
 __cliptext_size = SIZEOF(.cliptext);
 ASSERT(SIZEOF(.cliptext) <= 0x07F0, "the clipping overlay is larger than its window ($F010-$F7FF)")
 ASSERT(SIZEOF(.decktext) <= 0x0F00, "the deck's overlay is larger than its window ($A000-$AEFF)")

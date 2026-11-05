@@ -107,7 +107,7 @@ unsafe extern "C" {
     static __fxtext_size: u8;
     static __streamtext_size: u8;
     static __squadtext_size: u8;
-    static __sfxtext_size: u8;
+    static __sfxlibtext_size: u8;
     static __combatlibtext_size: u8;
     /// The second window's overlays (`.text.cockpit`, `.text.dyn`, run at `BAND_RAM`).
     static __cocktext_size: u8;
@@ -385,15 +385,6 @@ fn port_a_paddles() {
     poke(0xDC00, 0x80);
 }
 
-/// The frame's sound effects on the SIDs (`sfx::update`), from their overlay. (In the spare region: the
-/// resident code is full.)
-#[inline(never)]
-#[unsafe(link_section = ".text.spare.sfx")]
-fn sfx(c: &mut C64, agent: &chopper::agent::Agent) {
-    hw::fetch(c, chopper::format::OVERLAY_SFX, WORK, unsafe { &raw const __sfxtext_size } as u16);
-    chopper::sfx::update(c, agent);
-}
-
 /// The near platoons' vehicles in formation (`squad::expand`), from their overlay. (In the spare region:
 /// the resident code is full.)
 #[inline(never)]
@@ -568,8 +559,10 @@ pub extern "C" fn main() -> i16 {
         hw::fetch(c, OVERLAY_FX, WORK, unsafe { &raw const __fxtext_size } as u16);
         let (cam, _) = agent.camera();
         chopper::combat::fx(c, agent, &cam);
-        // Its sounds (their own overlay).
-        sfx(c, agent);
+        // Its sounds (their own overlay, and their library in the second window: the band state's spent, and
+        // the combat library done with).
+        hw::fetch(c, chopper::format::OVERLAY_SFXLIB, chopper::layout::BAND_RAM, unsafe { &raw const __sfxlibtext_size } as u16);
+        chopper::sfx::frame(c, agent);
         poke(0xD020, if peek(chopper::combat::PLAYER + chopper::combat::player::FLASH) != 0 { 2 } else { 0 });
         // The gauges whose readings changed, from their overlay over the (spent) band state.
         hw::fetch(c, OVERLAY_COCKPIT, cockpit_at, cockpit_size);

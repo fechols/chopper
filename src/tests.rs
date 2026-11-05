@@ -2955,16 +2955,19 @@ fn far_fire_is_cut_before_a_near_effect() {
 fn a_sound_is_placed_by_its_bearing_and_range() {
     use crate::sfx::place;
     // Facing north (yaw 0): east is to the right.
-    let (l, r, cl, cr) = place(-30, 0, 0, false);
+    let (l, r, cl, cr, itd) = place(-30, 0, 0, false);
     assert!(l > r && cl > cr, "left: ({l}, {r}) cut ({cl}, {cr})");
-    let (l, r, _, _) = place(30, 0, 0, false);
+    assert_eq!(itd, -crate::sfx::ITD_MAX, "abeam on the left: the right ear lags most");
+    let (l, r, _, _, itd) = place(30, 0, 0, false);
     assert!(r > l, "right: ({l}, {r})");
-    let (al, ar, acl, acr) = place(0, 30, 0, false);
-    let (bl, br, bcl, bcr) = place(0, -30, 0, false);
+    assert_eq!(itd, crate::sfx::ITD_MAX, "abeam on the right: the left ear lags most");
+    let (al, ar, acl, acr, aitd) = place(0, 30, 0, false);
+    let (bl, br, bcl, bcr, bitd) = place(0, -30, 0, false);
+    assert_eq!((aitd, bitd), (0, 0), "dead ahead and astern: no lag");
     assert_eq!((al, ar), (bl, br), "ahead and behind as loud");
     assert!(bcl + 60 < acl && bcr + 60 < acr, "behind muffled: ahead ({acl}, {acr}), behind ({bcl}, {bcr})");
     // Turned to face east, the same source north is now on the left.
-    let (l, r, _, _) = place(0, 30, 0x4000, false);
+    let (l, r, _, _, _) = place(0, 30, 0x4000, false);
     assert!(l > r, "turned: ({l}, {r})");
     let near = place(0, 20, 0, false);
     let far = place(0, 300, 0, false);
@@ -3074,6 +3077,393 @@ fn a_long_stall_replays_no_sounds() {
     m.ram[PROJ as usize + proj::TTL as usize] = TRACER_TTL;
     sfx::update(&mut m, &a);
     assert!(playing(&m).contains(&(patch::GUN + 1)), "{:?}", playing(&m));
+}
+
+/// The frame's vehicles in `squad::MEMBERS` for the sound tests: (vehicle, kind, u, v) in texels, in that
+/// order (enemy side; the distance byte left 0: the engines measure their own).
+fn list_vehicles(m: &mut Machine, vehicles: &[(u16, u8, u16, u16)]) {
+    use crate::squad::{ENTRIES, ENTRY, MEMBERS, ORDER, entry};
+    m.ram[MEMBERS as usize] = vehicles.len() as u8;
+    for (k, &(vid, kind, u, v)) in vehicles.iter().enumerate() {
+        let e = (ENTRIES + k as u16 * ENTRY) as usize;
+        m.ram[ORDER as usize + k] = (k as u16 * ENTRY) as u8;
+        m.ram[e + entry::VID as usize..][..2].copy_from_slice(&vid.to_le_bytes());
+        m.ram[e + entry::MESH as usize] = crate::actors::mesh_of(kind, 0);
+        m.ram[e + entry::U as usize..][..2].copy_from_slice(&(u << 4).to_le_bytes());
+        m.ram[e + entry::V as usize..][..2].copy_from_slice(&(v << 4).to_le_bytes());
+    }
+}
+
+/// The engines: the two nearest vehicles that have one sound on the pairs (a SAM site makes none); the
+/// same vehicle keeps its pair (not restarted), its revs rising as it moves; a one-shot takes a pair from
+/// an engine, which is back once it is done; a vehicle gone from the list is stopped.
+#[test]
+fn the_nearest_vehicles_engines_sound_and_give_way_to_effects() {
+    use crate::actors::kind::{GUNBOAT, SAM, TANK, TRUCK};
+    use crate::combat::{self, spawn};
+    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    let at = |p: u16| (STATE + state::PAIRS + p * PAIR) as usize;
+    let playing = |m: &Machine| -> Vec<u8> { (0..sfx::PAIRS).map(|p| m.ram[at(p) + pair::PATCH as usize]).collect() };
+    let vid = |m: &Machine, p: u16| u16::from_le_bytes([m.ram[at(p) + pair::VID as usize], m.ram[at(p) + pair::VID as usize + 1]]);
+    // A SAM site nearest, a tank behind the player, a truck ahead, a gunboat far off.
+    list_vehicles(&mut m, &[(1, SAM, 1024, 1105), (2, TANK, 1024, 1090), (3, TRUCK, 1030, 1112), (4, GUNBOAT, 1024, 1300)]);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), [patch::TANK + 1, patch::TRUCK + 1], "the two nearest with engines");
+    assert_eq!((vid(&m, 0), vid(&m, 1)), (2, 3));
+    // The tank moving on (2 texels in 4 ticks: 8/16 texel a tick, revs up a step a frame; restarted, they
+    // would be back at the start's).
+    for k in 1..=3u16 {
+        a.t += 4;
+        list_vehicles(&mut m, &[(1, SAM, 1024, 1105), (2, TANK, 1024, 1090 + 2 * k), (3, TRUCK, 1030, 1112), (4, GUNBOAT, 1024, 1300)]);
+        sfx::update(&mut m, &a);
+    }
+    assert_eq!(m.ram[at(0) + pair::SCORE as usize], sfx::REVS_START + 12, "its revs drifting up a tick's worth a tick");
+    assert_eq!(m.ram[at(1) + pair::SCORE as usize], sfx::REVS_START - 12, "the truck's drifting down, standing");
+    // A near explosion takes a pair; the engine is back once it is done.
+    a.t += 4;
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1030 << 4, 1110 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert!(playing(&m).contains(&(patch::EXPLOSION + 1)), "{:?}", playing(&m));
+    a.t += 200;
+    sfx::update(&mut m, &a);
+    sfx::update(&mut m, &a);
+    let mut now = playing(&m);
+    now.sort();
+    assert_eq!(now, [patch::TRUCK + 1, patch::TANK + 1], "the engines back");
+    // The tank gone (out of the list): the gunboat in its place.
+    a.t += 4;
+    list_vehicles(&mut m, &[(3, TRUCK, 1030, 1112), (4, GUNBOAT, 1024, 1300)]);
+    sfx::update(&mut m, &a);
+    let mut now = playing(&m);
+    now.sort();
+    assert_eq!(now, [patch::TRUCK + 1, patch::BOAT + 1]);
+    // Nothing near: both stopped.
+    a.t += 4;
+    list_vehicles(&mut m, &[]);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), [0, 0]);
+    // One engine: an explosion goes to the free pair, not the engine's.
+    a.t += 4;
+    list_vehicles(&mut m, &[(3, TRUCK, 1030, 1112)]);
+    sfx::update(&mut m, &a);
+    a.t += 4;
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1030 << 4, 1110 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    let mut now = playing(&m);
+    now.sort();
+    assert_eq!(now, [patch::EXPLOSION + 1, patch::TRUCK + 1], "the engine left playing");
+}
+
+/// A platoon's vehicles changing places in the order keep its engine going (not restarted, revs kept):
+/// the pair follows whichever member is listed.
+#[test]
+fn an_engine_follows_its_platoon_as_its_members_change_places() {
+    use crate::actors::kind::TRUCK;
+    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+    use crate::world_sim::vehicle;
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    let at = |p: u16| (STATE + state::PAIRS + p * PAIR) as usize;
+    let vid = |m: &Machine, p: u16| u16::from_le_bytes([m.ram[at(p) + pair::VID as usize], m.ram[at(p) + pair::VID as usize + 1]]);
+    // One platoon of trucks (5), its members 0 and 1 nearest, then 2 and 3 (members 0 and 1 gone on).
+    let (m0, m1, m2, m3) = (vehicle(5, 0), vehicle(5, 1), vehicle(5, 2), vehicle(5, 3));
+    list_vehicles(&mut m, &[(m0, TRUCK, 1024, 1110), (m1, TRUCK, 1026, 1112)]);
+    sfx::update(&mut m, &a);
+    assert_eq!([m.ram[at(0)], m.ram[at(1)]], [patch::TRUCK + 1; 2]);
+    let revs = [m.ram[at(0) + pair::SCORE as usize], m.ram[at(1) + pair::SCORE as usize]];
+    // The next members listed a texel off (16/16: more than the frame's 4 ticks), all standing.
+    a.t += 4;
+    list_vehicles(&mut m, &[(m2, TRUCK, 1024, 1111), (m3, TRUCK, 1026, 1113)]);
+    let mut log = SidLog { m: &mut m, writes: vec![] };
+    sfx::update(&mut log, &a);
+    assert!(!restarted(&log.writes), "not restarted");
+    assert_eq!([m.ram[at(0)], m.ram[at(1)]], [patch::TRUCK + 1; 2]);
+    let now = [m.ram[at(0) + pair::SCORE as usize], m.ram[at(1) + pair::SCORE as usize]];
+    assert!(now[0] <= revs[0] && now[1] <= revs[1], "the handover's gap not taken for driving: revs {revs:?} then {now:?}");
+    let mut now = [vid(&m, 0), vid(&m, 1)];
+    now.sort();
+    assert_eq!(now, [m2, m3], "following the members listed");
+}
+
+/// The carrier is a giant diesel: its own patch, a 30 Hz and a 36 Hz voice beating (a rumble), never
+/// revving: the same pitch standing or sailing.
+#[test]
+fn the_carrier_chugs_like_a_giant_diesel() {
+    use crate::actors::kind::CARRIER;
+    use crate::sfx::{self, LEFT, STATE, pair, patch, state};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    list_vehicles(&mut m, &[(9, CARRIER, 1024, 1110)]);
+    sfx::update(&mut m, &a);
+    let p0 = (STATE + state::PAIRS) as usize;
+    assert_eq!(m.ram[p0 + pair::PATCH as usize], patch::DIESEL + 1);
+    // Voices 1 and 2's frequencies (left chip), sailing on for a while then standing (the player aboard:
+    // no Doppler).
+    let mut seen = vec![];
+    for k in 0..40u16 {
+        a.t += 4;
+        let v = if k < 20 { 1110 + 2 * k } else { 1148 };
+        a.v = ((v - 10) as i32) << 8;
+        list_vehicles(&mut m, &[(9, CARRIER, 1024, v)]);
+        let mut log = SidLog { m: &mut m, writes: vec![] };
+        sfx::update(&mut log, &a);
+        let f = |r: u16| {
+            let lo = log.writes.iter().rev().find(|(a, _)| *a == r).map_or(0, |w| w.1);
+            let hi = log.writes.iter().rev().find(|(a, _)| *a == r + 1).map_or(0, |w| w.1);
+            u16::from_le_bytes([lo, hi])
+        };
+        seen.push((f(LEFT), f(LEFT + 7)));
+    }
+    assert!(seen.iter().all(|&f| f == (0x0200, 0x0260)), "the diesel's pitch never moves: {seen:?}");
+}
+
+/// Whether any voice was held silent (its control register written with the test bit): a restart.
+fn restarted(writes: &[(u16, u8)]) -> bool {
+    writes.iter().any(|&(a, d)| (0xD400..0xD480).contains(&a) && [4, 11, 18].contains(&((a - 0xD400) % 0x20)) && d & 0x08 != 0)
+}
+
+/// The SID writes, in order, over a `Machine` (the raster line's reads logged too, as `$D012`, 0).
+struct SidLog<'a> {
+    m: &'a mut Machine,
+    writes: Vec<(u16, u8)>,
+}
+
+impl crate::hw::Hw for SidLog<'_> {
+    fn peek(&mut self, addr: u16) -> u8 {
+        if addr == 0xD012 {
+            self.writes.push((addr, 0));
+        }
+        self.m.peek(addr)
+    }
+    fn poke(&mut self, addr: u16, value: u8) {
+        if (0xD400..0xD480).contains(&addr) {
+            self.writes.push((addr, value));
+        }
+        self.m.poke(addr, value)
+    }
+    fn reu_exec(&mut self, command: u8) {
+        self.m.reu_exec(command)
+    }
+}
+
+/// The ears' lag: a sound on the right is gated in the right chip first and in the left one its lag in
+/// raster lines later (one ahead: both at once); an engine's lag follows the player turning, the lagging
+/// ear's chip run slow meanwhile (never restarted).
+#[test]
+fn a_sound_reaches_the_far_ear_later() {
+    use crate::actors::kind::TANK;
+    use crate::combat::{self, spawn};
+    use crate::sfx::{self, ITD_MAX, LEFT, PAIR, RIGHT, STATE, pair, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    sfx::update(&mut m, &a);
+    // The gates (a control register written with the gate bit) on either chip, and the raster reads
+    // from the first to the last.
+    let gates = |w: &[(u16, u8)]| -> (Vec<usize>, Vec<usize>, usize) {
+        let ctrl = |a: u16| (0..sfx::PAIRS).any(|p| (0..3).any(|v| a == p * 0x20 + 7 * v + 4));
+        let l: Vec<usize> = w.iter().enumerate().filter(|(_, (a, d))| *a >= LEFT && *a < RIGHT && ctrl(*a - LEFT) && d & 1 != 0).map(|(i, _)| i).collect();
+        let r: Vec<usize> = w.iter().enumerate().filter(|(_, (a, d))| *a >= RIGHT && ctrl(*a - RIGHT) && d & 1 != 0).map(|(i, _)| i).collect();
+        let (lo, hi) = (*l.first().unwrap().min(r.first().unwrap()), *l.last().unwrap().max(r.last().unwrap()));
+        (l, r, w[lo..hi].iter().filter(|(a, _)| *a == 0xD012).count())
+    };
+    // An explosion abeam to the right (facing north).
+    a.t += 4;
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1040 << 4, 1100 << 4, 0, a.t as u16 - 1);
+    let mut log = SidLog { m: &mut m, writes: vec![] };
+    sfx::update(&mut log, &a);
+    let (l, r, lines) = gates(&log.writes);
+    assert!(r.last() < l.first(), "the right ear first: left {l:?} right {r:?}");
+    assert!(lines > ITD_MAX as usize, "the left ear {ITD_MAX} lines later: {lines} raster reads");
+    // Dead ahead: no wait.
+    a.t += 200;
+    sfx::update(&mut m, &a);
+    a.t += 4;
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1024 << 4, 1110 << 4, 0, a.t as u16 - 1);
+    let mut log = SidLog { m: &mut m, writes: vec![] };
+    sfx::update(&mut log, &a);
+    // (The wait reads the line once to begin with.)
+    assert!(gates(&log.writes).2 <= 1, "ahead: both ears at once");
+    // A tank's engine ahead, then the player turned to face west: it is abeam on the right.
+    a.t += 200;
+    sfx::update(&mut m, &a);
+    list_vehicles(&mut m, &[(7, TANK, 1024, 1120)]);
+    a.t += 4;
+    sfx::update(&mut m, &a);
+    let at = |p: u16| (STATE + state::PAIRS + p * PAIR) as usize;
+    let p = (0..sfx::PAIRS).find(|&p| m.ram[at(p) + pair::VID as usize] == 7).expect("the tank's engine");
+    let lag = |m: &Machine| m.ram[at(p) + pair::ITD as usize] as i8;
+    assert_eq!(lag(&m), 0);
+    a.yaw = 0xC000;
+    // Uneven frames: a chip run slow is credited the next frame's ticks (as long as it really ran slow).
+    let mut slowed = false;
+    let mut slow_before = false;
+    for dt in [3u16, 5, 4, 3, 5, 4, 4, 4] {
+        a.t += dt as u32;
+        let before = lag(&m);
+        let mut log = SidLog { m: &mut m, writes: vec![] };
+        sfx::update(&mut log, &a);
+        // Voice 1's frequency as last written on each chip.
+        let f = |c: u16| {
+            let lo = log.writes.iter().rev().find(|(a, _)| *a == c).map_or(0, |w| w.1);
+            let hi = log.writes.iter().rev().find(|(a, _)| *a == c + 1).map_or(0, |w| w.1);
+            u16::from_le_bytes([lo, hi])
+        };
+        let (fl, fr) = (f(LEFT + p * 0x20), f(RIGHT + p * 0x20));
+        assert!(!restarted(&log.writes), "not restarted");
+        let credit = if slow_before { dt as i8 } else { 0 };
+        assert_eq!(lag(log.m), before + credit, "the lag credited the ticks its chip ran slow");
+        assert!(fl <= fr, "only the left ear's chip slowed: {fl:#x} {fr:#x}");
+        slow_before = fl < fr;
+        slowed |= slow_before;
+    }
+    assert!(slowed);
+    assert!((ITD_MAX - 3..=ITD_MAX + 3).contains(&lag(&m)), "the lag drawn to abeam's (within half a frame's step): {}", lag(&m));
+}
+
+/// The ears' lag is mirror-symmetric: a source and its mirror image across the nose have opposite
+/// lags, swapped levels and cutoffs.
+#[test]
+fn a_sounds_place_is_mirror_symmetric() {
+    use crate::sfx::place;
+    for &(dx, dy) in &[(1, 40), (3, 30), (30, 0), (12, -25), (40, 39), (2, -60)] {
+        let (l, r, cl, cr, itd) = place(dx, dy, 0, false);
+        let mirrored = place(-dx, dy, 0, false);
+        assert_eq!(mirrored, (r, l, cr, cl, -itd), "({dx}, {dy}) mirrored");
+    }
+}
+
+/// A raster line scripted: `$D012` reads the lines given in turn (the last one held).
+struct Raster<'a> {
+    m: &'a mut Machine,
+    lines: Vec<u8>,
+    reads: usize,
+}
+
+impl crate::hw::Hw for Raster<'_> {
+    fn peek(&mut self, addr: u16) -> u8 {
+        if addr == 0xD012 {
+            self.reads += 1;
+            return self.lines[(self.reads - 1).min(self.lines.len() - 1)];
+        }
+        self.m.peek(addr)
+    }
+    fn poke(&mut self, addr: u16, value: u8) {
+        self.m.poke(addr, value)
+    }
+    fn reu_exec(&mut self, command: u8) {
+        self.m.reu_exec(command)
+    }
+}
+
+/// The ears' wait counts the lines that pass, not the changes it sees: the raster IRQ taking 15 lines at
+/// once ends a 10-line wait; the frame's wrap (311 to 0: its low byte 55 to 0) is one line.
+#[test]
+fn the_ears_wait_counts_lines_passed() {
+    let mut m = Machine::new(package());
+    let mut r = Raster { m: &mut m, lines: vec![100, 101, 116, 117, 118], reads: 0 };
+    crate::sfx::wait(&mut r, 10);
+    assert_eq!(r.reads, 3, "done once the IRQ's 15 lines are by");
+    let mut r = Raster { m: &mut m, lines: vec![53, 54, 55, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9], reads: 0 };
+    crate::sfx::wait(&mut r, 5);
+    assert_eq!(r.reads, 6, "the wrap a line");
+}
+
+/// Doppler: a standing truck dead ahead, the player flying at it then past it: its pitch above its
+/// revs' while closing, below once opening, and at them hovering still.
+#[test]
+fn an_engines_pitch_rises_closing_and_falls_passing() {
+    use crate::actors::kind::TRUCK;
+    use crate::sfx::{self, ENGINES, LEFT, STATE, field, pair, patch, state};
+    let mut m = Machine::new(package());
+    crate::combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1060 << 8, 10 << 8, 1000);
+    list_vehicles(&mut m, &[(3, TRUCK, 1024, 1100)]);
+    sfx::update(&mut m, &a);
+    let s = (STATE + state::PAIRS) as usize;
+    assert_eq!(m.ram[s + pair::PATCH as usize], patch::TRUCK + 1);
+    let t = &ENGINES[(patch::TRUCK - patch::ENGINE) as usize];
+    // A frame (4 ticks) with the player at `v` (texels): voice 1's frequency on the left chip, and its
+    // revs' alone (no Doppler).
+    let frame = |m: &mut Machine, a: &mut crate::agent::Agent, v: i32| {
+        a.t += 4;
+        a.v = v << 8;
+        let mut log = SidLog { m, writes: vec![] };
+        sfx::update(&mut log, a);
+        assert!(!restarted(&log.writes), "never restarted");
+        let lo = log.writes.iter().rev().find(|(r, _)| *r == LEFT).map_or(0, |w| w.1);
+        let hi = log.writes.iter().rev().find(|(r, _)| *r == LEFT + 1).map_or(0, |w| w.1);
+        let revs = log.m.ram[s + pair::SCORE as usize] as u16;
+        let base = (t[0] as u16) << 8 | t[5] as u16;
+        (u16::from_le_bytes([lo, hi]), base + ((t[0] as u16 * t[field::REV_DEPTH] as u16 * revs) >> 4))
+    };
+    // Hovering: at its revs' pitch.
+    for _ in 0..4 {
+        let (f, revs) = frame(&mut m, &mut a, 1060);
+        assert_eq!(f, revs, "still: no Doppler");
+    }
+    // Flying north at 0.5 texel a tick (2 a frame): closing, then past it and opening.
+    let mut dops = vec![];
+    let mut v = 1060;
+    for _ in 0..40 {
+        v += 2;
+        let (f, revs) = frame(&mut m, &mut a, v);
+        let dop = m.ram[s + pair::DOP as usize] as i8;
+        dops.push(dop);
+        assert_eq!(f.cmp(&revs), dop.cmp(&0), "pitch {f:#x} against the revs' {revs:#x}, Doppler {dop}");
+    }
+    let (top, bottom) = (*dops.iter().max().unwrap(), *dops.iter().min().unwrap());
+    // 2 × (32/16 texel closing in a 4-tick frame: 8/16 a tick) = 16, either way.
+    assert!((12..=sfx::DOP_MAX).contains(&top), "closing: {dops:?}");
+    assert!((-sfx::DOP_MAX..=-12).contains(&bottom), "opening: {dops:?}");
+    let up = dops.iter().position(|&d| d == top).unwrap();
+    let down = dops.iter().position(|&d| d == bottom).unwrap();
+    assert!(up < down, "up closing, then down past it: {dops:?}");
+}
+
+/// Engines are not given up to the small stuff: a near crackle and the far battle's gunfire leave
+/// them be; a near explosion takes one.
+#[test]
+fn engines_give_way_only_to_near_sounds_of_note() {
+    use crate::actors::kind::{TANK, TRUCK};
+    use crate::combat::{self, FAR, spawn};
+    use crate::effects::effect::{EXPLOSION, MUZZLE, WRECK_FIRE};
+    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    let playing = |m: &Machine| -> Vec<u8> {
+        let mut v: Vec<u8> = (0..sfx::PAIRS).map(|p| m.ram[(STATE + state::PAIRS + p * PAIR + pair::PATCH) as usize]).collect();
+        v.sort();
+        v
+    };
+    list_vehicles(&mut m, &[(2, TANK, 1024, 1090), (3, TRUCK, 1030, 1112)]);
+    sfx::update(&mut m, &a);
+    let engines = vec![patch::TRUCK + 1, patch::TANK + 1];
+    assert_eq!(playing(&m), engines);
+    a.t += 4;
+    spawn(&mut m, WRECK_FIRE, 1026 << 4, 1104 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), engines, "a crackle");
+    a.t += 4;
+    spawn(&mut m, MUZZLE | FAR, 1024 << 4, 1300 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), engines, "the far battle");
+    a.t += 4;
+    spawn(&mut m, EXPLOSION, 1030 << 4, 1110 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert!(playing(&m).contains(&(patch::EXPLOSION + 1)), "a near explosion: {:?}", playing(&m));
 }
 
 #[test]

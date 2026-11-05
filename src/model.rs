@@ -28,6 +28,8 @@ pub struct Machine {
     /// Sprite colors `$D027-$D02E` as last written.
     pub sprite_color: [u8; 8],
     pub stats: Stats,
+    /// The raster line `$D012` reads: one on at each read, so a wait for lines (`sfx`'s stereo delay) ends.
+    raster: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -46,7 +48,7 @@ impl Machine {
     pub fn new(image: &[u8]) -> Self {
         let mut reu = vec![0u8; REU_SIZE as usize];
         reu[..image.len()].copy_from_slice(image);
-        Machine { ram: vec![0; 65536], color_ram: [0; 1024], reu, regs: [0; 16], latch: [0; 3], dd00: 0x03, d011: 0, d021: 0, sprite_color: [0; 8], stats: Stats::default() }
+        Machine { ram: vec![0; 65536], color_ram: [0; 1024], reu, regs: [0; 16], latch: [0; 3], dd00: 0x03, d011: 0, d021: 0, sprite_color: [0; 8], stats: Stats::default(), raster: 0 }
     }
 
     fn is_io(addr: u16) -> bool {
@@ -108,6 +110,10 @@ impl Hw for Machine {
         match addr {
             0xD800..=0xDBFF => self.color_ram[(addr - 0xD800) as usize] | 0xF0,
             0xDD00 => self.dd00,
+            0xD012 => {
+                self.raster = self.raster.wrapping_add(1);
+                self.raster
+            }
             0xDF00..=0xDF0F => self.reg(addr),
             a if Self::is_io(a) => 0xFF,
             a => self.ram[a as usize],

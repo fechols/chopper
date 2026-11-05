@@ -16,7 +16,7 @@ from collections import defaultdict
 
 ROOT = '/mnt/c/Work/Projects/GitHub/chopper'
 OVERLAYS = ['ai', 'hud', 'geomsetup', 'actors', 'world', 'world2', 'world3', 'world4', 'combat', 'fx',
-            'cockpit', 'dyn', 'combatlib', 'deck', 'clip']
+            'cockpit', 'dyn', 'combatlib', 'deck', 'clip', 'sfx', 'sfxeng', 'sfxlib']
 WORLD = {'world', 'world2', 'world3', 'world4'}
 # Which overlays are in RAM while each one's code runs (besides the resident program). From the main
 # loop: the AI and the war's phase with the deck (window 2); combat and fx with combatlib; the cockpit
@@ -33,6 +33,9 @@ TOGETHER = {
     'hud': {'cockpit'},
     'actors': {'cockpit'},
     'geomsetup': {'cockpit'},
+    'sfx': {'sfxlib'},
+    'sfxeng': {'sfxlib'},
+    'sfxlib': {'sfx', 'sfxeng'},
     'dyn': {'clip'},
     'clip': {'dyn'},
 }

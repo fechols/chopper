@@ -114,6 +114,8 @@ pub fn install_overlays(reu: &mut [u8], elf: &[u8]) -> Result<(), String> {
         (".combattext", OVERLAY_COMBAT, OVERLAY_MAX),
         (".squadtext", crate::format::OVERLAY_SQUAD, OVERLAY_MAX),
         (".sfxtext", crate::format::OVERLAY_SFX, OVERLAY_MAX),
+        (".sfxlibtext", crate::format::OVERLAY_SFXLIB, OVERLAY2_MAX),
+        (".sfxengtext", crate::format::OVERLAY_SFXENG, OVERLAY_MAX),
         (".fxtext", OVERLAY_FX, OVERLAY_MAX),
         (".combatlibtext", OVERLAY_COMBATLIB, OVERLAY2_MAX),
         (".decktext", OVERLAY_DECK, OVERLAY2_MAX),

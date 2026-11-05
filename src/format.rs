@@ -182,6 +182,12 @@ const _: () = assert!(OVERLAY_STREAM + STREAM_MAX <= OVERLAY_SQUAD && OVERLAY_SQ
 /// The sound effects (`sfx`): bank 119 (free otherwise).
 pub const OVERLAY_SFX: u32 = 119 << 16;
 const _: () = assert!(VEHICLES + 0x10000 <= OVERLAY_SFX && OVERLAY_SFX + OVERLAY_MAX <= EFFECTS_DIR);
+/// Their library (`.text.sfxlib`, the second window: placing and starting a sound), after them.
+pub const OVERLAY_SFXLIB: u32 = OVERLAY_SFX + 0x2000;
+const _: () = assert!(OVERLAY_SFX + OVERLAY_MAX <= OVERLAY_SFXLIB && OVERLAY_SFXLIB + OVERLAY2_MAX <= EFFECTS_DIR);
+/// The engines' (`.text.sfxeng`, the first window after the sound effects), after their library.
+pub const OVERLAY_SFXENG: u32 = OVERLAY_SFX + 0x4000;
+const _: () = assert!(OVERLAY_SFXLIB + OVERLAY2_MAX <= OVERLAY_SFXENG && OVERLAY_SFXENG + OVERLAY_MAX <= EFFECTS_DIR);
 /// The war director's (once a lap), after the brains.
 pub const OVERLAY_WORLD4: u32 = TREES + 0x2000;
 const _: () = assert!(TREES + crate::brain::UNIT_BYTES as u32 <= OVERLAY_WORLD4 && OVERLAY_WORLD4 + OVERLAY_MAX <= OVERLAY_WORLD3);
