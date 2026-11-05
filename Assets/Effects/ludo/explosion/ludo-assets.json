@@ -1,0 +1,348 @@
+{
+  "assets": [
+    {
+      "file": "explosion_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A side-view military vehicle caught at the center of a compact explosion, its low armored silhouette partly obscured by a broad orange-and-yellow fireball erupting along the ground. Large dark fragments arc outward around the blast, with a few chunky dust shapes at ground level. A thick, rolling charcoal smoke cloud rises above the flames in overlapping lobes. Use flat cel-shaded color blocks, hard-edged two-tone shading, and bold even outlines; keep the entire silhouette centered with clear space around it on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 1
+    },
+    {
+      "file": "explosion_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A wide, ground-hugging fireball bursts around a military vehicle seen directly from the side. The vehicle’s angular body remains partly readable beneath the flames, while several large dark debris chunks lift above and beside the blast. Dust spreads in a short, uneven band near the ground, and dense smoke billows upward in connected rounded masses. Render the fire with distinct yellow, orange, and deep-red areas, using chunky shapes, hard-edged cel shading, and bold outlines. Keep the isolated effect centered on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 2
+    },
+    {
+      "file": "explosion_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A tall, forceful explosion engulfs a side-view military vehicle, with a rounded fireball at its base and a thick smoke cloud swelling above it. Show only a partial vehicle silhouette through the lower flames, with a few large blackened fragments flying outward and simple dust plumes close to the ground. Separate the flames, smoke, debris, and vehicle with strong dark outlines and broad two-tone color areas. Keep the composition compact and centered, with open space around it on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 3
+    },
+    {
+      "file": "explosion_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A military vehicle explosion in side profile forms a broad central burst: layered tongues of yellow and orange fire spread horizontally from the vehicle, while dense dark smoke rolls upward in a heavy, irregular cloud. A small number of oversized angular debris pieces surround the blast, and chunky dust shapes gather beneath it. Use a bold, readable silhouette, flat color regions, hard-edged cel shading, and even black outlines; avoid fine detail. Keep the complete effect centered and away from the edges on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 4
+    },
+    {
+      "file": "explosion_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A side-view military vehicle caught at the center of a compact explosion, its low armored silhouette partly obscured by a broad orange-and-yellow fireball erupting along the ground. Large dark fragments arc outward around the blast, with a few chunky dust shapes at ground level. A thick, rolling charcoal smoke cloud rises above the flames in overlapping lobes. Use flat cel-shaded color blocks, hard-edged two-tone shading, and bold even outlines; keep the entire silhouette centered with clear space around it on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 1
+    },
+    {
+      "file": "explosion_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A wide, ground-hugging fireball bursts around a military vehicle seen directly from the side. The vehicle’s angular body remains partly readable beneath the flames, while several large dark debris chunks lift above and beside the blast. Dust spreads in a short, uneven band near the ground, and dense smoke billows upward in connected rounded masses. Render the fire with distinct yellow, orange, and deep-red areas, using chunky shapes, hard-edged cel shading, and bold outlines. Keep the isolated effect centered on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 2
+    },
+    {
+      "file": "explosion_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A tall, forceful explosion engulfs a side-view military vehicle, with a rounded fireball at its base and a thick smoke cloud swelling above it. Show only a partial vehicle silhouette through the lower flames, with a few large blackened fragments flying outward and simple dust plumes close to the ground. Separate the flames, smoke, debris, and vehicle with strong dark outlines and broad two-tone color areas. Keep the composition compact and centered, with open space around it on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 3
+    },
+    {
+      "file": "explosion_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A military vehicle explosion seen from the side: a big bold fireball burst on the ground with flying dark debris chunks and dust, billowing into a thick rolling smoke cloud. Bold simple silhouette, high contrast, chunky shapes, few large shapes rather than fine detail, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "656ab5c6-9807-4027-b333-fd28bb8b8a06",
+      "credits": 2,
+      "created_at": "2026-11-03T03:39:00.040Z",
+      "model": "klimt",
+      "prompt": "A military vehicle explosion in side profile forms a broad central burst: layered tongues of yellow and orange fire spread horizontally from the vehicle, while dense dark smoke rolls upward in a heavy, irregular cloud. A small number of oversized angular debris pieces surround the blast, and chunky dust shapes gather beneath it. Use a bold, readable silhouette, flat color regions, hard-edged cel shading, and even black outlines; avoid fine detail. Keep the complete effect centered and away from the edges on a plain light-gray background.",
+      "variation_set": "ddb5102b",
+      "variation": 4
+    },
+    {
+      "file": "explosion_anim-1.webp",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "a3c3791c-5106-407d-a995-42e6398cd688",
+      "credits": 9,
+      "created_at": "2026-11-03T03:43:07.759Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/2d3d12942021f42a0d675d63e51a883e.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/843a25e48e0262effcbb4aa92b4541a6.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/339e4794d9a7b6ba5b744042858bbec5.mp3"
+      }
+    },
+    {
+      "file": "explosion_anim-2.mp4",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "a3c3791c-5106-407d-a995-42e6398cd688",
+      "credits": 9,
+      "created_at": "2026-11-03T03:43:07.759Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/2d3d12942021f42a0d675d63e51a883e.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/843a25e48e0262effcbb4aa92b4541a6.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/339e4794d9a7b6ba5b744042858bbec5.mp3"
+      }
+    },
+    {
+      "file": "explosion_anim-3.mp3",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "a3c3791c-5106-407d-a995-42e6398cd688",
+      "credits": 9,
+      "created_at": "2026-11-03T03:43:07.759Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/2d3d12942021f42a0d675d63e51a883e.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/843a25e48e0262effcbb4aa92b4541a6.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/339e4794d9a7b6ba5b744042858bbec5.mp3"
+      }
+    },
+    {
+      "file": "explosion_anim-1.png",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "a3c3791c-5106-407d-a995-42e6398cd688",
+      "credits": 9,
+      "created_at": "2026-11-03T03:43:07.759Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/2d3d12942021f42a0d675d63e51a883e.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/843a25e48e0262effcbb4aa92b4541a6.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/339e4794d9a7b6ba5b744042858bbec5.mp3"
+      }
+    },
+    {
+      "file": "explosion64-1.webp",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 4,
+        "frames": 64,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "05eca3ec-bd17-417a-a28a-43f7fcde026d",
+      "credits": 12,
+      "created_at": "2026-11-03T23:56:19.680Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/8d3a15f2b991b0a590037a0084d42c6a.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/89d14de14973451bf0debbcd6b41ea87.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/1751f90c6fdbbe1c68f857da63920162.mp3"
+      }
+    },
+    {
+      "file": "explosion64-2.mp4",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 4,
+        "frames": 64,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "05eca3ec-bd17-417a-a28a-43f7fcde026d",
+      "credits": 12,
+      "created_at": "2026-11-03T23:56:19.680Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/8d3a15f2b991b0a590037a0084d42c6a.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/89d14de14973451bf0debbcd6b41ea87.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/1751f90c6fdbbe1c68f857da63920162.mp3"
+      }
+    },
+    {
+      "file": "explosion64-3.mp3",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 4,
+        "frames": 64,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "05eca3ec-bd17-417a-a28a-43f7fcde026d",
+      "credits": 12,
+      "created_at": "2026-11-03T23:56:19.680Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/8d3a15f2b991b0a590037a0084d42c6a.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/89d14de14973451bf0debbcd6b41ea87.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/1751f90c6fdbbe1c68f857da63920162.mp3"
+      }
+    },
+    {
+      "file": "explosion64-1.png",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 4,
+        "frames": 64,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "explosion_still-v1.png",
+        "motion_prompt": "The vehicle explodes: a bright fireball bursts outward with debris flying out, then it turns into a rolling smoke cloud that rises and thins away. The camera does not move."
+      },
+      "job_id": "05eca3ec-bd17-417a-a28a-43f7fcde026d",
+      "credits": 12,
+      "created_at": "2026-11-03T23:56:19.680Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/8d3a15f2b991b0a590037a0084d42c6a.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/89d14de14973451bf0debbcd6b41ea87.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/1751f90c6fdbbe1c68f857da63920162.mp3"
+      }
+    }
+  ]
+}

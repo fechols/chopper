@@ -1,0 +1,256 @@
+{
+  "assets": [
+    {
+      "file": "splash_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A centered side-view water impact: a tall, narrow column of white water with light-blue shadow sections rises from a broad crown splash. Chunky curved jets form the crown, while separate rounded droplets arc outward around the column. A small dark bullet is partly visible at the point of impact. Use bold, even outlines and hard-edged two-tone cel shading. Keep the entire splash compact and isolated against a solid light-gray background.",
+      "variation_set": "395712b6",
+      "variation": 1
+    },
+    {
+      "file": "splash_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A centered, side-on water strike with a thick, slightly tapered spray column rising vertically from a low, wide crown splash. Large white water shapes are separated by flat light-blue facets; several distinct droplets fly outward from the upper sides. Show a small dark bullet at the waterline where the column begins. Give the forms a simple, high-contrast silhouette with bold even outlines and hard-edged cel shading, on a solid light-gray background.",
+      "variation_set": "395712b6",
+      "variation": 2
+    },
+    {
+      "file": "splash_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A compact side-view impact, centered, with a tall white spray column that splits into two chunky upward prongs above a crown-shaped base. Light-blue patches define the inner faces of the water, and rounded droplets scatter outward without touching the canvas edges. A small dark bullet is partly submerged at the center of the base. Use flat color areas, sharp two-tone boundaries, and bold even outlines against a solid light-gray background.",
+      "variation_set": "395712b6",
+      "variation": 3
+    },
+    {
+      "file": "splash_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A centered side-scrolling view of a bullet striking water, captured at the instant of the splash. A broad, low crown with several blocky upward points supports a narrow vertical plume of white water, accented by light-blue shadow shapes. A few large droplets separate clearly from the plume and spread to either side. Place a small dark bullet at the impact point. Keep the silhouette bold and readable, with even outlines and hard-edged cel shading, isolated on solid light gray.",
+      "variation_set": "395712b6",
+      "variation": 4
+    },
+    {
+      "file": "splash_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A centered side-view water impact: a tall, narrow column of white water with light-blue shadow sections rises from a broad crown splash. Chunky curved jets form the crown, while separate rounded droplets arc outward around the column. A small dark bullet is partly visible at the point of impact. Use bold, even outlines and hard-edged two-tone cel shading. Keep the entire splash compact and isolated against a solid light-gray background.",
+      "variation_set": "395712b6",
+      "variation": 1
+    },
+    {
+      "file": "splash_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A centered, side-on water strike with a thick, slightly tapered spray column rising vertically from a low, wide crown splash. Large white water shapes are separated by flat light-blue facets; several distinct droplets fly outward from the upper sides. Show a small dark bullet at the waterline where the column begins. Give the forms a simple, high-contrast silhouette with bold even outlines and hard-edged cel shading, on a solid light-gray background.",
+      "variation_set": "395712b6",
+      "variation": 2
+    },
+    {
+      "file": "splash_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A compact side-view impact, centered, with a tall white spray column that splits into two chunky upward prongs above a crown-shaped base. Light-blue patches define the inner faces of the water, and rounded droplets scatter outward without touching the canvas edges. A small dark bullet is partly submerged at the center of the base. Use flat color areas, sharp two-tone boundaries, and bold even outlines against a solid light-gray background.",
+      "variation_set": "395712b6",
+      "variation": 3
+    },
+    {
+      "file": "splash_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet hitting water seen from the side: a tall vertical spray column of white and light blue water with droplets flying outward and a crown splash at the base. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain dark background",
+        "n": 4
+      },
+      "job_id": "8ff15b2d-1ed7-4a1b-a2c5-e9813ee4741b",
+      "credits": 2,
+      "created_at": "2026-11-03T03:38:59.831Z",
+      "model": "klimt",
+      "prompt": "A centered side-scrolling view of a bullet striking water, captured at the instant of the splash. A broad, low crown with several blocky upward points supports a narrow vertical plume of white water, accented by light-blue shadow shapes. A few large droplets separate clearly from the plume and spread to either side. Place a small dark bullet at the impact point. Keep the silhouette bold and readable, with even outlines and hard-edged cel shading, isolated on solid light gray.",
+      "variation_set": "395712b6",
+      "variation": 4
+    },
+    {
+      "file": "splash_anim-1.webp",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "splash_still-v1.png",
+        "motion_prompt": "A bullet hits the water: the spray column shoots up, then collapses and falls back as droplets. The camera does not move."
+      },
+      "job_id": "34943240-29f7-4b0a-8698-8e86676d25c5",
+      "credits": 9,
+      "created_at": "2026-11-03T03:42:53.197Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/22163dfe4a4eddd6c278fc2c4a6d2bc9.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/2882eb63a6f14e9e9862c66edd46ff6c.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2606296387ee2f77e311e853c116b334.mp3"
+      }
+    },
+    {
+      "file": "splash_anim-2.mp4",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "splash_still-v1.png",
+        "motion_prompt": "A bullet hits the water: the spray column shoots up, then collapses and falls back as droplets. The camera does not move."
+      },
+      "job_id": "34943240-29f7-4b0a-8698-8e86676d25c5",
+      "credits": 9,
+      "created_at": "2026-11-03T03:42:53.197Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/22163dfe4a4eddd6c278fc2c4a6d2bc9.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/2882eb63a6f14e9e9862c66edd46ff6c.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2606296387ee2f77e311e853c116b334.mp3"
+      }
+    },
+    {
+      "file": "splash_anim-3.mp3",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "splash_still-v1.png",
+        "motion_prompt": "A bullet hits the water: the spray column shoots up, then collapses and falls back as droplets. The camera does not move."
+      },
+      "job_id": "34943240-29f7-4b0a-8698-8e86676d25c5",
+      "credits": 9,
+      "created_at": "2026-11-03T03:42:53.197Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/22163dfe4a4eddd6c278fc2c4a6d2bc9.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/2882eb63a6f14e9e9862c66edd46ff6c.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2606296387ee2f77e311e853c116b334.mp3"
+      }
+    },
+    {
+      "file": "splash_anim-1.png",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "splash_still-v1.png",
+        "motion_prompt": "A bullet hits the water: the spray column shoots up, then collapses and falls back as droplets. The camera does not move."
+      },
+      "job_id": "34943240-29f7-4b0a-8698-8e86676d25c5",
+      "credits": 9,
+      "created_at": "2026-11-03T03:42:53.197Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/22163dfe4a4eddd6c278fc2c4a6d2bc9.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/2882eb63a6f14e9e9862c66edd46ff6c.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2606296387ee2f77e311e853c116b334.mp3"
+      }
+    }
+  ]
+}

@@ -1,0 +1,256 @@
+{
+  "assets": [
+    {
+      "file": "muzzle_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A compact, centered muzzle-flash spark in a sharp, uneven starburst silhouette. A white-hot central core transitions through flat yellow and orange bands, with short, chunky spikes radiating outward. Use bold, even dark outlines and hard-edged two-tone cel shading for a crisp, high-contrast shape. Keep the spark isolated against a plain light-gray background.",
+      "variation_set": "383b9cec",
+      "variation": 1
+    },
+    {
+      "file": "muzzle_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A centered, slightly horizontal burst of white-hot light, with a broad angular core and several short, pointed rays extending from its sides and corners. Flat yellow and orange edge bands define the glow without soft gradients; bold dark outlines separate each hard-edged color area. The silhouette is chunky and immediately readable, isolated on plain light gray.",
+      "variation_set": "383b9cec",
+      "variation": 2
+    },
+    {
+      "file": "muzzle_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A compact, asymmetrical star-shaped impact spark, with one longer upper spike balanced by shorter, thick rays around a bright white center. Add simple, sharply bounded yellow and orange layers, contained by a bold, even dark outline. Use flat cel-shaded color areas and a clear silhouette, with no separate objects or debris. Plain light-gray background.",
+      "variation_set": "383b9cec",
+      "variation": 3
+    },
+    {
+      "file": "muzzle_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A centered, dense muzzle-flash burst with a white-hot diamond-like core and stubby triangular spikes radiating in several directions. Surround the core with distinct flat yellow and orange shapes, using hard edges and bold dark outlines for strong contrast. Keep the overall form compact and isolated against a solid light-gray background.",
+      "variation_set": "383b9cec",
+      "variation": 4
+    },
+    {
+      "file": "muzzle_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A compact, centered muzzle-flash spark in a sharp, uneven starburst silhouette. A white-hot central core transitions through flat yellow and orange bands, with short, chunky spikes radiating outward. Use bold, even dark outlines and hard-edged two-tone cel shading for a crisp, high-contrast shape. Keep the spark isolated against a plain light-gray background.",
+      "variation_set": "383b9cec",
+      "variation": 1
+    },
+    {
+      "file": "muzzle_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A centered, slightly horizontal burst of white-hot light, with a broad angular core and several short, pointed rays extending from its sides and corners. Flat yellow and orange edge bands define the glow without soft gradients; bold dark outlines separate each hard-edged color area. The silhouette is chunky and immediately readable, isolated on plain light gray.",
+      "variation_set": "383b9cec",
+      "variation": 2
+    },
+    {
+      "file": "muzzle_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A compact, asymmetrical star-shaped impact spark, with one longer upper spike balanced by shorter, thick rays around a bright white center. Add simple, sharply bounded yellow and orange layers, contained by a bold, even dark outline. Use flat cel-shaded color areas and a clear silhouette, with no separate objects or debris. Plain light-gray background.",
+      "variation_set": "383b9cec",
+      "variation": 3
+    },
+    {
+      "file": "muzzle_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bright gun muzzle flash spark: a sharp star-shaped burst of white-hot light with short radiating spikes, like a tracer round striking metal. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain black background",
+        "n": 4
+      },
+      "job_id": "86521141-39bd-46ea-bca5-ee28d1523d83",
+      "credits": 2,
+      "created_at": "2026-11-03T03:41:16.297Z",
+      "model": "klimt",
+      "prompt": "A centered, dense muzzle-flash burst with a white-hot diamond-like core and stubby triangular spikes radiating in several directions. Surround the core with distinct flat yellow and orange shapes, using hard edges and bold dark outlines for strong contrast. Keep the overall form compact and isolated against a solid light-gray background.",
+      "variation_set": "383b9cec",
+      "variation": 4
+    },
+    {
+      "file": "muzzle_anim-1.webp",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "muzzle_still-v3.png",
+        "motion_prompt": "A gun flash: the spark flashes, flickers quickly and vanishes. The camera does not move."
+      },
+      "job_id": "385c7845-a86e-4769-963e-40f2870d19cb",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:54.003Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/9e24a0db306b78db70b164540ff4ad44.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/4eead22952b9b9023505c159e97b83f9.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2daf5e27826e993fea0d8a151e0bd188.mp3"
+      }
+    },
+    {
+      "file": "muzzle_anim-2.mp4",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "muzzle_still-v3.png",
+        "motion_prompt": "A gun flash: the spark flashes, flickers quickly and vanishes. The camera does not move."
+      },
+      "job_id": "385c7845-a86e-4769-963e-40f2870d19cb",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:54.003Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/9e24a0db306b78db70b164540ff4ad44.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/4eead22952b9b9023505c159e97b83f9.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2daf5e27826e993fea0d8a151e0bd188.mp3"
+      }
+    },
+    {
+      "file": "muzzle_anim-3.mp3",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "muzzle_still-v3.png",
+        "motion_prompt": "A gun flash: the spark flashes, flickers quickly and vanishes. The camera does not move."
+      },
+      "job_id": "385c7845-a86e-4769-963e-40f2870d19cb",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:54.003Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/9e24a0db306b78db70b164540ff4ad44.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/4eead22952b9b9023505c159e97b83f9.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2daf5e27826e993fea0d8a151e0bd188.mp3"
+      }
+    },
+    {
+      "file": "muzzle_anim-1.png",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "muzzle_still-v3.png",
+        "motion_prompt": "A gun flash: the spark flashes, flickers quickly and vanishes. The camera does not move."
+      },
+      "job_id": "385c7845-a86e-4769-963e-40f2870d19cb",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:54.003Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/9e24a0db306b78db70b164540ff4ad44.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/4eead22952b9b9023505c159e97b83f9.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/2daf5e27826e993fea0d8a151e0bd188.mp3"
+      }
+    }
+  ]
+}

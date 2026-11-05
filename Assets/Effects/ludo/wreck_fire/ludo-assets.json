@@ -1,0 +1,256 @@
+{
+  "assets": [
+    {
+      "file": "wreck_fire_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A centered, side-view burning wreck sprite in bold cel-shaded shapes. A low, uneven pile of blackened, angular debris forms the base, with several thick flames rising above it. The flames have bright yellow inner areas, orange midsections, and deep red outer edges, divided by hard boundaries and bold outlines. Dense dark-gray smoke billows directly upward in a few broad, rounded lobes, with lighter gray planes defining their edges. Keep the whole silhouette compact and clearly separated from the canvas edges. Plain solid white background.",
+      "variation_set": "cbe54f61",
+      "variation": 1
+    },
+    {
+      "file": "wreck_fire_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A centered side-scrolling view of a burning wreck, composed as one static keyframe. Charred debris lies in a flattened heap along the bottom, with a few broken, jagged pieces forming an irregular silhouette. Broad tongues of flame rise at different heights, leaning slightly to one side; use yellow cores, orange bodies, and dark red tips with crisp two-tone shading. Above them, a heavy column of near-black smoke curls into chunky connected shapes, outlined boldly and accented with slate-gray sections. Plain solid white background, with open space around the entire sprite.",
+      "variation_set": "cbe54f61",
+      "variation": 2
+    },
+    {
+      "file": "wreck_fire_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A compact, centered sprite of a wreck fire seen directly from the side. The base is a dense cluster of scorched debris with sharp protrusions and flat black surfaces, edged in dark brown. Tall flames emerge from gaps across the pile, forming a stepped silhouette of thick, distinct tongues. Use bright yellow near the base, saturated orange through the flames, and red along selected outer contours, all in hard-edged cel-shaded bands. A dark smoke mass rises above, divided into several overlapping rounded lobes with restrained gray highlights. Plain solid white background.",
+      "variation_set": "cbe54f61",
+      "variation": 3
+    },
+    {
+      "file": "wreck_fire_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A single centered side-view image of a burning debris pile at its most active point. Keep the wreckage low and broad, built from overlapping charred chunks with bold black outlines and sparse dark-gray planes. Above it, a narrow central flame rises highest, flanked by shorter, chunky flames that spread outward; each has a yellow core, orange fill, and red outer shading. A thick smoke plume billows upward from the flames in angular rounded masses, mostly charcoal black with a few medium-gray facets. Use a clean, isolated silhouette on a plain solid white background.",
+      "variation_set": "cbe54f61",
+      "variation": 4
+    },
+    {
+      "file": "wreck_fire_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A centered, side-view burning wreck sprite in bold cel-shaded shapes. A low, uneven pile of blackened, angular debris forms the base, with several thick flames rising above it. The flames have bright yellow inner areas, orange midsections, and deep red outer edges, divided by hard boundaries and bold outlines. Dense dark-gray smoke billows directly upward in a few broad, rounded lobes, with lighter gray planes defining their edges. Keep the whole silhouette compact and clearly separated from the canvas edges. Plain solid white background.",
+      "variation_set": "cbe54f61",
+      "variation": 1
+    },
+    {
+      "file": "wreck_fire_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A centered side-scrolling view of a burning wreck, composed as one static keyframe. Charred debris lies in a flattened heap along the bottom, with a few broken, jagged pieces forming an irregular silhouette. Broad tongues of flame rise at different heights, leaning slightly to one side; use yellow cores, orange bodies, and dark red tips with crisp two-tone shading. Above them, a heavy column of near-black smoke curls into chunky connected shapes, outlined boldly and accented with slate-gray sections. Plain solid white background, with open space around the entire sprite.",
+      "variation_set": "cbe54f61",
+      "variation": 2
+    },
+    {
+      "file": "wreck_fire_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A compact, centered sprite of a wreck fire seen directly from the side. The base is a dense cluster of scorched debris with sharp protrusions and flat black surfaces, edged in dark brown. Tall flames emerge from gaps across the pile, forming a stepped silhouette of thick, distinct tongues. Use bright yellow near the base, saturated orange through the flames, and red along selected outer contours, all in hard-edged cel-shaded bands. A dark smoke mass rises above, divided into several overlapping rounded lobes with restrained gray highlights. Plain solid white background.",
+      "variation_set": "cbe54f61",
+      "variation": 3
+    },
+    {
+      "file": "wreck_fire_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_3_4",
+        "prompt": "A burning wreck fire seen from the side: tall flickering flames with dark smoke billowing above them, rising from a pile of charred debris on the ground. Bold simple silhouette, high contrast, chunky flame and smoke shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "70925be0-56d0-4386-b6ab-688ebfe0601c",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.887Z",
+      "model": "klimt",
+      "prompt": "A single centered side-view image of a burning debris pile at its most active point. Keep the wreckage low and broad, built from overlapping charred chunks with bold black outlines and sparse dark-gray planes. Above it, a narrow central flame rises highest, flanked by shorter, chunky flames that spread outward; each has a yellow core, orange fill, and red outer shading. A thick smoke plume billows upward from the flames in angular rounded masses, mostly charcoal black with a few medium-gray facets. Use a clean, isolated silhouette on a plain solid white background.",
+      "variation_set": "cbe54f61",
+      "variation": 4
+    },
+    {
+      "file": "wreck_fire_anim-1.webp",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": true,
+        "initial_image": "wreck_fire_still-v1.png",
+        "motion_prompt": "The fire burns: flames flicker and dance while dark smoke billows upward in a seamless loop. The camera does not move."
+      },
+      "job_id": "38e4c1f4-5832-451d-8979-055e6c0f5689",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:57.709Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/7ef365d50bda9925067da8d351f019ee.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/d67cb2aed767c2ee65326038873abcac.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/d6e58da2bd2b0c2e2c328e9b563c95c7.mp3"
+      }
+    },
+    {
+      "file": "wreck_fire_anim-2.mp4",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": true,
+        "initial_image": "wreck_fire_still-v1.png",
+        "motion_prompt": "The fire burns: flames flicker and dance while dark smoke billows upward in a seamless loop. The camera does not move."
+      },
+      "job_id": "38e4c1f4-5832-451d-8979-055e6c0f5689",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:57.709Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/7ef365d50bda9925067da8d351f019ee.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/d67cb2aed767c2ee65326038873abcac.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/d6e58da2bd2b0c2e2c328e9b563c95c7.mp3"
+      }
+    },
+    {
+      "file": "wreck_fire_anim-3.mp3",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": true,
+        "initial_image": "wreck_fire_still-v1.png",
+        "motion_prompt": "The fire burns: flames flicker and dance while dark smoke billows upward in a seamless loop. The camera does not move."
+      },
+      "job_id": "38e4c1f4-5832-451d-8979-055e6c0f5689",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:57.709Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/7ef365d50bda9925067da8d351f019ee.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/d67cb2aed767c2ee65326038873abcac.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/d6e58da2bd2b0c2e2c328e9b563c95c7.mp3"
+      }
+    },
+    {
+      "file": "wreck_fire_anim-1.png",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": true,
+        "initial_image": "wreck_fire_still-v1.png",
+        "motion_prompt": "The fire burns: flames flicker and dance while dark smoke billows upward in a seamless loop. The camera does not move."
+      },
+      "job_id": "38e4c1f4-5832-451d-8979-055e6c0f5689",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:57.709Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/7ef365d50bda9925067da8d351f019ee.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/d67cb2aed767c2ee65326038873abcac.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/d6e58da2bd2b0c2e2c328e9b563c95c7.mp3"
+      }
+    }
+  ]
+}

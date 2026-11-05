@@ -1,0 +1,256 @@
+{
+  "assets": [
+    {
+      "file": "impact_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A centered, side-view bullet impact at the surface of a short, dark-brown dirt ground strip. A compact fan of chunky dirt clods kicks upward from one central point, with a tan dust puff filling the gaps and a few sharp orange-yellow shrapnel sparks mixed through it. Use bold, even outlines and hard-edged two-tone cel shading; keep the silhouette simple and high-contrast. Plain white background, with the entire effect contained well within the canvas.",
+      "variation_set": "a8cb7a87",
+      "variation": 1
+    },
+    {
+      "file": "impact_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A single impact burst seen in 2D side view, centered on a narrow dirt ground strip. The splash spreads in a broad, uneven fan, with larger angular clods near the base and smaller fragments rising outward. A pale-brown dust puff sits behind the clods, punctuated by short, bright sparks. Use chunky shapes, flat color blocks, hard-edged shadows, and bold outlines. Plain white background; leave clear space around the centered sprite.",
+      "variation_set": "a8cb7a87",
+      "variation": 2
+    },
+    {
+      "file": "impact_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A compact, upward-focused bullet impact breaks the edge of a short dirt ground strip in side view. Several thick dirt chunks rise close together above the strike point, while a small fan of dust and a few orange sparks flare between them. Keep the silhouette dense at its base and irregular along the top, with crisp two-tone cel shading and a bold outline. Plain white background, with the effect isolated at the center and away from the canvas edges.",
+      "variation_set": "a8cb7a87",
+      "variation": 3
+    },
+    {
+      "file": "impact_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A centered side-on dirt impact with a low, wide silhouette: a small dust puff spreads along the ground as chunky clods arc upward to either side of the strike point. A few thin, bright shrapnel sparks cut through the dust and fragments. Use dark-brown outlines, warm brown dirt, muted tan dust, and sharp orange-yellow spark accents, all in flat cel-shaded areas with hard shadow edges. Plain white background; show only this single impact moment, contained in the middle of the image.",
+      "variation_set": "a8cb7a87",
+      "variation": 4
+    },
+    {
+      "file": "impact_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A centered, side-view bullet impact at the surface of a short, dark-brown dirt ground strip. A compact fan of chunky dirt clods kicks upward from one central point, with a tan dust puff filling the gaps and a few sharp orange-yellow shrapnel sparks mixed through it. Use bold, even outlines and hard-edged two-tone cel shading; keep the silhouette simple and high-contrast. Plain white background, with the entire effect contained well within the canvas.",
+      "variation_set": "a8cb7a87",
+      "variation": 1
+    },
+    {
+      "file": "impact_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A single impact burst seen in 2D side view, centered on a narrow dirt ground strip. The splash spreads in a broad, uneven fan, with larger angular clods near the base and smaller fragments rising outward. A pale-brown dust puff sits behind the clods, punctuated by short, bright sparks. Use chunky shapes, flat color blocks, hard-edged shadows, and bold outlines. Plain white background; leave clear space around the centered sprite.",
+      "variation_set": "a8cb7a87",
+      "variation": 2
+    },
+    {
+      "file": "impact_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A compact, upward-focused bullet impact breaks the edge of a short dirt ground strip in side view. Several thick dirt chunks rise close together above the strike point, while a small fan of dust and a few orange sparks flare between them. Keep the silhouette dense at its base and irregular along the top, with crisp two-tone cel shading and a bold outline. Plain white background, with the effect isolated at the center and away from the canvas edges.",
+      "variation_set": "a8cb7a87",
+      "variation": 3
+    },
+    {
+      "file": "impact_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Cel-Shaded",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A bullet impact hitting the dirt ground seen from the side: a small upward splash of dirt clods, shrapnel sparks and dust puff in a fan shape. Bold simple silhouette, high contrast, chunky shapes, isolated on a plain white background",
+        "n": 4
+      },
+      "job_id": "2e13e7b6-949c-4352-af00-6a274d3690c5",
+      "credits": 2,
+      "created_at": "2026-11-03T03:40:29.718Z",
+      "model": "klimt",
+      "prompt": "A centered side-on dirt impact with a low, wide silhouette: a small dust puff spreads along the ground as chunky clods arc upward to either side of the strike point. A few thin, bright shrapnel sparks cut through the dust and fragments. Use dark-brown outlines, warm brown dirt, muted tan dust, and sharp orange-yellow spark accents, all in flat cel-shaded areas with hard shadow edges. Plain white background; show only this single impact moment, contained in the middle of the image.",
+      "variation_set": "a8cb7a87",
+      "variation": 4
+    },
+    {
+      "file": "impact_anim-1.webp",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "impact_still-v2.png",
+        "motion_prompt": "A bullet hits the ground: dirt clods and debris burst upward and outward, fall back down, and the dust puff fades away. The camera does not move."
+      },
+      "job_id": "bf5a7777-3a70-4015-8f62-6965d682338a",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:03.758Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/ece800fc61a820cae28a83479f199d90.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/97f25af6b9c2beed55d74ff047753404.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/c5058c014959cc3a80e3a24cb16031ac.mp3"
+      }
+    },
+    {
+      "file": "impact_anim-2.mp4",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "impact_still-v2.png",
+        "motion_prompt": "A bullet hits the ground: dirt clods and debris burst upward and outward, fall back down, and the dust puff fades away. The camera does not move."
+      },
+      "job_id": "bf5a7777-3a70-4015-8f62-6965d682338a",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:03.758Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/ece800fc61a820cae28a83479f199d90.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/97f25af6b9c2beed55d74ff047753404.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/c5058c014959cc3a80e3a24cb16031ac.mp3"
+      }
+    },
+    {
+      "file": "impact_anim-3.mp3",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "impact_still-v2.png",
+        "motion_prompt": "A bullet hits the ground: dirt clods and debris burst upward and outward, fall back down, and the dust puff fades away. The camera does not move."
+      },
+      "job_id": "bf5a7777-3a70-4015-8f62-6965d682338a",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:03.758Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/ece800fc61a820cae28a83479f199d90.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/97f25af6b9c2beed55d74ff047753404.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/c5058c014959cc3a80e3a24cb16031ac.mp3"
+      }
+    },
+    {
+      "file": "impact_anim-1.png",
+      "command": "sprite animate",
+      "operation_id": "animateSprite",
+      "body": {
+        "model": "hydra",
+        "duration": 3,
+        "frames": 16,
+        "image_type": "sprite-vfx",
+        "frame_size": 0,
+        "loop": false,
+        "initial_image": "impact_still-v2.png",
+        "motion_prompt": "A bullet hits the ground: dirt clods and debris burst upward and outward, fall back down, and the dust puff fades away. The camera does not move."
+      },
+      "job_id": "bf5a7777-3a70-4015-8f62-6965d682338a",
+      "credits": 9,
+      "created_at": "2026-11-03T03:44:03.758Z",
+      "result_urls": {
+        "spritesheet_url": "https://storage.googleapis.com/ludo-assets/api/ece800fc61a820cae28a83479f199d90.webp",
+        "video_url": "https://storage.googleapis.com/ludo-assets/api/97f25af6b9c2beed55d74ff047753404.mp4",
+        "audio_url": "https://storage.googleapis.com/ludo-assets/api/c5058c014959cc3a80e3a24cb16031ac.mp3"
+      }
+    }
+  ]
+}

@@ -2,3 +2,7 @@
 *.py text eol=lf
 *.S text eol=lf
 *.ld text eol=lf
+Assets/**/ludo/**/*.png filter=lfs diff=lfs merge=lfs -text
+Assets/**/ludo/**/*.webp filter=lfs diff=lfs merge=lfs -text
+Assets/**/ludo/**/*.mp3 filter=lfs diff=lfs merge=lfs -text
+Assets/**/ludo/**/*.mp4 filter=lfs diff=lfs merge=lfs -text
