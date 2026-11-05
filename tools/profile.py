@@ -70,7 +70,7 @@ def main():
     ap.add_argument('--callers', metavar='NAME', help='also list the call paths (3 deep) into functions named NAME')
     ap.add_argument('--start', type=int, help='start the flight at this tick (as emu.py --start)')
     ap.add_argument('--skip', type=int, default=1, help='with --start: frames run before profiling')
-    ap.add_argument('--mode', choices=['full', 'doubled'], help='hold MODE (else AUTO picks it)')
+    ap.add_argument('--mode', choices=['full', 'doubled', 'adaptive'], help='hold MODE (else adaptive)')
     ap.add_argument('--dma-us', type=float, default=2.0, help='C64U cost of one REU command, in us (the emulator charges none)')
     args = ap.parse_args()
     start = emu.host_agent('dist/chopper.reu', args.start) if args.start is not None else None
@@ -121,7 +121,7 @@ def main():
             cpu.mem[emu.AGENT + len(start):emu.AGENT + len(start) + 4] = args.start.to_bytes(4, 'little')
             start = None
         if args.mode and cpu.mem[emu.STATUS] == 0xC1:
-            cpu.mem[emu.STATUS + 7] = 1 if args.mode == 'doubled' else 0
+            cpu.mem[emu.STATUS + 7] = {'full': 0, 'doubled': 1, 'adaptive': 4}[args.mode]
         n = len(cpu.watch)
         # set-up: events 1-2; geometry: 3-4; the band loop: 5-6
         inside = frames >= skip and n % 6 == (5 if args.render else 1 if args.setup else 3)

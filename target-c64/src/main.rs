@@ -10,9 +10,9 @@
 //!
 //! Needs the matching `chopper.reu` at REU address 0; until it appears the border flashes, so it may be
 //! uploaded after starting. Any control (joystick 2 or its second button, or the keys: W A S D, SPACE,
-//! SHIFT, `controls`) takes over from the autopilot (`STATUS+MODE` toggles full / line-doubled). F1
-//! toggles the floor between full lines (the boot default) and AUTO (full or line-doubled by the frame
-//! time).
+//! SHIFT, `controls`) takes over from the autopilot. The floor's lines are adaptive: a line pair is drawn
+//! once only where its lines repeat a texel (`floor::double_mask`), the same rule every frame. (The host
+//! can set full or line-doubled lines at `STATUS+MODE`, to compare.)
 //! Performance is in the status block at `$CA80` (`layout::status`).
 
 #![no_std]
@@ -45,14 +45,16 @@ unsafe extern "C" {
     fn stream_calibrate() -> u16;
     static stream_state: u8;
     /// `asm/floor.S`: once a frame `floor_begin`; per view line `floor_line` (the runs at `SPANS` into
-    /// the line buffer) and `floor_copy` (into band line `line` of `STAGE`, and the next when doubled).
-    /// `asm/spans.S`: the runs of the line whose ray is `RAYS.a` into `SPANS` (`floor::make_line`).
+    /// the line buffer) and `floor_copy` (into band line `line` of `STAGE`).
+    /// `asm/spans.S`: the runs of the line whose ray is `RAYS.a` into `SPANS` (`floor::make_line`), and
+    /// `fog_second`: a doubled pair's second line over them, its own fog line (`floor::second_line`).
     fn span_line();
+    fn fog_second();
     fn bt_build();
     fn floor_begin();
     fn floor_end();
     fn floor_line();
-    fn floor_copy(line: u8, doubled: u8);
+    fn floor_copy(line: u8);
     /// `asm/floor.S`: `RAYS.a += RAY_STEP` (the next drawn line's ray).
     fn ray_step();
     /// `asm/floor.S`: copy `STAGE` to the bitmap's cell row `band` once the raster is not in it.
@@ -325,13 +327,8 @@ fn stream(c: &mut C64, now: u16) {
 }
 
 /// The player's controls as `agent::input` bits: joystick 2 (its second button on POT X), or the keys:
-/// W, A, S, D for the stick, SPACE to fire, either SHIFT for a missile. F1 (not an input bit) toggles
-/// `STATUS+MODE` on its press (latched at `STATUS+KEYS`): AUTO goes to 0 (always full lines), anything
-/// else (0, or the host's 1) to AUTO. (In the spare region: the resident code is full.)
-///
-/// Like every key, F1 is ignored while the stick is pushed (the scan is skipped, and the latch is kept),
-/// masked while joystick 1's fire is held (column 4, as for SPACE and right SHIFT), and read once a
-/// frame: a press must last until the next frame's scan.
+/// W, A, S, D for the stick, SPACE to fire, either SHIFT for a missile. (In the spare region: the
+/// resident code is full.) The keys are read once a frame, and not while the stick is pushed.
 ///
 /// The stick and POT X are read first, with CIA 1 port A as the boot left it (bits 7/6 select the
 /// paddle pair); the stick pushed, it alone (its lines would select rows of their own). Else the keyboard
@@ -356,14 +353,7 @@ fn controls() -> u8 {
     poke(0xDC00, 0xFF);
     let held = !peek(0xDC01);
     // Row 1: W column 1, A 2, S 5, left SHIFT 7; row 2: D column 2; row 6: right SHIFT column 4; row 7:
-    // SPACE column 4. (Each row's keys moved onto their bits.) Row 0: F1 column 4.
-    poke(0xDC00, !0x01);
-    let f1 = !peek(0xDC01) & !held & 0x10;
-    if f1 & !peek(STATUS + status::KEYS) != 0 {
-        let m = peek(STATUS + status::MODE);
-        poke(STATUS + status::MODE, if m & status::mode::AUTO != 0 { 0 } else { status::mode::AUTO });
-    }
-    poke(STATUS + status::KEYS, f1);
+    // SPACE column 4. (Each row's keys moved onto their bits.)
     poke(0xDC00, !0x02);
     let r1 = !peek(0xDC01) & !held;
     poke(0xDC00, !0x04);
@@ -500,9 +490,8 @@ pub extern "C" fn main() -> i16 {
 
     c.fill(STATUS, status::SIZE, 0);
     poke16(STATUS + status::PROBES, probes);
-    // Full lines; F1 (or the host) turns on AUTO, where the floor picks full or line-doubled lines by
-    // itself (`floor::pick_lines`).
-    poke(STATUS + status::MODE, 0);
+    // Adaptive lines (`floor::double_mask`). The host can still set full or line-doubled ones.
+    poke(STATUS + status::MODE, status::mode::ADAPTIVE);
     poke(STATUS + status::MAGIC, STATUS_MAGIC);
 
     let mut frames = 0u16;
@@ -583,7 +572,7 @@ pub extern "C" fn main() -> i16 {
         // The floor's rays and the grids' set-up from their overlay (then the window is the frame's
         // geometry again).
         hw::fetch(c, OVERLAY_GEOM, WORK, geom_size);
-        floor::pick_lines(c);
+        floor::write_pairs(c, &cam);
         let rays = Rays::new(&cam);
         *args = SpanArgs::new(&cam, &rays);
         unsafe { bt_build() };
@@ -602,18 +591,15 @@ pub extern "C" fn main() -> i16 {
         unsafe { geo_bin() };
         poke16(STATUS + status::GEOM_US, stopwatch_stop());
 
-        let doubled = peek(STATUS + status::MODE) & 1;
-        poke(chopper::layout::FOG_DOUBLED, doubled);
         stopwatch_start();
         unsafe { floor_begin() };
         // The bands can take longer than the 16-bit stopwatch: add it up band by band.
         let (mut render, mut last) = (0u32, 0u16);
         // Of it, the floor's lines and the triangles (the status block's split; the rest is publishing).
         let (mut floor_t, mut draw_t) = (0u32, 0u32);
-        // Line y's ray at byte 0, stepped (exactly) line by line in place (`ray_step`).
+        // Line y's ray at byte 0, stepped (exactly) line by line in place (`ray_step`, twice for a pair).
         args.a = rays.a0;
-        let step: [i32; 3] = if doubled != 0 { rays.ay.map(|c| c * 2) } else { rays.ay };
-        unsafe { core::ptr::write_volatile(chopper::layout::RAY_STEP as *mut [i32; 3], step) };
+        unsafe { core::ptr::write_volatile(chopper::layout::RAY_STEP as *mut [i32; 3], rays.ay) };
         for band in 0..VIEW_BANDS as u8 {
             // (Sprites fetch from the REU between bands: the floor starts each band afresh.)
             let active = unsafe {
@@ -622,16 +608,25 @@ pub extern "C" fn main() -> i16 {
             };
             let lines = stopwatch_read();
             draw_t += lines.wrapping_sub(last) as u32;
+            // The band's pairs drawn once (`floor::write_pairs`: none, all, or the adaptive ones).
+            let pairs = peek(chopper::layout::DOUBLE_MASK + band as u16);
             let mut line = 0u8;
             while line < 8 {
-                args.haze = floor::haze_byte(line, doubled != 0);
+                let doubled = floor::doubled(pairs, line);
+                args.haze = floor::haze_byte(line);
                 unsafe {
                     span_line();
                     floor_line();
-                    floor_copy(line, doubled);
+                    floor_copy(line);
                     ray_step();
+                    if doubled {
+                        line += 1;
+                        fog_second();
+                        floor_copy(line);
+                        ray_step();
+                    }
                 }
-                line += 1 + doubled;
+                line += 1;
             }
             let drawn = stopwatch_read();
             floor_t += drawn.wrapping_sub(lines) as u32;

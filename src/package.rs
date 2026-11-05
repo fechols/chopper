@@ -139,6 +139,8 @@ pub struct FloorStats {
     pub io_writes: u32,
     pub spans: u32,
     pub ground_spans: u32,
+    /// Lines drawn (a doubled pair is one).
+    pub drawn_lines: u32,
     /// The geometry: objects drawn, triangles (and sprites) set up, dropped.
     pub geom: crate::geom::Stats,
     pub tris: u8,
@@ -155,7 +157,7 @@ pub fn scene_block(reu: &[u8]) -> Vec<u8> {
 /// Draw the view's bands into `buf` exactly as the C64 does: the objects sorted first; then per band,
 /// per drawn line, the runs into the line buffer, copied into the stage; the band's objects over them;
 /// the stage published to the bitmap.
-pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, doubled: bool) -> FloorStats {
+pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, lines: floor::Lines) -> FloorStats {
     use crate::geom::{self, Bands, View, Verts, Work};
     use crate::hw::Hw;
     let mut st = FloorStats::default();
@@ -167,22 +169,34 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
     geom::push_dynamic(m, &mut work, &mut verts);
     let mut bands = Bands::new(&work);
     let rays = Rays::new(cam);
+    let fa = rays.fog();
     let mut shadow;
     let mut spans = [Span::default(); MAX_SPANS];
     let mut fog = floor::Patches::default();
+    lines.write(m, cam);
+    let pairs: [u8; VIEW_BANDS as usize] = core::array::from_fn(|b| m.peek(layout::DOUBLE_MASK + b as u16));
     for band in 0..VIEW_BANDS {
         // (Sprites fetch from the REU between bands: the floor starts each band afresh, as on the C64.)
         shadow = floor::floor_begin(m);
-        for line in (0..8u8).step_by(if doubled { 2 } else { 1 }) {
+        let mut line = 0u8;
+        while line < 8 {
+            let doubled = floor::doubled(pairs[band as usize], line);
             let a = rays.line(band * 8 + line as u16);
             let y = band * 8 + line as u16;
-            let n = floor::make_line(cam, &rays, &a, floor::haze_byte(line, doubled), rays.fog().at(y), &mut spans, &mut fog);
+            let (n, gb) = floor::make_line(cam, &rays, &a, floor::haze_byte(line), fa.at(y), &mut spans, &mut fog);
             st.spans += n as u32;
             st.ground_spans += spans[..n].iter().filter(|s| s.fill().is_none()).count() as u32;
             let c = floor::draw_line(m, &spans[..n], &fog, LINEBUF, &mut shadow);
             st.dmas += c.dmas;
             st.io_writes += c.io_writes;
-            floor::copy_line(m, LINEBUF, STAGE, line, doubled);
+            floor::copy_line(m, LINEBUF, STAGE, line);
+            if doubled {
+                // The second line: the first's texels, its own fog line and haze phase.
+                floor::second_line(m, &spans[..n], &mut fog, fa.dir, gb, floor::haze_byte(line + 1), fa.at(y + 1), LINEBUF);
+                floor::copy_line(m, LINEBUF, STAGE, line + 1);
+            }
+            st.drawn_lines += 1;
+            line += 1 + doubled as u8;
         }
         bands.band(m, &work, band as usize, STAGE);
         // (`band_publish`: the drawn columns only.)
@@ -198,13 +212,13 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
 }
 
 /// Frame `tick` of the autopilot flight in buffer 0 of a fresh model of `reu`.
-pub fn render(reu: &[u8], tick: u32, doubled: bool) -> (Machine, FloorStats) {
-    render_from(reu, tick, doubled, crate::hud::NO_LOCK)
+pub fn render(reu: &[u8], tick: u32, lines: floor::Lines) -> (Machine, FloorStats) {
+    render_from(reu, tick, lines, crate::hud::NO_LOCK)
 }
 
 /// [`render`], the HUD's lock-on carried on from `lock` (`hud::LOCK_STATE` before the frame: the lock
 /// builds over the frames shown, so the C64's state before a frame is what this frame's follows from).
-pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::LOCK_BYTES]) -> (Machine, FloorStats) {
+pub fn render_from(reu: &[u8], tick: u32, lines: floor::Lines, lock: [u8; crate::hud::LOCK_BYTES]) -> (Machine, FloorStats) {
     use crate::hw::Hw;
     let mut m = Machine::new(reu);
     setup(&mut m, BUFFERS[0]);
@@ -221,14 +235,14 @@ pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::
     // The effects pass (none playing on a fresh machine): the clouds on the horizon.
     crate::combat::fx(&mut m, &agent, &cam);
     let scene = scene_block(reu);
-    let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
+    let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, lines);
     (m, st)
 }
 
 /// One frame stepped from a snapshot of the C64's state at its start (`snapshot`), as the C64's main loop
 /// does: the agent flies to its clock, the gauges and the HUD follow, the frame is drawn. The model holds
 /// the state after it.
-pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bool) -> Result<(Machine, FloorStats), String> {
+pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, lines: floor::Lines) -> Result<(Machine, FloorStats), String> {
     use crate::hw::Hw;
     let mut m = Machine::new(reu);
     for (at, bytes) in &snap.reu {
@@ -284,7 +298,7 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     crate::hud::update(&mut m, &agent, &cam);
     crate::actors::update(&mut m, &cam);
     let scene = scene_block(reu);
-    let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
+    let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, lines);
     Ok((m, st))
 }
 

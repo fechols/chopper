@@ -47,6 +47,7 @@ FLV     = $C609       ; layout::FLOOR_LEVEL: the ground run's mip level
 TABLE_LEVELS = 3      ; floor::TABLE_LEVELS: levels from here are one tile (`lookup`)
 SEA_BANK = 85         ; format::SEA_BANK
 PATCH   = $C5F0       ; layout::FOG_PATCHES (`floor::Patches`): count, then byte, keep, bits
+FOG_RAW = $C61A       ; layout::FOG_RAW: the painted bytes as drawn (byte 3i for patch i)
 SAVE_MID  = $C7D4
 SAVE_BANK = $C7D5
 FETCH   = $91
@@ -327,13 +328,24 @@ next:
     inc RUNP+1
 9:  jmp run
 done:
-    ; the fog line over it (`floor::draw_line`): LINEBUF[byte] = LINEBUF[byte] & keep | bits
+    jsr fog_apply
+    lda SHMID
+    sta SAVE_MID
+    lda SHBANK
+    sta SAVE_BANK
+    rts
+
+; The fog line over the line buffer (`floor::apply_fog`): LINEBUF[byte] = LINEBUF[byte] & keep | bits,
+; the drawn byte kept at FOG_RAW + 3i for a doubled pair's second line (`fog_second`, asm/spans.S).
+.globl fog_apply
+fog_apply:
     lda PATCH
     beq 2f
     sta REM
     ldy #0
 1:  ldx PATCH+1,y
     lda LINEBUF,x
+    sta FOG_RAW,y
     and PATCH+2,y
     ora PATCH+3,y
     sta LINEBUF,x
@@ -342,11 +354,7 @@ done:
     iny
     dec REM
     bne 1b
-2:  lda SHMID
-    sta SAVE_MID
-    lda SHBANK
-    sta SAVE_BANK
-    rts
+2:  rts
 
 ; BK = the level's tile table at (VHH & 15) · 16 + (UHH & 15); for a one-tile level, its bank at tile 0
 ; and the sea elsewhere (`floor::tile_bank`).
@@ -384,21 +392,14 @@ lookup:
 lvbank: .byte 84, 89, 86
 .size floor_line, .-floor_line
 
-; floor_copy(A = band line 0..7, X = doubled): LINEBUF into STAGE column by column (+8 a column), and
-; into the next line too when doubled. Unrolled (9 cycles a byte); it lives in the clipping overlay
+; floor_copy(A = band line 0..7): LINEBUF into STAGE column by column (+8 a column); a doubled pair's
+; second line is copied after `fog_second`. Unrolled (9 cycles a byte); it lives in the clipping overlay
 ; (window 3, $F010), which is loaded before the band loop and not overwritten until the next frame.
 .section .text.clip.floor_copy,"ax",@progbits
 .globl floor_copy
 .type floor_copy,@function
 floor_copy:
-    cpx #0
-    beq 1f
     tax
-    jsr fc_line
-    inx
-    bne fc_line         ; (X = line + 1: always)
-1:  tax
-fc_line:
 .set fci, 0
 .rept COLS
     lda LINEBUF+fci

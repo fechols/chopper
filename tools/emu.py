@@ -9,7 +9,7 @@ Every frame it shows (a `$DD00` bank flip) is checked byte for byte against the 
 `../talonhd/tools/emu64.py`.
 
     python tools/emu.py [--prg dist/chopper.prg] [--elf dist/chopper.elf] [--reu dist/chopper.reu]
-                        [--frames 4] [--doubled-after 2] [--start T] [--leap N]
+                        [--frames 4] [--doubled-after N] [--full-after N] [--start T] [--leap N]
 
 `--start T` starts the flight at tick T: once the main loop is about to run, the host's agent state at
 T (`chopper agent`) and the clock (T + N) are poked into `layout::AGENT` / `CLOCK`. Each frame the agent's
@@ -119,9 +119,8 @@ class Cia:
             timer.running = False
 
 
-# agent::input bits as keys: (keyboard matrix row, column), as target-c64's `controls` reads them. Bit 64
-# is F1 (keys only: not an input bit; it toggles STATUS+MODE on its press).
-KEYS = {1: (1, 1), 2: (1, 5), 4: (1, 2), 8: (2, 2), 16: (7, 4), 32: (1, 7), 64: (0, 4)}
+# agent::input bits as keys: (keyboard matrix row, column), as target-c64's `controls` reads them.
+KEYS = {1: (1, 1), 2: (1, 5), 4: (1, 2), 8: (2, 2), 16: (7, 4), 32: (1, 7)}
 
 
 class C64(Cpu):
@@ -142,7 +141,7 @@ class C64(Cpu):
         self.irqs = 0
         self.stick = 0      # agent::input bits (active high), as joystick 2 and its POT X button read
         self.sid_writes = []   # the SID registers written since the last frame's report (--sid)
-        self.keys = 0       # agent::input bits held as keys (KEYS: W A S D, SPACE, left SHIFT; 64 F1)
+        self.keys = 0       # agent::input bits held as keys (KEYS: W A S D, SPACE, left SHIFT)
         self.pa, self.ddra = 0xFF, 0   # CIA 1 port A as last written, and its direction
 
     def t(self):
@@ -353,7 +352,7 @@ def snapshot(cpu):
     return bytes(out)
 
 
-def host_frame(reu, state, doubled):
+def host_frame(reu, state, mode):
     exe = ROOT / 'target/release/chopper.exe'
     if not exe.exists():
         exe = ROOT / 'target/release/chopper'
@@ -361,8 +360,10 @@ def host_frame(reu, state, doubled):
         out = Path(d) / 'f'
         (Path(d) / 'state.bin').write_bytes(state)
         cmd = [str(exe), 'frame', '--reu', str(reu), '--state', str(Path(d) / 'state.bin'), '--out', str(out)]
-        if doubled:
+        if mode & 1:
             cmd.append('--doubled')
+        elif not mode & 4:
+            cmd.append('--full')
         r = subprocess.run(cmd, check=True, capture_output=True, text=True)
         if os.environ.get('EMU_HOST_LOG'):
             print('  host:', r.stdout.strip())
@@ -376,16 +377,19 @@ def main():
     ap.add_argument('--elf', default='dist/chopper.elf')
     ap.add_argument('--reu', default='dist/chopper.reu')
     ap.add_argument('--frames', type=int, default=4)
-    ap.add_argument('--doubled-after', type=int, default=2, help='switch MODE to doubled after this many frames')
+    ap.add_argument('--doubled-after', type=int, default=None,
+                    help='switch MODE to doubled after this many frames (the boot default is adaptive)')
+    ap.add_argument('--full-after', type=int, default=None,
+                    help='switch MODE to full lines after this many frames (the boot default is adaptive)')
     ap.add_argument('--poke', default='', help='with --start: HEX=HEX,... RAM bytes poked as the main loop starts')
     ap.add_argument('--start', type=int, help='start the flight at this tick: poke the host agent and clock')
     ap.add_argument('--input', default='', help='the stick by frame: "FRAME:BITS,..." (agent::input bits: up 1, '
-                    'down 2, left 4, right 8, fire 16, fire2 32; with --keys, F1 64), each from that frame on')
+                    'down 2, left 4, right 8, fire 16, fire2 32), each from that frame on')
     ap.add_argument('--leap', type=int, default=0, help='and the clock this many ticks further on (the first '
                     'frame runs them all through the AI overlay)')
     ap.add_argument('--sid', action='store_true', help='print the four SIDs each frame (the sound effects)')
     ap.add_argument('--keys', action='store_true', help='play --input on the keyboard (W A S D, SPACE, left '
-                    'SHIFT; F1 for 64), not the stick')
+                    'SHIFT), not the stick')
     args = ap.parse_args()
     if args.leap and args.start is None:
         args.start = 0
@@ -432,7 +436,7 @@ def main():
             continue
         k = len(cpu.watch) % 6
         if k == 5:
-            modes.append(cpu.mem[STATUS + 7] & 1)
+            modes.append(cpu.mem[STATUS + 7] & 5)
         elif k == 0 and cpu.mem[STATUS] == 0xC1:
             done += 1
             # The stick for the next frame (the main loop reads it before the frame's set-up).
@@ -445,11 +449,13 @@ def main():
             pending = (cpu.watch[-2], cpu.watch[-1], modes[-1], cpu.watch[-4], cpu.watch[-3], state_before)
             if done == args.doubled_after:
                 cpu.mem[STATUS + 7] = 1
+            if done == args.full_after:
+                cpu.mem[STATUS + 7] = 0
         elif k == 1 and not pending:
             # A frame starts: the host steps the same frame from this state.
             state_before = snapshot(cpu)
         elif k == 1 and pending:
-            ((c0, io0, d0), (c1, io1, d1), doubled, (g0, _, _), (g1, _, _), state) = pending
+            ((c0, io0, d0), (c1, io1, d1), mode, (g0, _, _), (g1, _, _), state) = pending
             pending = None
             state_before = snapshot(cpu)
             checked += 1
@@ -468,7 +474,7 @@ def main():
                 bytes(cpu.reu[BRAINS:BRAINS + BRAINS_LEN]) + bytes(cpu.reu[PILOT:PILOT + PILOT_LEN]) + \
                 bytes(cpu.mem[COMBAT:COMBAT + COMBAT_LEN]) + \
                 bytes(cpu.mem[FX:FX + FX_LEN])
-            want = host_frame(args.reu, state, doubled)
+            want = host_frame(args.reu, state, mode)
             # (The stick and the take-over in the agent are already the next frame's: the main loop reads
             # them before the set-up.)
             # (The agent's offset in the compared bytes: bitmap, screen and colour RAM, the HUD table, its
@@ -480,8 +486,11 @@ def main():
                 got = got[:course] + want[course:course + 1] + got[course + 1:]
             got = got[:stick] + want[stick:stick + 2] + got[stick + 2:]
             bad = sum(a != b for a, b in zip(got, want))
+            if bad and os.environ.get('EMU_DIFF'):
+                # (EMU_DIFF=1: the first mismatched offsets in the compared bytes: the bitmap is 0-7999.)
+                print('  differ at', [(i, f'{a:02x}', f'{b:02x}') for i, (a, b) in enumerate(zip(got, want)) if a != b][:16])
             dmas = d1 - d0
-            print(f'frame {checked}: tick {tick}, {"doubled" if doubled else "full"}: {bad} mismatched bytes; '
+            print(f'frame {checked}: tick {tick}, {"doubled" if mode & 1 else "adaptive" if mode & 4 else "full"}: {bad} mismatched bytes; '
                   f'bands {(c1 - c0) / 64000:.2f} ms ({dmas} DMAs), geometry {(g1 - g0) / 64000:.2f} ms, '
                   f'{st[18]} triangles; raster wait {cpu.wait_cycles / 64000:.2f} ms')
             cpu.wait_cycles = 0

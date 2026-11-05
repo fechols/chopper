@@ -1,4 +1,4 @@
-use crate::floor::{self, COLS, FloorCam, MAX_SPANS, Rays, Span, VIEW_LINES};
+use crate::floor::{self, COLS, FloorCam, Lines, MAX_SPANS, Rays, Span, VIEW_LINES};
 use crate::layout::BUFFERS;
 use crate::model::Machine;
 use std::sync::OnceLock;
@@ -113,7 +113,7 @@ fn every_ground_byte_samples_within_a_texel_of_the_exact_ray() {
         let rays = Rays::new(&cam);
         let mut spans = [Span::default(); MAX_SPANS];
         for y in (0..VIEW_LINES).step_by(5) {
-            let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, rays.fog().at(y), &mut spans, &mut floor::Patches::default());
+            let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, rays.fog().at(y), &mut spans, &mut floor::Patches::default()).0;
             let exact = exact_line(&cam, y);
             let mut b = 0usize;
             for (i, s) in spans[..n].iter().enumerate() {
@@ -213,7 +213,7 @@ fn thresholds_and_galloping_give_the_searched_runs() {
         let (mut x, mut y) = ([Span::default(); MAX_SPANS], [Span::default(); MAX_SPANS]);
         for line in 0..VIEW_LINES {
             let a = rays.line(line);
-            let n = floor::make_line(&cam, &rays, &a, floor::HAZE_BYTE, rays.fog().at(line), &mut x, &mut floor::Patches::default());
+            let n = floor::make_line(&cam, &rays, &a, floor::HAZE_BYTE, rays.fog().at(line), &mut x, &mut floor::Patches::default()).0;
             let m = searched_line(&cam, &rays, &a, &mut y);
             assert_eq!(&x[..n], &y[..m], "camera {cam:?} line {line}");
         }
@@ -228,7 +228,7 @@ fn a_level_line_is_one_run() {
     let rays = Rays::new(&cam);
     let mut spans = [Span::default(); MAX_SPANS];
     for y in 0..VIEW_LINES {
-        let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, rays.fog().at(y), &mut spans, &mut floor::Patches::default());
+        let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, rays.fog().at(y), &mut spans, &mut floor::Patches::default()).0;
         let ground = spans[..n].iter().filter(|s| s.fill().is_none()).count();
         assert!(ground <= 2, "line {y}: {:?}", &spans[..n]);
     }
@@ -299,11 +299,131 @@ fn an_address_write_reloads_the_whole_reu_address() {
 fn every_frame_dma_stays_inside_a_512k_bank() {
     let reu = package();
     for tick in [0u16, 512, 1024, 1536, 3000] {
-        for doubled in [false, true] {
-            let (m, _) = crate::package::render(reu, lap_t(tick), doubled);
-            assert_eq!((m.stats.bank_wraps, m.stats.stray_writes), (0, 0), "tick {tick} doubled {doubled}");
+        for lines in [Lines::Full, Lines::Doubled, Lines::Adaptive] {
+            let (m, _) = crate::package::render(reu, lap_t(tick), lines);
+            assert_eq!((m.stats.bank_wraps, m.stats.stray_writes), (0, 0), "tick {tick} {lines:?}");
         }
     }
+}
+
+/// `floor::double_mask`'s pairs, a byte per band, as it writes them to `layout::DOUBLE_MASK`.
+fn adaptive_pairs(m: &mut Machine, cam: &FloorCam) -> [u8; floor::VIEW_BANDS as usize] {
+    use crate::hw::Hw;
+    floor::double_mask(m, cam);
+    core::array::from_fn(|b| m.peek(crate::layout::DOUBLE_MASK + b as u16))
+}
+
+/// `floor::double_mask` against the texel steps worked out from the rays themselves: for every byte of
+/// a line, `∂P/∂y` and `∂P/∂b` (the ground point's steps a line and a byte, up to their common factor
+/// `H / w²`) from `D = a0 + y·ay + b·bb`, in the maximum norm. A pair the mask draws once has every
+/// byte of both lines within the budget (`DBL_NUM · ρ ≤ DBL_DEN / 2`: a line steps at most 1.5·ρ, one
+/// texel of the level read at 3/4); a pair it draws twice has a line over it (both up to the Q7 rounding).
+#[test]
+fn the_adaptive_pairs_are_the_ones_whose_lines_repeat_a_texel() {
+    use crate::floor::{COLS, DBL_DEN, DBL_NUM};
+    let mut m = Machine::new(&[]);
+    let mut rng = Rng(0x5eed_d0b1);
+    let budget = DBL_DEN as f64 / (2.0 * DBL_NUM as f64);
+    let (mut pairs, mut doubled) = (0u32, 0u32);
+    for i in 0..400 {
+        let yaw = rng.next() as u16;
+        let pitch = rng.below(120) as i32 - 90;
+        let roll = if i % 4 == 0 { 0 } else { rng.below(361) as i32 - 180 };
+        let cam = camera_at(1000.0, 1000.0, 2.0 + rng.below(100) as f64, yaw, pitch, roll);
+        let rays = Rays::new(&cam);
+        let mask = adaptive_pairs(&mut m, &cam);
+        let f = |v: [i32; 3]| v.map(|c| c as f64);
+        let (a0, ay, bb) = (f(rays.a0), f(rays.ay), f(rays.bb));
+        // The worst ρ of line y over its bytes (byte COLS − 1 too: the mask is planned over COLS).
+        let rho = |y: u16| -> f64 {
+            (0..COLS)
+                .map(|b| {
+                    let d: [f64; 3] = core::array::from_fn(|k| a0[k] + y as f64 * ay[k] + b as f64 * bb[k]);
+                    let w = -d[1];
+                    let step = |s: [f64; 3]| (s[0] * w + d[0] * s[1]).abs().max((s[2] * w + d[2] * s[1]).abs());
+                    step(ay) / step(bb)
+                })
+                .fold(0.0, f64::max)
+        };
+        for y in (0..floor::VIEW_LINES).step_by(2) {
+            let worst = rho(y).max(rho(y + 1));
+            let on = mask[(y / 8) as usize] >> ((y % 8) / 2) & 1 != 0;
+            pairs += 1;
+            doubled += on as u32;
+            if on {
+                assert!(worst <= budget * 1.03, "pitch {pitch} roll {roll} yaw {yaw}: pair {y} doubled at ρ {worst:.4}");
+            } else {
+                assert!(worst > budget * 0.97, "pitch {pitch} roll {roll} yaw {yaw}: pair {y} not doubled at ρ {worst:.4}");
+            }
+        }
+    }
+    println!("{doubled} of {pairs} pairs drawn once");
+}
+
+#[test]
+fn the_adaptive_pairs_follow_pitch_and_roll() {
+    let mut mm = Machine::new(&[]);
+    let mut double_mask = |cam: &FloorCam| adaptive_pairs(&mut mm, cam);
+    let count = |m: [u8; 16]| m.iter().map(|b| b.count_ones()).sum::<u32>();
+    let bit = |m: &[u8; 16], p: usize| m[p / 4] >> (p % 4) & 1;
+    // (Yaw 0: the texel grid square to the view. The maximum norm, as the mip levels use it, makes the
+    // budget tighter turned toward a diagonal: checked last.)
+    let mut at = |pitch, roll| double_mask(&camera_at(1000.0, 1000.0, 30.0, 0, pitch, roll));
+    // Without roll the ratio grows toward the horizon (on both sides: far up in the sky the lines are all
+    // fill), so the ground's doubled pairs are the bottom ones, from the first that passes down, and the
+    // pairs around the horizon are drawn line by line. (Level flight: the horizon is at line 67.)
+    let ground = |m: &[u8; 16], from: usize| -> u32 {
+        let first = (from..64).find(|&p| bit(m, p) != 0).unwrap_or(64);
+        assert!((first..64).all(|p| bit(m, p) != 0), "the ground's doubled pairs from pair {first} down: {m:x?}");
+        64 - first as u32
+    };
+    let level = at(0, 0);
+    assert_eq!(level[0], 0xF, "level flight: the top band, high in the sky");
+    assert!(bit(&level, 33) == 0 && bit(&level, 34) == 0, "level flight: the horizon's pairs: {level:x?}");
+    let m = at(-20, 0);
+    let (l0, l20, l45) = (ground(&level, 34), ground(&m, 0), ground(&at(-45, 0), 0));
+    assert!(l0 < l20 && l20 < l45, "more pairs pitched down: {l0}, {l20}, {l45}");
+    assert!(l45 >= 50, "pitched 45° down: most pairs");
+    assert_eq!(count(at(-60, 0)), 64, "pitched 60° down: all");
+    for roll in [90, -90] {
+        assert!(count(at(-10, roll)) >= 56, "rolled {roll}°: the lines run along the depth");
+    }
+    let diag = count(double_mask(&camera_at(1000.0, 1000.0, 30.0, 0x2000, -20, 0)));
+    // (Turned 45°, a line steps along the diagonal, where `level_for` reads a finer level, and the edge
+    // bytes' rays run along the texel axes: the budget is spent sooner.)
+    assert!(diag < count(m), "turned 45°: fewer pairs ({diag})");
+}
+
+/// Adaptive frames against full ones over the lap: how many lines they skip, and how many of the view's
+/// bytes differ from the full frame's (only the skipped lines can).
+#[test]
+fn adaptive_frames_skip_lines_that_barely_change() {
+    let reu = package();
+    let (mut full_dmas, mut ada_dmas, mut lines, mut frames) = (0u32, 0u32, 0u32, 0u32);
+    let (mut differ, mut compared) = (0u32, 0u32);
+    for tick in [0u16, 512, 1024, 1536, 2048, 3000, 4096, 6000] {
+        let (mf, sf) = crate::package::render(reu, lap_t(tick), Lines::Full);
+        let (ma, sa) = crate::package::render(reu, lap_t(tick), Lines::Adaptive);
+        full_dmas += sf.dmas;
+        ada_dmas += sa.dmas;
+        lines += sa.drawn_lines;
+        frames += 1;
+        let buf = crate::layout::BUFFERS[0];
+        for band in 0..floor::VIEW_BANDS {
+            for i in 0..crate::layout::DRAWN_COLS * 8 {
+                let a = buf.bitmap + band * crate::layout::ROW_STRIDE + i;
+                compared += 1;
+                differ += (mf.ram[a as usize] != ma.ram[a as usize]) as u32;
+            }
+        }
+    }
+    println!(
+        "adaptive: {lines} of {} lines drawn, {ada_dmas} of {full_dmas} DMAs ({:.1}%), {differ} of {compared} view bytes differ ({:.2}%)",
+        frames * floor::VIEW_LINES as u32,
+        100.0 * ada_dmas as f64 / full_dmas as f64,
+        100.0 * differ as f64 / compared as f64
+    );
+    assert!(ada_dmas <= full_dmas);
 }
 
 /// xorshift32, for repeatable random cases.
@@ -646,7 +766,7 @@ fn the_ground_and_lift_off_frames_draw_inside_ram() {
         let mut work = Box::new(crate::geom::Work::new());
         let st = crate::geom::draw(&mut m, scene(reu), &flight_view(t), &mut work, &mut Box::new(crate::geom::Verts::new()));
         let (_, dropped, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
-        let (_, fs) = crate::package::render(reu, t, false);
+        let (_, fs) = crate::package::render(reu, t, Lines::Full);
         assert_eq!((m.stats.stray_writes, st.dropped, dropped), (0, 0, 0), "frame {t}");
         println!("frame {t}: {} objects, {} runs", st.objects, fs.spans);
     }
@@ -889,7 +1009,7 @@ fn the_attitude_gauge_banks_with_the_view() {
     }
     for want_right in [true, false] {
         let a = f.iter().filter(|a| a.grounded == 0).max_by_key(|a| if want_right { a.roll } else { -a.roll }).unwrap();
-        let (m, _) = crate::package::render(reu, a.t, false);
+        let (m, _) = crate::package::render(reu, a.t, Lines::Full);
         // First line below the sky in a left and a right byte column.
         let horizon = |col: u16| (0..VIEW_LINES).find(|&y| m.ram[(BUFFERS[0].bitmap + crate::layout::line_offset(y) + col * 8) as usize] != floor::SKY_BYTE).unwrap();
         let (l, r) = (horizon(4), horizon(35));
@@ -1277,7 +1397,7 @@ fn moving_objects_are_drawn_where_they_are() {
     let n = m.ram[crate::actors::DYN as usize];
     assert!(n >= 4, "only {n} of the demo's objects in view");
     let scene = crate::package::scene_block(reu);
-    let st = crate::package::render_floor(&mut m, BUFFERS[0], &scene, &cam, false);
+    let st = crate::package::render_floor(&mut m, BUFFERS[0], &scene, &cam, Lines::Full);
     let mut rgb = m.decode(BUFFERS[0], crate::format::COLORS[0]);
     crate::hud::composite(&m, 0, &mut rgb);
     crate::png::save_wide(std::path::Path::new("output/m2/close.png"), 160, &rgb).unwrap();
@@ -2472,30 +2592,6 @@ fn units_on_screen_stay_listed() {
 }
 
 #[test]
-fn the_floor_doubles_its_lines_on_heavy_frames() {
-    use crate::hw::Hw;
-    use crate::layout::{STATUS, status, status::mode};
-    let mut m = Machine::new(&[]);
-    // A frame of set-up, geometry and render (µs, µs, 4 µs units): the mode it leaves for the next.
-    let after = |m: &mut Machine, was: u8, (s, g, r): (u16, u16, u32)| {
-        for (a, v) in [(status::SETUP_US, s), (status::GEOM_US, g), (status::RENDER_US, (r / 4) as u16)] {
-            m.poke(STATUS + a, v as u8);
-            m.poke(STATUS + a + 1, (v >> 8) as u8);
-        }
-        m.poke(STATUS + status::MODE, was);
-        floor::pick_lines(m);
-        m.peek(STATUS + status::MODE)
-    };
-    let (auto, dbl) = (mode::AUTO, mode::AUTO | mode::DOUBLED);
-    assert_eq!(after(&mut m, auto, (25_000, 20_000, 70_000)), dbl, "a heavy frame doubles the lines");
-    assert_eq!(after(&mut m, dbl, (15_000, 8_000, 25_000)), dbl, "between the marks it stays doubled");
-    assert_eq!(after(&mut m, auto, (15_000, 8_000, 25_000)), auto, "and stays full");
-    assert_eq!(after(&mut m, dbl, (10_000, 5_000, 20_000)), auto, "a light frame goes back to full");
-    assert_eq!(after(&mut m, mode::DOUBLED, (1, 1, 4)), mode::DOUBLED, "a mode the host set is kept");
-    assert_eq!(after(&mut m, 0, (30_000, 30_000, 60_000)), 0, "full, set by the host, too");
-}
-
-#[test]
 fn far_units_draw_their_low_poly_mesh() {
     use crate::actors::{DYN, DYN_ENTRY, LOD_Z, MESH_RECORD, dyn_entry, kind, mesh_of, prepare};
     use crate::hw::Hw;
@@ -3536,7 +3632,7 @@ fn nothing_draws_into_the_hidden_column_39() {
             crate::hud::init(&mut m);
             crate::hud::update(&mut m, &agent, &cam);
             crate::actors::update(&mut m, &cam);
-            let st = crate::package::render_floor(&mut m, BUFFERS[0], &crate::package::scene_block(reu), &cam, doubled);
+            let st = crate::package::render_floor(&mut m, BUFFERS[0], &crate::package::scene_block(reu), &cam, if doubled { Lines::Doubled } else { Lines::Full });
             for r in 0..ROWS {
                 for l in 0..8 {
                     assert_eq!(m.peek(col39(r, l)), 0xA5 ^ (r * 8 + l) as u8, "tick {t} doubled {doubled}: cell row {r} line {l}");
@@ -3577,7 +3673,7 @@ fn the_fog_line_and_the_horizon_are_painted_to_the_pixel() {
         let mut fog = floor::Patches::default();
         for y in 0..VIEW_LINES {
             let a = rays.line(y);
-            let n = floor::make_line(&cam, &rays, &a, HAZE, rays.fog().at(y), &mut spans, &mut fog);
+            let n = floor::make_line(&cam, &rays, &a, HAZE, rays.fog().at(y), &mut spans, &mut fog).0;
             assert!(fog.n as usize <= floor::MAX_PATCHES);
             painted += fog.n as u32;
             // Per pixel: 0 sky, 1 haze, 2 ground, as drawn.
@@ -3619,6 +3715,78 @@ fn the_fog_line_and_the_horizon_are_painted_to_the_pixel() {
     }
     assert!(painted > 5_000 && unpainted < 10, "{painted} {unpainted}");
     println!("{pixels} pixels, {painted} painted bytes, {unpainted} cameras unpainted");
+}
+
+/// The second line of a doubled pair (`floor::second_line`) has its own fog line and horizon to the
+/// pixel, as its own depth says, over the first line's texels. Painting only turns ground to haze or
+/// sky, so where this line's ground would reach past the first's the edge stays at the first line's
+/// (counted, rare in the pairs adaptive doubling picks); ground never shows where it should not. The
+/// haze is in the other phase. (Ground drawn as code 0, the first line's haze 0xAA as code 2, so the
+/// second's, 0xFF, is code 3.)
+#[test]
+fn a_doubled_pairs_second_line_has_its_own_fog_line() {
+    use crate::hw::Hw;
+    let mut rng = Rng(0x0f06_5eed);
+    let deg = |d: i32| (d * 182) as u16;
+    const HAZE1: u8 = 0xAA;
+    const HAZE2: u8 = HAZE1 ^ (floor::HAZE_BYTE ^ floor::HAZE_ODD);
+    const BUF: u16 = crate::layout::LINEBUF;
+    let mut m = Machine::new(&[]);
+    let (mut pixels, mut held, mut pairs) = (0u32, 0u32, 0u32);
+    // (An adaptive pair's fog edge moves too little for a fifth patch: `second_line` keeps to 4.)
+    for _ in 0..400 {
+        let yaw = rng.next() as u16;
+        let pitch = deg(rng.below(60) as i32 - 45);
+        let roll = deg(rng.below(181) as i32 - 90);
+        let m14 = crate::camera::Matrix14::orientation(yaw, pitch, roll);
+        let cam = FloorCam { u: (300 << 8) + rng.below(1400 << 8) as i32, v: (300 << 8) + rng.below(1400 << 8) as i32, h: (2 * 256 + rng.below(120 * 256)) as u16, r: m14.m };
+        let rays = Rays::new(&cam);
+        let fa = rays.fog();
+        if fa.dir == 0 {
+            continue;
+        }
+        let mask = adaptive_pairs(&mut m, &cam);
+        let dw0 = rays.dw[0] as f64;
+        let fog_w = (rays.w_haze + 2 * rays.dw[0].abs()) as f64;
+        let mut spans = [Span::default(); MAX_SPANS];
+        let mut fog = floor::Patches::default();
+        for y in (0..VIEW_LINES).step_by(2) {
+            if !floor::doubled(mask[(y / 8) as usize], (y % 8) as u8) {
+                continue;
+            }
+            let (n, gb) = floor::make_line(&cam, &rays, &rays.line(y), HAZE1, fa.at(y), &mut spans, &mut fog);
+            let mut x = 0u16;
+            for s in &spans[..n] {
+                for i in 0..s.len as u16 {
+                    m.poke(BUF + x + i, s.fill().unwrap_or(0));
+                }
+                x += s.len as u16;
+            }
+            floor::apply_fog(&mut m, &fog, BUF);
+            let fits = floor::second_line(&mut m, &spans[..n], &mut fog, fa.dir, gb, HAZE2, fa.at(y + 1), BUF);
+            assert!(fits, "camera {cam:?} line {}: a fifth fog patch on an adaptive pair", y + 1);
+            pairs += 1;
+            let a = rays.line(y + 1);
+            for i in 0..4 * floor::DRAWN as usize {
+                let (bb, p) = (i / 4, i % 4);
+                let code = m.peek(BUF + bb as u16) >> (6 - 2 * p) & 3;
+                let got = match code { 0 => 2, 3 => 1, 1 => 0, _ => panic!("line {y}: the first line's haze left at byte {bb}") };
+                let wc = -(a[1] + floor::mul_small(rays.bb[1], bb as u8)) as f64;
+                let w = wc - (2.0 * p as f64 - 3.0) * dw0 / 8.0;
+                let want = if w >= fog_w { 2 } else if w > 0.0 { 1 } else { 0 };
+                let tol = dw0.abs() / 64.0 + 2.0;
+                let near = (w - fog_w).abs() <= tol || w.abs() <= tol;
+                pixels += 1;
+                if got == want || near {
+                    continue;
+                }
+                assert!(got != 2, "camera {cam:?} line {}: ground at pixel {i} where the depth says {want}", y + 1);
+                held += 1;
+            }
+        }
+    }
+    println!("{pairs} doubled pairs, {pixels} second-line pixels, {held} held at the first line's edge");
+    assert!(pairs > 2_000 && (held as f64) < pixels as f64 * 0.002, "{held} of {pixels}");
 }
 
 /// The clouds on the horizon: a level camera sees two or more (the ring is ~35° apart, the view ~90°),
@@ -3750,7 +3918,7 @@ fn the_clouds_are_drawn_first_and_cost_only_far_triangles() {
             m.ram[crate::combat::FXDYN as usize] = 0;
         }
         let scene = crate::package::scene_block(reu);
-        crate::package::render_floor(&mut m, crate::layout::BUFFERS[0], &scene, &cam, false)
+        crate::package::render_floor(&mut m, crate::layout::BUFFERS[0], &scene, &cam, Lines::Full)
     };
     for t in [600u32, 6000, 7800, 9300] {
         let (with, without) = (render(t, true), render(t, false));

@@ -41,7 +41,8 @@ F_DIR    = FOG + 0
 F_PF     = FOG + 1
 F_PH     = FOG + 5
 F_STEP   = FOG + 9
-F_DBL    = FOG + 13   ; layout::FOG_DOUBLED: step twice a drawn line
+FOG_RAW  = $C61A      ; layout::FOG_RAW: the painted bytes as drawn (byte 3i for patch i)
+LINEBUF  = $BF00
 PATCH    = FOG + 16
 LDIR     = FOG + 32   ; this line's F_DIR
 GB       = FOG + 33   ; the ground's fog end
@@ -891,7 +892,9 @@ fogend:
     bne 2f
     lda #COLS
     sta GB
-2:  ldx #F_PF - FOG
+2:
+fogpaint:               ; (from fog_second: GB and LDIR kept from the line above)
+    ldx #F_PF - FOG
     jsr fpx
     sta FG
     ldx #F_PH - FOG
@@ -1073,16 +1076,79 @@ fpx:
 1:  lda #0
 3:  rts
 
+; fog_second(): a doubled pair's second line in LINEBUF, over the first line's runs and texels
+; (`floor::second_line`): the painted bytes back as drawn, the haze fills in this line's phase, the fog
+; line painted again where it crosses this line (from the first line's GB; pf and ph stepped past it),
+; and over the buffer (`fog_apply`, asm/floor.S).
+.globl fog_second
+.type fog_second,@function
+fog_second:
+    lda PATCH
+    beq 2f
+    sta FN
+    ldy #0
+1:  ldx PATCH+1,y
+    lda FOG_RAW,y
+    sta LINEBUF,x
+    iny
+    iny
+    iny
+    dec FN
+    bne 1b
+2:  lda R_HAZE
+    sta FT              ; the first line's haze
+    eor #$55            ; (floor::HAZE_BYTE ^ floor::HAZE_ODD)
+    sta R_HAZE
+    lda #<SPANS
+    sta OUTP
+    lda #>SPANS
+    sta OUTP+1
+    ldx #0
+3:  ldy #0
+    lda (OUTP),y
+    sta FN              ; the run's length
+    beq 6f              ; (none is empty: floor::make_line's debug_assert; else 256 bytes filled)
+    iny
+    lda (OUTP),y
+    bpl 5f              ; ground
+    iny
+    lda (OUTP),y
+    cmp FT
+    bne 5f
+    lda R_HAZE
+4:  sta LINEBUF,x
+    inx
+    dec FN
+    bne 4b
+    beq 6f
+5:  txa
+    clc
+    adc FN
+    tax
+6:  cpx #DRAWN
+    bcs 7f
+    lda OUTP
+    clc
+    adc #REC
+    sta OUTP
+    bcc 3b
+    inc OUTP+1
+    bne 3b              ; (always)
+7:  lda #0
+    sta PATCH
+    lda LDIR
+    beq 8f
+    jsr fogpaint
+    jmp fog_apply
+8:  rts
+.size fog_second, .-fog_second
+
 ; (In the clipping overlay, window 3: loaded before the band loop, where span_line runs, and kept
 ; through it. Resident RAM is full.)
 .section .text.clip.fog,"ax",@progbits
-; pf, ph += step (twice when the lines are doubled)
+; pf, ph += step (a line at a time: a doubled pair's second line steps them in `fog_second`)
 fstep:
-    jsr 1f
-    lda F_DBL
-    bne 1f
-    rts
-1:  clc
+    clc
     lda F_PF
     adc F_STEP
     sta F_PF

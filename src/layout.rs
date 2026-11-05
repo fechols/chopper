@@ -96,14 +96,18 @@ const _: () = assert!(TILES as u32 + crate::floor::TABLE_LEVELS as u32 * 256 <= 
 /// (`floor::Patches`, written by `asm/spans.S`, read by `asm/floor.S`), then `asm/spans.S`'s scratch
 /// for them (`FOG_SCRATCH` bytes), between the runs and `RAYS`.
 pub const FOG: u16 = 0xC5E0;
-/// Nonzero: the lines are doubled, so `asm/spans.S` steps the fog line twice a drawn line.
-pub const FOG_DOUBLED: u16 = FOG + crate::floor::FOG_BYTES as u16;
 pub const FOG_PATCHES: u16 = FOG + 16;
 pub const FOG_SCRATCH: u16 = 9;
 /// `asm/floor.S`: the ground run's mip level (for `lookup`), after the fog's scratch.
 pub const FLOOR_LEVEL: u16 = FOG + 32 + FOG_SCRATCH; // (FOG + 32 ..= FOG + 40)
 const _: () = assert!(SPANS + SPAN_LINE <= FOG && FOG as usize + crate::floor::FOG_BYTES <= FOG_PATCHES as usize);
 const _: () = assert!(FOG_PATCHES as usize + core::mem::size_of::<crate::floor::Patches>() <= (FOG + 32) as usize && FLOOR_LEVEL < RAYS);
+/// The frame's adaptive line pairs (`floor::double_mask`: a byte per band), written once a frame.
+pub const DOUBLE_MASK: u16 = FLOOR_LEVEL + 1;
+/// The drawn values of the bytes the fog line painted (`floor::apply_fog`: byte `3i` for patch `i`), put
+/// back for a doubled pair's second line (`floor::second_line`).
+pub const FOG_RAW: u16 = DOUBLE_MASK + crate::floor::VIEW_BANDS;
+const _: () = assert!(FOG_RAW + 3 * crate::floor::MAX_PATCHES as u16 <= RAYS);
 /// `asm/poly.S`'s arguments (`poly::args`).
 pub const POLY_ARGS: u16 = 0xC780;
 /// `asm/tri.S`'s arguments (`geom::walk_args`).
@@ -176,19 +180,13 @@ pub mod status {
     pub const RENDER_US: u16 = 4;
     /// u8: set by the host to freeze the flight's clock (0 = run).
     pub const HOLD: u16 = 6;
-    /// u8: the floor's lines ([`mode`]): bit 0 line-doubled (the mode the frame is drawn in), bit 1
-    /// AUTO (the C64 sets bit 0 itself from the frame time). The boot default is 0 (full lines); the host
-    /// writes 0, 1 or AUTO.
-    /// F1 toggles it on its press: AUTO goes to 0 (always full lines), anything else (0, or the host's 1)
-    /// to AUTO.
+    /// u8: the floor's lines ([`mode`], `floor::Lines`): bit 0 all line-doubled, bit 2 ADAPTIVE (without
+    /// bit 0: the pairs `floor::double_mask` picks are drawn once), neither full lines. ADAPTIVE always;
+    /// the host may write 0 or 1 to compare (bit 1 is unused).
     pub const MODE: u16 = 7;
     pub mod mode {
         pub const DOUBLED: u8 = 1;
-        pub const AUTO: u8 = 2;
-        /// AUTO goes line-doubled after a frame (set-up + geometry + bands) longer than this, and back
-        /// to full after one shorter than `LIGHT` (the gap keeps it from flickering), in units of 4 µs.
-        pub const HEAVY: u16 = 55_000 / 4;
-        pub const LIGHT: u16 = 40_000 / 4;
+        pub const ADAPTIVE: u8 = 4;
     }
     /// u16: frames drawn since boot.
     pub const FRAMES: u16 = 8;
@@ -211,10 +209,7 @@ pub mod status {
     /// u16: of `RENDER_US`, the triangles and sprites (activation and drawing), in units of 4 µs. The
     /// rest of the render is publishing the bands.
     pub const DRAW_US: u16 = 25;
-    /// u8: F1's column bit as the keyboard scan read it last frame (the toggle acts on the press). The
-    /// C64's own latch, shown for debugging: the host must not write it (a cleared byte under a held F1
-    /// would toggle MODE again).
-    pub const KEYS: u16 = 27;
+    /// (Byte 27 is spare.)
     pub const SIZE: u16 = 28;
 }
 

@@ -7,7 +7,7 @@ itself adapted from impact/tools/c64u_device.py (MIT).
     python tools/c64u.py run dist/chopper.prg
     python tools/c64u.py upload-reu dist/chopper.reu [--no-reset]
     python tools/c64u.py status
-    python tools/c64u.py mode full|doubled|auto
+    python tools/c64u.py mode full|doubled|adaptive
     python tools/c64u.py pop PIXELS
     python tools/c64u.py dump dist/dump [--hold]
 
@@ -124,9 +124,9 @@ def status(dev):
     st = dev.read(STATUS, SIZE)
     return dict(magic=f'${st[0]:02X}', front=st[1], tick=st[2] | st[3] << 8 | st[21] << 16 | st[22] << 24,
                 render_us=(st[4] | st[5] << 8) * 4, floor_us=(st[23] | st[24] << 8) * 4,
-                draw_us=(st[25] | st[26] << 8) * 4, hold=st[6], mode=('auto ' if st[7] & 2 else '') + ('doubled' if st[7] & 1 else 'full'),
+                draw_us=(st[25] | st[26] << 8) * 4, hold=st[6], mode='doubled' if st[7] & 1 else 'adaptive' if st[7] & 4 else 'full',
                 frames=st[8] | st[9] << 8, fps=st[10], probes=st[12] | st[13] << 8,
-                setup_us=st[14] | st[15] << 8, geom_us=st[16] | st[17] << 8, tris=st[18], objects=st[19], pop=st[20], keys=st[27])
+                setup_us=st[14] | st[15] << 8, geom_us=st[16] | st[17] << 8, tris=st[18], objects=st[19], pop=st[20])
 
 
 def main():
@@ -140,7 +140,7 @@ def main():
     u.add_argument('--no-reset', action='store_true',
                    help='write into the running program (by default the C64 is reset first)')
     sub.add_parser('status')
-    sub.add_parser('mode').add_argument('mode', choices=['full', 'doubled', 'auto'])
+    sub.add_parser('mode').add_argument('mode', choices=['full', 'doubled', 'adaptive'])
     sub.add_parser('pop').add_argument('pixels', type=int, help='pop-in size: pixels of bounding radius (0 = default 6)')
     d = sub.add_parser('dump')
     d.add_argument('dir')
@@ -176,7 +176,7 @@ def main():
     elif args.cmd == 'status':
         print(json.dumps(status(dev)))
     elif args.cmd == 'mode':
-        dev.write(STATUS + 7, bytes([{'full': 0, 'doubled': 1, 'auto': 2}[args.mode]]))
+        dev.write(STATUS + 7, bytes([{'full': 0, 'doubled': 1, 'adaptive': 4}[args.mode]]))
     elif args.cmd == 'pop':
         dev.write(STATUS + 20, bytes([args.pixels]))
     elif args.cmd == 'dump':

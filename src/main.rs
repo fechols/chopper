@@ -2,7 +2,7 @@
 //!
 //! - `chopper bake [OUT] [--elf E]`: the REU image (`dist/chopper.reu`), with the REU overlays and build
 //!   stamp of the C64 build `E` (`dist/chopper.elf`): bake after building the C64 program.
-//! - `chopper frame [--reu R] [--tick N | --state S] [--doubled] [--lock HEX] [--out O]`: autopilot frame
+//! - `chopper frame [--reu R] [--tick N | --state S] [--doubled | --full] [--lock HEX] [--out O]`: autopilot frame
 //!   `tick` as the C64 draws it, HUD included, or the frame stepped from snapshot `S` (`snapshot`, the
 //!   C64's state at the frame's start, as `tools/emu.py` captures it). `O.png`, and `O.bin`, what
 //!   `tools/emu.py` compares: the 8,000 bitmap bytes, screen RAM and colour RAM, 1,000 bytes each, the
@@ -55,7 +55,14 @@ fn bake(args: &[String]) -> Result<(), String> {
 fn frame(args: &[String]) -> Result<(), String> {
     let reu = std::fs::read(arg(args, "--reu").unwrap_or("dist/chopper.reu".into())).map_err(|e| e.to_string())?;
     let tick = num(args, "--tick", 0.0) as u32;
-    let doubled = args.iter().any(|a| a == "--doubled");
+    let lines = if args.iter().any(|a| a == "--doubled") {
+        chopper::floor::Lines::Doubled
+    } else if args.iter().any(|a| a == "--full") {
+        chopper::floor::Lines::Full
+    } else {
+        // (The C64's boot default.)
+        chopper::floor::Lines::Adaptive
+    };
     let out = PathBuf::from(arg(args, "--out").unwrap_or("output/frame".into()));
     let lock = match arg(args, "--lock") {
         Some(h) => {
@@ -71,9 +78,9 @@ fn frame(args: &[String]) -> Result<(), String> {
     let (m, st) = match arg(args, "--state") {
         Some(p) => {
             let snap = chopper::snapshot::Snapshot::parse(&std::fs::read(&p).map_err(|e| format!("{p}: {e}"))?)?;
-            package::render_snapshot(&reu, &snap, doubled)?
+            package::render_snapshot(&reu, &snap, lines)?
         }
-        None => package::render_from(&reu, tick, doubled, lock),
+        None => package::render_from(&reu, tick, lines, lock),
     };
     let buf = BUFFERS[0];
     let mut rgb = m.decode(buf, COLORS[0]);
@@ -110,8 +117,9 @@ fn frame(args: &[String]) -> Result<(), String> {
     bin.extend_from_slice(&m.ram[fx..fx + (chopper::combat::FX_MAX as u16 * chopper::combat::FX_ENTRY) as usize]);
     std::fs::write(out.with_extension("bin"), bin).map_err(|e| e.to_string())?;
     println!(
-        "tick {tick} {}: {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
-        if doubled { "doubled" } else { "full" },
+        "tick {tick} {}: {} lines, {} DMAs, {} I/O writes, {} runs ({} ground); {} objects in {} cells, {} triangles, {} dropped",
+        format!("{lines:?}").to_lowercase(),
+        st.drawn_lines,
         st.dmas,
         st.io_writes,
         st.spans,
@@ -155,13 +163,14 @@ fn flight(args: &[String]) -> Result<(), String> {
     let first = num(args, "--from", chopper::agent::LIFT as f32) as u32;
     for f in 0..frames {
         let tick = first + f * every;
-        for doubled in [false, true] {
-            let (m, st) = package::render(&reu, tick, doubled);
-            let name = format!("t{tick:05}{}", if doubled { "d" } else { "" });
+        use chopper::floor::Lines;
+        for (lines, tag) in [(Lines::Full, ""), (Lines::Doubled, "d"), (Lines::Adaptive, "a")] {
+            let (m, st) = package::render(&reu, tick, lines);
+            let name = format!("t{tick:05}{tag}");
             let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
             chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
             png::save_wide(&dir.join(format!("{name}.png")), 160, &rgb)?;
-            println!("{name}: {} DMAs, {} I/O writes, {} runs ({} ground)", st.dmas, st.io_writes, st.spans, st.ground_spans);
+            println!("{name}: {} lines, {} DMAs, {} I/O writes, {} runs ({} ground)", st.drawn_lines, st.dmas, st.io_writes, st.spans, st.ground_spans);
         }
     }
     Ok(())
@@ -482,7 +491,7 @@ fn wrecks(args: &[String]) -> Result<(), String> {
             ram: vec![(AGENT, a.to_bytes().to_vec()), (CLOCK, t0.to_le_bytes().to_vec()), (NEAR, near), (ws::PHASE, vec![ws::DECIDE])],
             reu: units,
         };
-        let (m, _) = package::render_snapshot(&reu, &snap, false)?;
+        let (m, _) = package::render_snapshot(&reu, &snap, chopper::floor::Lines::Full)?;
         let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
         chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
         let p = PathBuf::from(format!("{}-{age:02}s.png", out.display()));
@@ -519,7 +528,7 @@ fn carrier_views(args: &[String]) -> Result<(), String> {
             ],
             reu: vec![],
         };
-        let (m, _) = package::render_snapshot(&reu, &snap, false)?;
+        let (m, _) = package::render_snapshot(&reu, &snap, chopper::floor::Lines::Full)?;
         let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
         chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
         let p = PathBuf::from(format!("output/carrier-{name}.png"));
@@ -545,6 +554,6 @@ fn main() -> Result<(), String> {
         Some("clouds") => clouds(&args),
         Some("wrecks") => wrecks(&args),
         Some("carrier") => carrier_views(&args),
-        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR] | war [--minutes M] [--knobs E,A,P,W,WP] [--quiet] [--fleet] | wrecks [--reu R] [--out DIR] [--v V] [--h H] [--pitch P] | carrier [--reu R] [--at T] [--back B] [--h H] [--pitch P]".into()),
+        _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled | --full] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR] | war [--minutes M] [--knobs E,A,P,W,WP] [--quiet] [--fleet] | wrecks [--reu R] [--out DIR] [--v V] [--h H] [--pitch P] | carrier [--reu R] [--at T] [--back B] [--h H] [--pitch P]".into()),
     }
 }
