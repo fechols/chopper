@@ -10,7 +10,7 @@
 //!
 //! World axes: x = u (east), y = up, z = v (north), as the floor's. Camera space: X right, Y up, Z along
 //! the view (`floor::FloorCam::r`'s columns). Projection (`floor::FX`, `floor::FY`, the axis at line
-//! 67.5's centre, i.e. 68 in `[y, y+1)` line units): `sx = 80 + 80·X/Z`, `sy = 68 − 133·Y/Z`.
+//! 67.5's centre, i.e. [`CY`] = 68 in `[y, y+1)` line units): `sx = 80 + 80·X/Z`, `sy = 68 − 133·Y/Z`.
 
 use crate::fixed::{self, mul, mul_wide, mulsu, sar};
 use crate::floor::FloorCam;
@@ -48,6 +48,12 @@ pub const LIMIT: i32 = 1000 * 16;
 /// Screen lines the band pipeline draws (the view above the cockpit) and its bands.
 pub const LINES: i32 = crate::floor::VIEW_LINES as i32;
 pub const BANDS: usize = crate::floor::VIEW_BANDS as usize;
+/// The optical axis' line (`asm/geom.S` has it as `CY16` = 16·CY): 4 lines below the view's middle,
+/// where the 24-row window (`layout::D011`) hides the view's top 4 lines, so 2 below the middle of what
+/// shows. (At the middle, 64, the horizon falls on a band boundary and the carrier's deck frame overflows
+/// the band pool.)
+pub const CY: i32 = 68;
+const _: () = assert!(2 * CY - 1 == crate::floor::CY_HALF);
 
 /// Scene block (`format::SCENE`, fetched whole to `layout::SCENE_RAM`): `[0]` length u16, `[2]` meshes
 /// u8, mesh table at [`scene::MESHES`]. The object directory and records live in the REU
@@ -164,7 +170,7 @@ pub fn object_centre(look: &Look, s: [i32; 3], sh: u8, rec: &[u8]) -> [i32; 3] {
 #[inline(never)]
 pub fn sphere_visible(c: [i32; 3], r: i32, far: i32) -> bool {
     let (x, y, z) = (c[0], c[1], c[2]);
-    z + r >= NEAR && z - r <= far && x.abs() - z <= r + (r >> 1) && y.abs() * 133 - z * 68 <= r * 150
+    z + r >= NEAR && z - r <= far && x.abs() - z <= r + (r >> 1) && y.abs() * 133 - z * CY <= r * 150
 }
 
 /// A projected triangle, ready to draw.
@@ -308,7 +314,7 @@ pub fn project(x: i16, y: i16, z: i16) -> (i16, i16) {
     let r = fixed::recip(m) as u32;
     let (rx, ry) = ((r * 5 >> 3) as u16, (r * 133 >> 8) as u16);
     let sx = 80 * 16 + sar(mulsu(x, rx), (15 + e) as u8);
-    let sy = 68 * 16 + sar(mulsu(y.wrapping_neg(), ry), (14 + e) as u8);
+    let sy = CY * 16 + sar(mulsu(y.wrapping_neg(), ry), (14 + e) as u8);
     (clamp(sx), clamp(sy))
 }
 
@@ -453,7 +459,7 @@ pub fn affine(o: &Obj) -> Affine {
     let r = fixed::recip(m) as u32;
     let (rx, ry) = ((r * 5 >> 11) as i32, (r * 133 >> 16) as i32);
     let ex = shr_mag(mul(sx - 1280, 205), 11).clamp(-255, 255);
-    let ey = shr_mag(mul(1088 - sy, 123), 11).clamp(-255, 255);
+    let ey = shr_mag(mul((CY * 16) as i16 - sy, 123), 11).clamp(-255, 255);
     let (shx, shy) = ((15 + e - o.t as i8) as u8, (14 + e - o.t as i8) as u8);
     let mut g = [[0i16; 3]; 2];
     for k in 0..3 {
@@ -597,10 +603,10 @@ fn cut(v: &mut Verts, f: u8, g: u8, s: u8) {
     v.set(vert::X, s, x);
     v.set(vert::Y, s, y);
     v.set(vert::Z, s, NEAR as i16);
-    // `project` at z = NEAR (2 texels): 80 + 80·X/Z and 68 − 133·Y/Z in Q4, i.e. 1280 + 40·x and
+    // `project` at z = NEAR (2 texels): 80 + 80·X/Z and CY − 133·Y/Z in Q4, i.e. 1280 + 40·x and
     // 1088 − 66.5·y, from inputs clamped to stay inside the ±LIMIT corners.
     v.set(vert::SX, s, 80 * 16 + x.clamp(-432, 368) * 40);
-    v.set(vert::SY, s, 68 * 16 - (y.clamp(-224, 225) * 133 >> 1));
+    v.set(vert::SY, s, CY as i16 * 16 - (y.clamp(-224, 225) * 133 >> 1));
 }
 
 /// Coordinate `c` the fraction `t` (Q16) of the way from vertex `f` to `g`: the high half of a 16 × 16
@@ -1054,9 +1060,10 @@ fn line_at(y: i32) -> i32 {
     (y - 8 + 15) >> 4
 }
 
-/// The pixel a Q16 left/right bound starts at (its centre is at or right of the bound), clamped.
+/// The pixel a Q16 left/right bound starts at (its centre is at or right of the bound), clamped to the
+/// drawn columns (`layout::DRAWN_COLS`: `asm/tri.S` `PIXEL`'s `XMAX`).
 pub fn pixel(x: i32) -> u8 {
-    ((x + 0x7FFF) >> 16).clamp(0, 160) as u8
+    ((x + 0x7FFF) >> 16).clamp(0, 4 * crate::layout::DRAWN_COLS as i32) as u8
 }
 
 /// Set up one triangle (the C64 does this part in Rust): sort by y, clip the lines to the screen, and

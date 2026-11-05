@@ -32,7 +32,27 @@ BTZ2     = BT + 10 * 64
 SPANS    = $C400
 RECIP    = $9000
 SKY      = $55
-COLS     = 40
+DRAWN    = 39         ; floor::DRAWN
+; The fog line (`floor::FogArgs` at layout::FOG: dir, then line y's crossings pf and ph, 16.16 pixels,
+; stepped a drawn line at a time by `step`), the line's painted bytes (`floor::Patches`) and this
+; file's scratch for them (layout::FOG_SCRATCH bytes).
+FOG      = $C5E0
+F_DIR    = FOG + 0
+F_PF     = FOG + 1
+F_PH     = FOG + 5
+F_STEP   = FOG + 9
+F_DBL    = FOG + 13   ; layout::FOG_DOUBLED: step twice a drawn line
+PATCH    = FOG + 16
+LDIR     = FOG + 32   ; this line's F_DIR
+GB       = FOG + 33   ; the ground's fog end
+FG       = FOG + 34   ; the fog line's pixel (pf's integer part, clamped to 0..160)
+FS       = FOG + 35   ; the horizon's (ph's)
+FI       = FOG + 36   ; the byte
+FN       = FOG + 37   ; the bytes' end
+FT       = FOG + 38
+FKEEP    = FOG + 39
+FSKY     = FOG + 40
+COLS     = 40         ; floor::COLS (the runs are planned over 40, drawn over 39)
 REC      = 12
 
 ; umul (asm/fixed.S): AL:AH * BL:BH -> MP0..MP3. goff multiplies with the same quarter-square tables
@@ -127,6 +147,7 @@ span_line:
     sta NCNT
     sta LASTF
     sta SVALID
+    sta PATCH
     ; w at byte 0: -a.y
     sec
     lda #0
@@ -141,12 +162,22 @@ span_line:
     lda #0
     sbc R_A+7
     sta W0V+3
+    jsr fogline
 
 byteloop:
     lda NB
     cmp #COLS
     bcc 1f
-    lda NCNT
+    jsr fogend          ; (the ground's fog end at the line's end)
+    ; The last byte is never shown (`floor::DRAWN`): the last run one byte short, dropped if that was all.
+    ldy #0
+    lda (PREVP),y
+    sec
+    sbc #1
+    sta (PREVP),y
+    bne 2f
+    dec NCNT
+2:  lda NCNT
     sta R_N
     rts
 1:  ldx #W0V
@@ -158,6 +189,7 @@ byteloop:
 fills:
     ; the longest stretch of this class: LEN bytes, TT the last one's w (galloping, w is monotone)
     sta CLS
+    jsr fogback         ; (the ground's fog end before it)
     lda #1
     sta LEN
     ldx #3
@@ -223,11 +255,20 @@ ground:
     bpl 4f
     lda #1
     sta LEN
+    jsr fogback
+    ldx #0
     jsr stepw0
     jsr w0tt
     jsr hazerun
     jmp advance
 4:  stx KK
+    lda LASTF           ; (after ground, no fog end here: skip the call)
+    bne 5f
+    lda NCNT
+    bne 6f
+5:  jsr fogfwd          ; (the ground's fog end, when w rises)
+    ldx KK
+6:
     lda pow,x
     sta LEN
     ; w1 = w0 - dw[k] in TT
@@ -305,11 +346,7 @@ ground:
     dex
     bne 9b
 10: jsr level
-    bcc 11f
-    lda R_HAZE
-    jsr putfill
-    jmp advance
-11: jsr putground
+    jsr putground
 advance:
     clc
     lda NB
@@ -471,7 +508,22 @@ putground:
     ror DV
     dex
     bne 1b
-2:  ldy #0
+2:  ; + floor::MIP_OFFSET (texels) to u's and v's integer parts
+    ldx LVL
+    lda moff,x
+    beq 3f
+    clc
+    adc GX+1
+    sta GX+1
+    bcc 5f
+    inc GW
+5:  lda moff,x
+    clc
+    adc GZ
+    sta GZ
+    bcc 3f
+    inc GZ+1
+3:  ldy #0
     lda LEN
     sta (OUTP),y
     iny
@@ -533,7 +585,7 @@ w0tt:
     sta W0V+3
     rts
 
-; LVL = the first level 0..3 with max(|du|, |dv|) >> level <= $180; carry set when none.
+; LVL = the first level 0..5 with max(|du|, |dv|) >> level <= $180, else 5 (`floor::make_line`).
 level:
     lda DU
     sta GT
@@ -581,12 +633,10 @@ level:
     sbc GT+1
     bcs 6f
     inx
-    cpx #4
+    cpx #6
     bne 4b
-5:  sec
-    rts
+5:  ldx #5
 6:  stx LVL
-    clc
     rts
 
 neggt:
@@ -788,6 +838,274 @@ gcomp:
     rts
 .size span_line, .-span_line
 
+; The fog line (`floor::make_line`'s `gb` and `floor::paint`; resident: `.spantext` is full). From
+; span_line:
+;   fogline  at the line's start: LDIR, and GB's default (0 when w falls along the line, 40 when it rises)
+;   fogback  a fill at NB: after ground when w falls, the ground's fog end (GB = NB)
+;   fogfwd   a ground run at NB: not after ground when w rises, the ground's first byte (GB = NB)
+;   fogend   at the line's end (before the trim): GB = 40 when w falls and the line ends in ground; the
+;            patches from the line's crossings; the crossings stepped to the next drawn line
+.section .text.fog,"ax",@progbits
+fogline:
+    lda F_DIR
+    sta LDIR
+    cmp #$ff
+    beq 1f
+    lda #0
+    beq 2f
+1:  lda #COLS
+2:  sta GB
+    rts
+fogback:
+    lda LDIR
+    cmp #1
+    bne 9f
+    lda NCNT
+    beq 9f
+    lda LASTF
+    bne 9f
+    lda NB
+    sta GB
+9:  rts
+fogfwd:
+    lda LDIR
+    cmp #$ff
+    bne 9f
+    lda NCNT
+    beq 1f
+    lda LASTF
+    beq 9f              ; after ground: inside the stretch
+1:  lda NB
+    sta GB
+9:  rts
+
+fogend:
+    lda LDIR
+    bne 1f
+    rts
+1:  cmp #1
+    bne 2f
+    lda NCNT
+    beq 2f
+    lda LASTF
+    bne 2f
+    lda #COLS
+    sta GB
+2:  ldx #F_PF - FOG
+    jsr fpx
+    sta FG
+    ldx #F_PH - FOG
+    jsr fpx
+    sta FS
+    lda LDIR
+    cmp #1
+    beq frise
+    jmp fdown
+
+; w falls along the line: ground left of FG, sky from FS. The ground bytes from FG's to GB (or 39).
+frise:
+    lda GB
+    cmp #DRAWN
+    bcc 1f
+    lda #DRAWN
+1:  sta FN
+    lda FG
+    lsr
+    lsr
+    sta FI
+2:  lda FI
+    cmp FN
+    bcs 5f
+    asl
+    asl
+    sta FT              ; 4e
+    lda FG
+    sec
+    sbc FT              ; G - 4e (at most 3)
+    bcs 3f
+    lda #0
+3:  tax
+    lda lmask,x
+    sta FKEEP
+    lda FT
+    clc
+    adc #4
+    sec
+    sbc FS              ; 4e + 4 - S
+    bcs 4f
+    lda #0
+4:  cmp #5
+    bcc 6f
+    lda #4
+6:  tax
+    lda rmask,x
+    sta FSKY
+    jsr fpush
+    inc FI
+    jmp 2b
+5:  ; the horizon's byte, when it splits and is past the ground
+    lda FS
+    and #3
+    beq 9f
+    sta FT
+    lda #4
+    sec
+    sbc FT
+    tax
+    lda rmask,x
+    sta FSKY
+    lda FS
+    lsr
+    lsr
+    cmp GB
+    bcc 9f
+    cmp #DRAWN
+    bcs 9f
+    sta FI
+    lda #0
+    sta FKEEP
+    jsr fpush
+9:  jmp fstep
+
+; w rises along the line: sky left of FS, ground from FG. The ground bytes from GB to FG's (or 39).
+fdown:
+    lda FG
+    clc
+    adc #3
+    lsr
+    lsr
+    cmp #DRAWN
+    bcc 1f
+    lda #DRAWN
+1:  sta FN
+    lda GB
+    sta FI
+2:  lda FI
+    cmp FN
+    bcs 5f
+    asl
+    asl
+    sta FT              ; 4e
+    clc
+    adc #4
+    sec
+    sbc FG              ; 4e + 4 - G (at most 3)
+    bcs 3f
+    lda #0
+3:  tax
+    lda rmask,x
+    sta FKEEP
+    lda FS
+    sec
+    sbc FT              ; S - 4e
+    bcs 4f
+    lda #0
+4:  cmp #5
+    bcc 6f
+    lda #4
+6:  tax
+    lda lmask,x
+    sta FSKY
+    jsr fpush
+    inc FI
+    jmp 2b
+5:  ; the horizon's byte, when it splits and is before the ground
+    lda FS
+    and #3
+    beq 9f
+    tax
+    lda lmask,x
+    sta FSKY
+    lda FS
+    lsr
+    lsr
+    cmp GB
+    bcs 9f
+    cmp #DRAWN
+    bcs 9f
+    sta FI
+    lda #0
+    sta FKEEP
+    jsr fpush
+9:
+; pf, ph += step (twice when the lines are doubled)
+fstep:
+    jsr 1f
+    lda F_DBL
+    bne 1f
+    rts
+1:  clc
+    lda F_PF
+    adc F_STEP
+    sta F_PF
+    lda F_PF+1
+    adc F_STEP+1
+    sta F_PF+1
+    lda F_PF+2
+    adc F_STEP+2
+    sta F_PF+2
+    lda F_PF+3
+    adc F_STEP+3
+    sta F_PF+3
+    clc
+    lda F_PH
+    adc F_STEP
+    sta F_PH
+    lda F_PH+1
+    adc F_STEP+1
+    sta F_PH+1
+    lda F_PH+2
+    adc F_STEP+2
+    sta F_PH+2
+    lda F_PH+3
+    adc F_STEP+3
+    sta F_PH+3
+    rts
+
+; A = the integer part of the 16.16 at FOG + X, clamped to 0..160
+fpx:
+    lda FOG+3,x
+    bmi 1f
+    bne 2f
+    lda FOG+2,x
+    cmp #161
+    bcc 3f
+2:  lda #160
+    rts
+1:  lda #0
+3:  rts
+
+; A patch at byte FI: keep FKEEP's pixels, FSKY's sky, the rest the line's haze (`floor::patch`).
+fpush:
+    ldx PATCH
+    cpx #4
+    bcs 9f
+    lda FKEEP
+    ora FSKY
+    eor #$ff
+    and R_HAZE
+    sta FT
+    lda #SKY
+    and FSKY
+    ora FT
+    sta FT
+    txa
+    asl
+    adc PATCH
+    tay
+    lda FI
+    sta PATCH+1,y
+    lda FKEEP
+    sta PATCH+2,y
+    lda FT
+    sta PATCH+3,y
+    inc PATCH
+9:  rts
+
+; the first k pixels of a byte, the last k
+lmask: .byte $00, $c0, $f0, $fc, $ff
+rmask: .byte $00, $03, $0f, $3f, $ff
+
 ; BT's x and z rows by adding bb up (the sums' low three bytes are all goff uses).
 .section .text.bt_build,"ax",@progbits
 .globl bt_build
@@ -851,5 +1169,7 @@ pow:   .byte 1, 2, 4, 8, 16, 32
 kmax:  .byte 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4
        .byte 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 0
 koffl: .byte 0, 4, 8, 12, 16, 20
-thlo:  .byte <384, <769, <1539, <3079
-thhi:  .byte >384, >769, >1539, >3079
+thlo:  .byte <384, <769, <1539, <3079, <6159, <12319
+thhi:  .byte >384, >769, >1539, >3079, >6159, >12319
+; floor::MIP_OFFSET
+moff:  .byte 0, 0, 0, 0, 64, 96

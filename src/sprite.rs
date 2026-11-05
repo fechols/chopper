@@ -6,7 +6,7 @@
 
 use crate::format::{ITEM_MIX, MIX_LEN, RUN_HEADER};
 use crate::hw::{self, Hw};
-use crate::layout::{self, COLS};
+use crate::layout::{self, DRAWN_COLS};
 
 /// `draw_cols`' arguments (`layout::JOB`, little-endian), TALON HD's.
 pub mod job {
@@ -95,7 +95,7 @@ pub struct Placed {
 pub fn place(block: u32, shift: u8, wb: u8, h: u16, left: i16, top: i16) -> Option<Placed> {
     let base = left >> 2;
     let j0 = (-base).max(0);
-    let j1 = (wb as i16).min(COLS as i16 - base);
+    let j1 = (wb as i16).min(DRAWN_COLS as i16 - base);
     let bottom = top as i32 + h as i32;
     let lines = crate::geom::LINES;
     if j0 >= j1 || top as i32 >= lines || bottom <= 0 {

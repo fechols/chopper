@@ -1,7 +1,7 @@
 //! The REU package (host): the tiled ground map and its mip levels, the sea, the header; and the host's
 //! render of a frame exactly as the C64 draws it (the reference `tools/emu.py` checks against).
 
-use crate::floor::{self, COLS, FloorCam, LEVELS, MAP_TILES, MAX_SPANS, Rays, Span, VIEW_BANDS};
+use crate::floor::{self, COLS, FloorCam, LEVELS, MAX_SPANS, Rays, Span, VIEW_BANDS};
 use crate::format::*;
 use crate::layout::{self, BUFFERS, Buffer, LINEBUF, STAGE};
 use crate::model::Machine;
@@ -10,14 +10,22 @@ use crate::world::{self, World};
 /// The image (only up to [`IMAGE_END`]: everything after is unused for now).
 pub fn bake(world: &World) -> Vec<u8> {
     let mut reu = vec![0u8; IMAGE_END as usize];
+    // Levels 4 and 5 share banks (`floor::MIP_OFFSET`): sea around them, the scene block and the header
+    // written over their first rows after.
+    for k in 4..LEVELS as usize {
+        let b = (LEVEL_BANK[k] as usize) << 16;
+        reu[b..b + 0x10000].fill(world::texel::WATER);
+    }
     for (k, level) in world::mips(&world.texels).iter().enumerate() {
-        let tiles = (MAP_TILES >> k) as usize;
-        let n = tiles * 256;
+        let n = floor::MAP_TEXELS as usize >> k;
         assert_eq!(level.len(), n * n);
+        let off = floor::MIP_OFFSET[k] as usize;
+        assert!(off == 0 || 2 * off + n == 256);
         for v in 0..n {
             for u in 0..n {
-                let bank = floor::tile_bank(k as u8, (u >> 8) as u8, (v >> 8) as u8) as usize;
-                reu[bank << 16 | (v & 255) << 8 | (u & 255)] = world::dither(level[v * n + u], u, v);
+                let (bu, bv) = (u + off, v + off);
+                let bank = floor::tile_bank(k as u8, (bu >> 8) as u8, (bv >> 8) as u8) as usize;
+                reu[bank << 16 | (bv & 255) << 8 | (bu & 255)] = world::dither(level[v * n + u], u, v);
             }
         }
     }
@@ -148,21 +156,24 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
     let rays = Rays::new(cam);
     let mut shadow;
     let mut spans = [Span::default(); MAX_SPANS];
+    let mut fog = floor::Patches::default();
     for band in 0..VIEW_BANDS {
         // (Sprites fetch from the REU between bands: the floor starts each band afresh, as on the C64.)
         shadow = floor::floor_begin(m);
         for line in (0..8u8).step_by(if doubled { 2 } else { 1 }) {
             let a = rays.line(band * 8 + line as u16);
-            let n = floor::make_line(cam, &rays, &a, floor::haze_byte(line, doubled), &mut spans);
+            let y = band * 8 + line as u16;
+            let n = floor::make_line(cam, &rays, &a, floor::haze_byte(line, doubled), rays.fog().at(y), &mut spans, &mut fog);
             st.spans += n as u32;
             st.ground_spans += spans[..n].iter().filter(|s| s.fill().is_none()).count() as u32;
-            let c = floor::draw_line(m, &spans[..n], LINEBUF, &mut shadow);
+            let c = floor::draw_line(m, &spans[..n], &fog, LINEBUF, &mut shadow);
             st.dmas += c.dmas;
             st.io_writes += c.io_writes;
             floor::copy_line(m, LINEBUF, STAGE, line, doubled);
         }
         bands.band(m, &work, band as usize, STAGE);
-        for i in 0..layout::ROW_STRIDE {
+        // (`band_publish`: the drawn columns only.)
+        for i in 0..layout::DRAWN_COLS * 8 {
             let b = m.peek(STAGE + i);
             m.poke(buf.bitmap + band * layout::ROW_STRIDE + i, b);
         }
@@ -261,4 +272,4 @@ pub fn render_snapshot(reu: &[u8], snap: &crate::snapshot::Snapshot, doubled: bo
     Ok((m, st))
 }
 
-const _: () = assert!(LEVELS == 4);
+const _: () = assert!(LEVELS == 6);

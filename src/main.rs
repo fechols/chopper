@@ -226,7 +226,7 @@ fn brain() -> Result<(), String> {
 /// Every gauge frame as a contact sheet (drawn through `cockpit::draw` on a model, as the C64 does), and
 /// the panel with the gauges at rest.
 fn cockpit(args: &[String]) -> Result<(), String> {
-    use chopper::cockpit::{self, FRAMES, ROW, TALL, WIDE, gauge};
+    use chopper::cockpit::{self, FRAMES, ROW_AT, TALL_AT, WIDE, gauge};
     let dir = PathBuf::from(arg(args, "--out").unwrap_or("output/cockpit".into()));
     let reu = package::bake(&world::generate(SEED));
     let mut m = chopper::model::Machine::new(&reu);
@@ -238,7 +238,7 @@ fn cockpit(args: &[String]) -> Result<(), String> {
         }
     }
     for g in 0..gauge::COUNT {
-        let (w, h) = (WIDE[g] as usize * 4, TALL as usize * 8);
+        let (w, h) = (WIDE[g] as usize * 4, TALL_AT[g] as usize * 8);
         let per_row = 16usize;
         let n = FRAMES[g] as usize;
         let rows = n.div_ceil(per_row);
@@ -250,7 +250,7 @@ fn cockpit(args: &[String]) -> Result<(), String> {
             let (ox, oy) = ((k % per_row) * (w + 2), (k / per_row) * (h + 2));
             for y in 0..h {
                 for x in 0..w {
-                    sheet[(oy + y) * sw + ox + x] = px[(ROW as usize * 8 + y) * 160 + cockpit::COL[g] as usize * 4 + x];
+                    sheet[(oy + y) * sw + ox + x] = px[(ROW_AT[g] as usize * 8 + y) * 160 + cockpit::COL[g] as usize * 4 + x];
                 }
             }
         }

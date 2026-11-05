@@ -219,6 +219,8 @@ class C64(Cpu):
             raise KernelError(f'write ${value:02X} to the vector at ${address:04X} from PC ${self.pc:04X}')
         if GUARD and self.mem[STATUS] == 0xC1 and any(a <= address < b for a, b in GUARD):
             raise KernelError(f'write ${value:02X} to guarded ${address:04X} from PC ${self.pc:04X}')
+        if hidden_column(address) and self.mem[STATUS] == 0xC1:
+            raise KernelError(f'write ${value:02X} to the hidden column 39 at ${address:04X} from PC ${self.pc:04X}')
         self.mem[address] = value
 
     def poll_irq(self):
@@ -279,6 +281,8 @@ class C64(Cpu):
                     raise KernelError(f'DMA into the vector at ${c64:04X} (REU ${addr:06X}), PC ${self.pc:04X}')
                 if GUARD and self.mem[STATUS] == 0xC1 and any(a <= c64 < b for a, b in GUARD):
                     raise KernelError(f'DMA into guarded ${c64:04X} (REU ${addr:06X}), PC ${self.pc:04X}')
+                if hidden_column(c64) and self.mem[STATUS] == 0xC1:
+                    raise KernelError(f'DMA into the hidden column 39 at ${c64:04X} (REU ${addr:06X}), PC ${self.pc:04X}')
                 self.mem[c64] = v
             if not r[0xA] & 0x80:
                 c64 = (c64 + 1) & 0xFFFF
@@ -288,6 +292,15 @@ class C64(Cpu):
         r[4], r[5], r[6] = addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF
         r[7], r[8] = 1, 0
         self.dmas += 1
+
+
+# The bitmap's column 39 (layout::DRAWN_COLS): never shown in the 38-column window, so once the main loop
+# runs nothing may write it (the renderer, the band publish and the gauges all stop before it).
+BITMAP = 0x6000
+
+
+def hidden_column(address):
+    return BITMAP <= address < BITMAP + 8000 and (address - BITMAP) % 320 >= 312
 
 
 # EMU_GUARD=start-end,...: hex ranges no write may touch once the main loop runs (relocated code).

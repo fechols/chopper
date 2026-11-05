@@ -1,6 +1,7 @@
-//! The cockpit's instruments: a helicopter six-pack (airspeed, attitude, altimeter, a caution-lamp
-//! strip, the rotor/engine dual tach, heading, vertical speed) in the panel under the view (cell rows
-//! 17-24). Every reading of every gauge is baked ahead (`instruments`, host) as a whole opaque face,
+//! The cockpit's instruments: a helicopter six-pack (airspeed, attitude, altimeter, the rotor/engine
+//! dual tach, heading, vertical speed) under the caution lamps on the glareshield, in the panel under the
+//! view (cell rows 16-24; everything that matters inside the screen's safe area, `layout::SAFE_X`/`SAFE_Y`,
+//! which the damage shake never hides: cell columns 1-37, rows up to 23). Every reading of every gauge is baked ahead (`instruments`, host) as a whole opaque face,
 //! cell-aligned and already in bitmap order, so drawing one is a DMA per cell row straight from the REU
 //! into the bitmap, with no CPU copying; a gauge is redrawn only when its reading changes. Each cell's
 //! colours (screen and colour RAM) are fixed per gauge and set once with the static panel.
@@ -13,7 +14,7 @@ use crate::format::COCKPIT;
 use crate::hw::{self, Hw};
 use crate::layout::{BUFFERS, CELLS, COLOR_RAM, COLS, ROW_STRIDE, ROWS};
 
-/// The gauges, left to right.
+/// The gauges, left to right (the caution lamps, `WARN`, are the strip above the dials).
 pub mod gauge {
     pub const ASI: usize = 0;
     pub const ATT: usize = 1;
@@ -26,14 +27,23 @@ pub mod gauge {
     pub const NAMES: [&str; COUNT] = ["IAS", "ATT", "ALT", "CAUT", "RPM", "HDG", "VSI"];
 }
 
-/// The panel: cell rows `PANEL_ROW..ROWS`; the dials' cell rows `ROW..ROW + TALL`.
-pub const PANEL_ROW: u16 = 17;
+/// The panel: cell rows `PANEL_ROW..ROWS`: the glareshield with the caution lamps (an annunciator
+/// strip, at eye level as in a real cockpit), the dials, their placards, and a plain bottom row (only
+/// partly visible, and not while the shake moves the picture up).
+pub const PANEL_ROW: u16 = 16;
 pub const PANEL_ROWS: u16 = ROWS - PANEL_ROW;
-pub const ROW: u16 = 18;
+/// The dials' cell rows: `ROW..ROW + TALL`; the placards' row after them.
+pub const ROW: u16 = 17;
 pub const TALL: u16 = 6;
-/// Each gauge's first cell column and width in cells.
-pub const COL: [u8; gauge::COUNT] = [0, 6, 12, 18, 22, 28, 34];
-pub const WIDE: [u8; gauge::COUNT] = [6, 6, 6, 4, 6, 6, 6];
+pub const PLACARD_ROW: u16 = ROW + TALL;
+/// Each gauge's first cell row, height, first cell column and width in cells: six 6 × 6 dials in columns
+/// 1-37 with a gap in the middle, the 19-column lamp strip (four lamps of 4 cells) centred over them.
+pub const ROW_AT: [u8; gauge::COUNT] = [ROW as u8, ROW as u8, ROW as u8, PANEL_ROW as u8, ROW as u8, ROW as u8, ROW as u8];
+pub const TALL_AT: [u8; gauge::COUNT] = [TALL as u8, TALL as u8, TALL as u8, 1, TALL as u8, TALL as u8, TALL as u8];
+pub const COL: [u8; gauge::COUNT] = [1, 7, 13, 10, 20, 26, 32];
+pub const WIDE: [u8; gauge::COUNT] = [6, 6, 6, 19, 6, 6, 6];
+/// The lamps' cells in the strip: lamp `i` from column `5 i`, `LAMP_WIDE` wide.
+pub const LAMP_WIDE: u8 = 4;
 /// Frames baked per gauge (`readings` returns `0..FRAMES[g]`).
 pub const FRAMES: [u16; gauge::COUNT] = [64, ATT_ROLLS * ATT_PITCHES, 3 * 64, 9, TACH_FRAMES, 128, 41];
 /// Attitude frames: roll index × `ATT_PITCHES` + pitch index.
@@ -91,11 +101,15 @@ const _: () = assert!(PANEL + PANEL_BITMAP as u32 + 2 * PANEL_CELLS as u32 <= GA
 const _: () = {
     let mut g = 0;
     while g < gauge::COUNT {
-        assert!(FRAMES[g] <= 255 && (WIDE[g] as u32 * 8 * TALL as u32) <= 1 << FRAME_STRIDE_SHIFT);
-        assert!(COL[g] as u16 + WIDE[g] as u16 <= COLS);
+        assert!(FRAMES[g] <= 255 && (WIDE[g] as u32 * 8 * TALL_AT[g] as u32) <= 1 << FRAME_STRIDE_SHIFT);
+        // Inside the safe area: columns 1-37 (hires 8-303), rows up to 23 (lines to 191).
+        assert!(COL[g] >= 1 && COL[g] as u16 + WIDE[g] as u16 <= 38);
+        assert!(ROW_AT[g] as u16 >= PANEL_ROW && ROW_AT[g] as u16 + TALL_AT[g] as u16 <= 24);
         g += 1;
     }
-    assert!(ROW + TALL <= ROWS && ROW >= PANEL_ROW);
+    assert!(PLACARD_ROW < 24 && (crate::layout::SAFE_X.start as u16) <= 8 && crate::layout::SAFE_X.end as u16 >= 38 * 8);
+    assert!(crate::layout::SAFE_Y.end as u16 >= 24 * 8);
+    assert!(PANEL_ROW * 8 == crate::floor::VIEW_LINES);
     assert!(CELLS == ROWS * COLS);
 };
 
@@ -115,12 +129,14 @@ static BYTES: [u8; gauge::COUNT] = {
 };
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.cockpit.tables"))]
 static BASES: [u32; gauge::COUNT] = BASE;
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.cockpit.tables"))]
+static TALLS: [u8; gauge::COUNT] = TALL_AT;
 
 const fn dests() -> [u16; gauge::COUNT] {
     let mut d = [0u16; gauge::COUNT];
     let mut g = 0;
     while g < gauge::COUNT {
-        d[g] = BUFFERS[0].bitmap + ROW * ROW_STRIDE + COL[g] as u16 * 8;
+        d[g] = BUFFERS[0].bitmap + ROW_AT[g] as u16 * ROW_STRIDE + COL[g] as u16 * 8;
         g += 1;
     }
     d
@@ -172,7 +188,7 @@ pub fn draw<H: Hw + ?Sized>(hw: &mut H, g: usize, k: u8) {
     let n = BYTES[g] as u16;
     let mut src = BASES[g] + ((k as u32) << FRAME_STRIDE_SHIFT);
     let mut dst = DEST[g];
-    for _ in 0..TALL {
+    for _ in 0..TALLS[g] {
         hw::fetch(hw, src, dst, n);
         src += n as u32;
         dst += ROW_STRIDE;

@@ -10,7 +10,8 @@
 //! The dual tach follows the start-up sound: the rotor's speed is the blade beat measured in the
 //! decoded audio (`spool`).
 
-use crate::cockpit::{self, ATT_PITCHES, FRAMES, PANEL_ROW, PANEL_ROWS, TALL, WIDE, gauge};
+use crate::cockpit::{self, ATT_PITCHES, FRAMES, PANEL_ROW, PANEL_ROWS, PLACARD_ROW, ROW_AT, TALL_AT, WIDE, gauge};
+use std::cell::Cell;
 use crate::layout::COLS;
 use crate::palette::PALETTE;
 
@@ -81,8 +82,16 @@ fn glyph(c: char) -> [u8; 5] {
     }
 }
 
+thread_local! {
+    /// The scale of the dial being drawn (`gauge_art`; 1 elsewhere): text centres given in the dial's
+    /// art space (centre (24, 24)) move out with it, the glyphs keeping their size.
+    static DIAL: Cell<f32> = const { Cell::new(1.0) };
+}
+
 /// Does `text`, centred on (`cx`, `cy`) (hires pixels), cover the multicolour pixel (`mx`, `my`)?
 fn text(text: &str, cx: f32, cy: f32, mx: i32, my: i32) -> bool {
+    let s = DIAL.with(|d| d.get());
+    let (cx, cy) = (24.0 + (cx - 24.0) * s, 24.0 + (cy - 24.0) * s);
     let n = text.chars().count() as i32;
     let w = 4 * n - 1;
     let left = (cx / 2.0 - w as f32 / 2.0).round() as i32;
@@ -125,10 +134,11 @@ fn needle(dx: f32, dy: f32, at: f32, len: f32, tail: f32, w: f32) -> bool {
     (-tail..=len).contains(&along) && across <= w / 2.0 * (1.0 - 0.7 * along.max(0.0) / len)
 }
 
-/// A dial's surround: the panel, corner screws, the black face and its rim. `None` inside the face.
+/// A dial's surround (in its box's own pixels): the panel, corner screws, the black face and its rim.
+/// `None` inside the face.
 fn surround(x: f32, y: f32, w: f32) -> Option<u8> {
     let (r, _) = polar(x, y, w / 2.0, 24.0);
-    if r < FACE {
+    if r < FACE * SCALE {
         return None;
     }
     if r < RIM {
@@ -143,8 +153,12 @@ fn surround(x: f32, y: f32, w: f32) -> Option<u8> {
     Some(DGREY)
 }
 
+/// The face's radius in the art (each gauge's function draws in a 48 × 48 space centred on (24, 24)),
+/// and the rim's on the panel. The art is drawn `SCALE` times larger: a face of radius 22 and a thin rim
+/// out to the box's edge.
 const FACE: f32 = 20.0;
-const RIM: f32 = 23.0;
+const RIM: f32 = 24.0;
+const SCALE: f32 = 1.1;
 
 // ---- the gauges ----
 
@@ -262,26 +276,30 @@ fn alt(k: u16, x: f32, y: f32, mx: i32, my: i32) -> u8 {
     BLACK
 }
 
-/// The caution lamps: RPM (red), LOW ALT (amber), AP (green), dark when off.
+/// The glareshield's row (the panel's first): black, with a grey lip on its last line.
+fn glareshield(y: f32) -> u8 {
+    if y < 7.0 { BLACK } else { GREY }
+}
+
+/// The caution lamps along the glareshield: RPM (red), LOW ALT (amber), AP (green), SEA (red), dark when
+/// off. Each in cells of its own (`cockpit::LAMP_WIDE` wide, a cell apart), so a cell has at most its
+/// lit colour, black and grey.
 fn warn(k: u16, x: f32, y: f32, mx: i32, my: i32) -> u8 {
     let lamps = [(cockpit::lamp::RPM, "RPM", RED), (cockpit::lamp::LOW_ALT, "ALT", YELLOW), (cockpit::lamp::AP, "AP", GREEN), (cockpit::lamp::SEA, "SEA", RED)];
-    // Each lamp in a cell row of its own (rows 1-4 of 6): its colours never share a cell with the next.
+    let pitch = 8.0 * (cockpit::LAMP_WIDE + 1) as f32;
+    let wide = 8.0 * cockpit::LAMP_WIDE as f32;
     for (i, (bit, name, lit)) in lamps.into_iter().enumerate() {
-        let top = 8.0 * (i + 1) as f32;
-        if !(top..top + 8.0).contains(&y) {
+        let left = pitch * i as f32;
+        if !(left + 1.0..left + wide - 1.0).contains(&x) || !(1.0..7.0).contains(&y) {
             continue;
         }
         let on = cockpit::lamp::lit(k as u8) & bit != 0;
-        let (lx0, lx1, ly0, ly1) = (3.0, 29.0, top + 1.0, top + 8.0);
-        if !(lx0..lx1).contains(&x) || !(ly0..ly1).contains(&y) {
-            return DGREY;
-        }
-        if text(name, 16.0, top + 4.5, mx, my) {
-            return if on { BLACK } else { DGREY };
+        if text(name, left + wide / 2.0, 4.0, mx, my) {
+            return if on { BLACK } else { GREY };
         }
         return if on { lit } else { BLACK };
     }
-    DGREY
+    glareshield(y)
 }
 
 /// The rotor's speed (percent) through the start-up, one per tach frame: the blade beat measured in
@@ -433,36 +451,38 @@ fn vsi(k: u16, x: f32, y: f32, mx: i32, my: i32) -> u8 {
 /// Gauge `g`'s frame `k` at hires (`x`, `y`) in its box, multicolour pixel (`mx`, `my`).
 fn gauge_art(g: usize, k: u16, x: f32, y: f32, mx: i32, my: i32, spool: &[f32]) -> u8 {
     let w = WIDE[g] as f32 * 8.0;
-    if g != gauge::WARN {
-        if let Some(c) = surround(x, y, w) {
-            return c;
-        }
+    if g == gauge::WARN {
+        return warn(k, x, y, mx, my);
     }
-    match g {
+    if let Some(c) = surround(x, y, w) {
+        return c;
+    }
+    // Inside the face: the gauge's art, scaled up about the centre.
+    let (x, y) = (24.0 + (x - 24.0) / SCALE, 24.0 + (y - 24.0) / SCALE);
+    DIAL.with(|d| d.set(SCALE));
+    let c = match g {
         gauge::ASI => asi(k, x, y, mx, my),
         gauge::ATT => att(k, x, y, mx, my),
         gauge::ALT => alt(k, x, y, mx, my),
-        gauge::WARN => warn(k, x, y, mx, my),
         gauge::RPM => rpm(k, x, y, mx, my, spool),
         gauge::HDG => hdg(k, x, y, mx, my),
         _ => vsi(k, x, y, mx, my),
-    }
+    };
+    DIAL.with(|d| d.set(1.0));
+    c
 }
 
 /// The static panel at hires (`x`, `y`) of the cockpit rows (`mx`, `my` its multicolour pixel).
 fn panel_art(x: f32, y: f32, mx: i32, my: i32) -> u8 {
-    // The glareshield's lip.
-    if y < 5.0 {
-        return BLACK;
-    }
-    if y < 6.0 {
-        return GREY;
+    if y < 8.0 {
+        return glareshield(y);
     }
     // The placards under the dials.
-    if y >= 56.0 {
-        for g in 0..gauge::COUNT {
+    let top = ((PLACARD_ROW - PANEL_ROW) * 8) as f32;
+    if (top..top + 8.0).contains(&y) {
+        for g in (0..gauge::COUNT).filter(|&g| g != gauge::WARN) {
             let cx = (cockpit::COL[g] as f32 + WIDE[g] as f32 / 2.0) * 8.0;
-            if text(gauge::NAMES[g], cx, 59.5, mx, my) {
+            if text(gauge::NAMES[g], cx, top + 3.5, mx, my) {
                 return LGREY;
             }
         }
@@ -546,17 +566,16 @@ fn quantise(w: usize, h: usize, s: &[u8], pal: &[[u8; 3]]) -> Vec<u8> {
 pub struct Baked {
     /// The static panel: bitmap (`PANEL_BITMAP`), screen RAM, colour RAM (`PANEL_CELLS` each).
     pub panel: Vec<u8>,
-    /// Per gauge, per frame: `TALL` cell rows of `WIDE × 8` bytes.
+    /// Per gauge, per frame: `TALL_AT` cell rows of `WIDE × 8` bytes.
     pub frames: Vec<Vec<Vec<u8>>>,
 }
 
 pub fn bake() -> Baked {
     let spool = spool();
-    let h = TALL as usize * 8;
     let mut frames = Vec::new();
     let mut pals = Vec::new();
     for g in 0..gauge::COUNT {
-        let w = WIDE[g] as usize * 4;
+        let (w, h) = (WIDE[g] as usize * 4, TALL_AT[g] as usize * 8);
         let s: Vec<Vec<u8>> = (0..FRAMES[g]).map(|k| samples(w, h, |x, y, mx, my| gauge_art(g, k, x, y, mx, my, &spool))).collect();
         let pal = palettes(w, h, &s);
         frames.push(s.iter().map(|f| quantise(w, h, f, &pal)).collect::<Vec<_>>());
@@ -567,10 +586,10 @@ pub fn bake() -> Baked {
     let s = samples(pw, ph, panel_art);
     let mut pal = palettes(pw, ph, std::slice::from_ref(&s));
     let mut bitmap = quantise(pw, ph, &s, &pal);
-    let row0 = (cockpit::ROW - PANEL_ROW) as usize;
     for g in 0..gauge::COUNT {
         let wb = WIDE[g] as usize;
-        for r in 0..TALL as usize {
+        let row0 = (ROW_AT[g] as u16 - PANEL_ROW) as usize;
+        for r in 0..TALL_AT[g] as usize {
             for c in 0..wb {
                 let cell = (row0 + r) * COLS as usize + cockpit::COL[g] as usize + c;
                 pal[cell] = pals[g][r * wb + c];

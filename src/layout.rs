@@ -63,13 +63,24 @@ pub const fn line_offset(y: u16) -> u16 {
     (y >> 3) * ROW_STRIDE + (y & 7)
 }
 
-/// VIC registers for the floor screen: multicolour bitmap (`$D018` is per buffer, `Buffer::d018`).
-pub const D011: u8 = 0x3B;
-pub const D016: u8 = 0x18;
+/// VIC registers for the floor screen: multicolour bitmap (`$D018` is per buffer, `Buffer::d018`), in a
+/// 38-column, 24-row window at fine scroll (4, 3): the damage shake (`asm/hud.S` `hud_shake`, which writes
+/// both every frame) moves the fine scroll up to 4 pixels either way and the window hides the edges. What
+/// must always show (the HUD, the cockpit's instruments) stays in [`SAFE_X`] × [`SAFE_Y`].
+pub const D011: u8 = 0x33;
+pub const D016: u8 = 0x14;
+/// The bitmap's always-visible area under the shake: hires pixels across, lines down (ranges).
+pub const SAFE_X: core::ops::Range<i16> = 7..304;
+pub const SAFE_Y: core::ops::Range<i16> = 7..192;
+/// Byte columns the view draws: the last (hires 312-319) never shows in the 38-column window, whatever
+/// the shake's scroll, so the floor, the triangles and the sprites stop before it and `band_publish`
+/// leaves it alone.
+pub const DRAWN_COLS: u16 = 39;
+const _: () = assert!(DRAWN_COLS * 8 >= SAFE_X.end as u16 + 7 && DRAWN_COLS < COLS);
 
 /// The floor (`floor`, `asm/floor.S`): one drawn line (40 bytes), that line's runs as `floor::make_line`
-/// writes them (`floor::Span`, up to 40), and the four mip levels' tile → bank tables (`floor::tile_table`, 256 bytes
-/// each, level `k` at `TILES + 256 k`). Lines are generated and drawn one at a time.
+/// writes them (`floor::Span`, up to 40), and mip levels 0-2's tile → bank tables (`floor::tile_table`, 256 bytes
+/// each, level `k` at `TILES + 256 k`; `floor::TABLE_LEVELS`). Lines are generated and drawn one at a time.
 pub const LINEBUF: u16 = 0xBF00;
 pub const TILES: u16 = 0xC000;
 pub const SPANS: u16 = 0xC400;
@@ -80,7 +91,19 @@ pub const RAYS: u16 = 0xC640;
 pub const BT: u16 = 0xB800;
 const _: () = assert!(BT as u32 + 12 * 64 <= LINEBUF as u32);
 const _: () = assert!(SPANS + SPAN_LINE <= RAYS && RAYS as u32 + core::mem::size_of::<crate::floor::SpanArgs>() as u32 <= POLY_ARGS as u32);
-const _: () = assert!(TILES as u32 + 4 * 256 <= SPANS as u32);
+const _: () = assert!(TILES as u32 + crate::floor::TABLE_LEVELS as u32 * 256 <= SPANS as u32);
+/// The fog line (`floor::FogArgs`, written once a frame), the line's painted bytes after it
+/// (`floor::Patches`, written by `asm/spans.S`, read by `asm/floor.S`), then `asm/spans.S`'s scratch
+/// for them (`FOG_SCRATCH` bytes), between the runs and `RAYS`.
+pub const FOG: u16 = 0xC5E0;
+/// Nonzero: the lines are doubled, so `asm/spans.S` steps the fog line twice a drawn line.
+pub const FOG_DOUBLED: u16 = FOG + crate::floor::FOG_BYTES as u16;
+pub const FOG_PATCHES: u16 = FOG + 16;
+pub const FOG_SCRATCH: u16 = 9;
+/// `asm/floor.S`: the ground run's mip level (for `lookup`), after the fog's scratch.
+pub const FLOOR_LEVEL: u16 = FOG + 32 + FOG_SCRATCH; // (FOG + 32 ..= FOG + 40)
+const _: () = assert!(SPANS + SPAN_LINE <= FOG && FOG as usize + crate::floor::FOG_BYTES <= FOG_PATCHES as usize);
+const _: () = assert!(FOG_PATCHES as usize + core::mem::size_of::<crate::floor::Patches>() <= (FOG + 32) as usize && FLOOR_LEVEL < RAYS);
 /// `asm/poly.S`'s arguments (`poly::args`).
 pub const POLY_ARGS: u16 = 0xC780;
 /// `asm/tri.S`'s arguments (`geom::walk_args`).

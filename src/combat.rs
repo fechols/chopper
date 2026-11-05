@@ -399,7 +399,7 @@ pub fn update<H: Hw + ?Sized>(hw: &mut H, a: &mut Agent, cam: &crate::floor::Flo
             let c = to_camera(&eye, [tu << 2, th << 2, tv << 2]);
             if c[2] >= NEAR && c[2] <= GUN_RANGE {
                 let (x, y) = screen(c);
-                if on_screen(x, y) && (x - 160).abs() <= CONE_X && (y - 68).abs() <= CONE_Y && c[2] < cone_z {
+                if on_screen(x, y) && (x - crate::hud::CX).abs() <= CONE_X && (y - crate::hud::CY).abs() <= CONE_Y && c[2] < cone_z {
                     (in_cone, cone_z) = ((id, e), c[2]);
                 }
             }

@@ -26,17 +26,29 @@ use crate::hw::{Hw, reu};
 /// screen (a multicolor pixel is ~1.66 times as wide as it is tall).
 pub const FX: i32 = 80;
 pub const FY: i32 = 133;
-/// View lines (17 cell rows) above the cockpit, and the optical axis' row.
-pub const VIEW_LINES: u16 = 136;
+/// View lines (16 cell rows) above the cockpit, and the optical axis' row.
+pub const VIEW_LINES: u16 = 128;
 pub const VIEW_BANDS: u16 = VIEW_LINES / 8;
-pub const CY_HALF: i32 = 135; // 2 · (VIEW_LINES / 2) − 1: line y's centre is at (CY_HALF − 2y)/2 above the axis
+pub const CY_HALF: i32 = 135; // 2 · geom::CY − 1: line y's centre is at (CY_HALF − 2y)/2 above the axis
 /// Bytes per line.
+/// Bytes a line's runs are planned over (the screen's width, so the power-of-two runs split it as they
+/// always have), and the bytes drawn: the last run stops one short (`layout::DRAWN_COLS`).
 pub const COLS: u8 = 40;
+pub const DRAWN: u8 = crate::layout::DRAWN_COLS as u8;
+const _: () = assert!(DRAWN + 1 == COLS);
 
 /// Map size in texels (level 0) and tiles.
 pub const MAP_TEXELS: u32 = 2048;
 pub const MAP_TILES: u8 = (MAP_TEXELS / 256) as u8;
-pub const LEVELS: u8 = 4;
+pub const LEVELS: u8 = 6;
+/// Levels 3 and up are one tile each (256², 128², 64²); only the levels below have a tile → bank table
+/// on the C64 (`layout::TILES`; `asm/floor.S` `lookup` tests tile 0 itself for the rest).
+pub const TABLE_LEVELS: u8 = 3;
+const _: () = assert!(MAP_TILES >> TABLE_LEVELS == 1);
+/// Where a one-tile level's texels sit in its bank, in texels along u and v: levels 4 and 5 (128², 64²)
+/// are centred in banks they share (`format::LEVEL_BANK`), so the texels just off the map read the sea
+/// filled around them (64 and 96 texels of it: 1024 and 3072 level-0 texels, far past the fog).
+pub const MIP_OFFSET: [u8; LEVELS as usize] = [0, 0, 0, 0, 64, 96];
 
 /// Fill bytes: sky (code 1 in every pixel), haze (codes 1 and 0 alternating; the other phase on odd
 /// lines, [`haze_byte`], so it is a checkerboard rather than columns).
@@ -108,6 +120,118 @@ pub struct Rays {
     pub hc: u8,
 }
 
+/// The fog line, painted over the drawn line at multicolour-pixel resolution (`layout::FOG`, for
+/// `asm/spans.S`). `w` is affine on screen, so where it crosses the fog depth `w_haze + 2·|dw[0]|` is a
+/// straight line, and where it crosses 0 (the horizon) a parallel one, while the runs only split at
+/// bytes (4 pixels). Line `y`'s crossings plus half a pixel, `at(y)`, are `pf` and `ph` (16.16 pixels, at
+/// line 0) plus `y · step`: on line `y` the pixels left of `pf`'s integer part are ground when `dir` is 1
+/// (`w` falls along the line; the other side when it is `$FF`), and those past `ph`'s are sky. The fog
+/// depth's margin over `w_haze` puts every ground pixel in a byte the runs draw as ground, so painting
+/// only covers ground with haze or sky (never needs a texel the runs did not fetch). `dir` 0: nothing
+/// painted (level, or the lines jump 64 pixels or more a line, where byte steps do not show).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C, packed)]
+pub struct FogArgs {
+    pub dir: u8,
+    pub pf: i32,
+    pub ph: i32,
+    pub step: i32,
+}
+pub const FOG_BYTES: usize = 13;
+const _: () = assert!(core::mem::size_of::<FogArgs>() == FOG_BYTES);
+
+/// `n / d` in 16.16, floored (`d > 0`, under 2^20), or `None` from 2^13 up: one i32 divide for the
+/// integer part, two byte-sized steps of long division for the fraction (no i64 on the C64). (On the
+/// C64 in the actors' overlay, with [`write_fog`].)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
+fn q16(n: i32, d: i32) -> Option<i32> {
+    let mut q = sdiv(n, d);
+    let mut r = n - q * d;
+    if r < 0 {
+        q -= 1;
+        r += d;
+    }
+    if q.unsigned_abs() >= 1 << 13 {
+        return None;
+    }
+    let a = r << 8;
+    let q1 = sdiv(a, d);
+    let q2 = sdiv((a - q1 * d) << 8, d);
+    Some((q << 16) + (q1 << 8) + q2)
+}
+
+/// `n / d`, truncated, out of line: with the remainder taken as `n − q·d` next to it, an inline divide
+/// becomes compiler_builtins' `__divmodsi4` on the C64 (~1.6 KiB resident), not `asm/fixed.S`'s.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
+fn sdiv(n: i32, d: i32) -> i32 {
+    n / d
+}
+
+impl FogArgs {
+    /// From the fog's `w_haze`, `w`'s drop a byte `dw0`, line 0's `w` at byte 0 `w0` and its drop a line
+    /// `a`: byte `b` of line `y` (centre pixel `4b + 2`) has `w0 − y·a − b·dw0`, so `w` crosses `t` at pixel
+    /// `2 + 4(w0 − y·a − t)/dw0`.
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
+    fn new(w_haze: i32, dw0: i32, w0: i32, a: i32) -> Self {
+        if dw0 == 0 {
+            return Self::default();
+        }
+        let (sg, d) = (dw0.signum(), 2 * dw0.abs());
+        let line = |t: i32| q16(sg * (8 * (w0 - t) + 5 * dw0), d);
+        match (line(w_haze + 2 * dw0.abs()), line(0), q16(sg * -8 * a, d)) {
+            (Some(pf), Some(ph), Some(step)) if step.unsigned_abs() <= 1 << 22 => Self { dir: if dw0 > 0 { 1 } else { 0xFF }, pf, ph, step },
+            _ => Self::default(),
+        }
+    }
+
+    /// [`Rays::fog`] from the camera alone: the rays' y components and `w_haze`, as `Rays::new` makes them
+    /// (the same expressions; `the_fog_line_and_the_horizon_are_painted_to_the_pixel` checks they agree).
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.actors"))]
+    pub fn of_cam(cam: &FloorCam) -> Self {
+        let (right, up, fwd) = (cam.r[1][0], cam.r[1][1], cam.r[1][2]);
+        let dw0 = div8(right * (256 * 4 / 16), FX5);
+        let ay = div8(-(up * 256), FY as u8);
+        let a0 = fwd * 256 + div8(right * (-78 * 256 / 16), FX5) + div8(up * (CY_HALF * 128), FY as u8);
+        Self::new(div8((cam.h as i32) << 8, FX5), dw0, -a0, ay)
+    }
+
+    /// Line `y`'s `[pf, ph]` (the C64 adds `step` up a drawn line at a time, [`write_fog`]: the same sums).
+    pub fn at(&self, y: u16) -> [i32; 2] {
+        let (pf, ph, step) = (self.pf, self.ph, self.step);
+        let k = step.wrapping_mul(y as i32);
+        [pf.wrapping_add(k), ph.wrapping_add(k)]
+    }
+}
+
+/// The frame's fog line into `layout::FOG` for `asm/spans.S` (which steps it twice a drawn line when
+/// `layout::FOG_DOUBLED` says the lines are doubled). In the actors' overlay: the geometry set-up's,
+/// where the rays are made, has no room for its 32-bit arithmetic, so it is made from the camera
+/// ([`FogArgs::of_cam`]).
+#[cfg(target_arch = "mos")]
+#[inline(never)]
+#[unsafe(link_section = ".text.actors")]
+pub fn write_fog(cam: &FloorCam) {
+    unsafe { core::ptr::write_volatile(crate::layout::FOG as *mut FogArgs, FogArgs::of_cam(cam)) };
+}
+
+/// The most bytes a line paints: up to 3 at the ground's fog end (the fog depth is 2 bytes' `dw` past the
+/// runs' ground) and 1 where the haze meets the sky.
+pub const MAX_PATCHES: usize = 4;
+
+/// A line's painted bytes (`layout::FOG_PATCHES`): `p[i] = [byte, keep, bits]`, the drawn byte becoming
+/// `byte & keep | bits`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Patches {
+    pub n: u8,
+    pub p: [[u8; 3]; MAX_PATCHES],
+}
+const _: () = assert!(core::mem::size_of::<Patches>() == 1 + 3 * MAX_PATCHES);
+
 /// The error budget: a run of `len` bytes is accepted when `ERR · len² · |Δw per byte| ≤ w0 + w1`.
 /// The affine error is about `|Δf|·|Δw| / (2(w0 + w1))` with `|Δf| ≤ 1.5·len` level texels, so `ERR = 2`
 /// keeps it under about 0.4 texel.
@@ -172,6 +296,12 @@ impl Rays {
         Self { a0, ay, bb, dw, t, w_haze, hc: (26 - l) as u8 }
     }
 
+    /// The frame's fog line ([`FogArgs`]).
+    #[inline(always)]
+    pub fn fog(&self) -> FogArgs {
+        FogArgs::new(self.w_haze, self.dw[0], -self.a0[1], self.ay[1])
+    }
+
     /// Line `y`'s ray at byte 0 (the frame loop steps it by [`Rays::ay`] instead).
     pub fn line(&self, y: u16) -> [i32; 3] {
         core::array::from_fn(|k| self.a0[k] + mul_small(self.ay[k], y as u8))
@@ -179,7 +309,7 @@ impl Rays {
 
     /// `b · bb`: byte `b`'s ray is the line's ray at byte 0 plus this. The C64 keeps the x and z
     /// components as a table (`layout::BT`, field-major: row `4c + i` holds byte i of component c for
-    /// b = 0..40), built by adding `bb` up, which gives the same values.
+    /// b = 0..=COLS), built by adding `bb` up, which gives the same values.
     pub fn bt(&self, b: u8) -> [i32; 3] {
         self.bb.map(|c| mul_small(c, b))
     }
@@ -232,7 +362,7 @@ impl Span {
         if self.flags & 0x80 != 0 { Some(self.u as u8) } else { None }
     }
     pub fn level(&self) -> u8 {
-        self.flags & 3
+        self.flags & 7
     }
     fn filled(len: u8, byte: u8) -> Self {
         Span { len, flags: 0x80, u: byte as i32, ..Span::default() }
@@ -305,15 +435,21 @@ fn class(rays: &Rays, w: i32) -> u8 {
     }
 }
 
-/// One line's runs into `out` from its ray at byte 0 (`Rays::line`); returns how many. The runs cover
-/// the 40 bytes in order. Sky (`w ≤ 0`) and haze bytes become fills; ground runs are as long as the error
+/// One line's runs into `out` from its ray at byte 0 (`Rays::line`); returns how many. The runs are
+/// planned over the [`COLS`] bytes in order, then the last is cut one byte short (dropped if that was
+/// all of it): they cover the [`DRAWN`] bytes. Sky (`w ≤ 0`) and haze bytes become fills; ground runs are as long as the error
 /// budget allows (a power of two, so the step is a shift), with exact end points.
 ///
 /// `w` is linear along the line (`w(b + 2^k) = w(b) − dw[k]`), so the run length is found by comparing
 /// `w` at the run's start with the frame's thresholds `Rays::t`, and a stretch of sky or haze (`w` is
 /// monotone, so it is one stretch) by galloping over it in power-of-two steps.
-pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], haze: u8, out: &mut [Span; MAX_SPANS]) -> usize {
+pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], haze: u8, fog_at: [i32; 2], out: &mut [Span; MAX_SPANS], fog: &mut Patches) -> usize {
     let ray_at = |b: u8| add(a, &rays.bt(b));
+    fog.n = 0;
+    // The ground's fog end (`w` is monotone, so the ground is one stretch): when w falls along the line,
+    // the first fill after it (or 40); when it rises, its first byte (or 40).
+    let dir = rays.fog().dir;
+    let mut gb = if dir == 0xFF { COLS } else { 0 };
     let mut n = 0;
     let mut b = 0u8;
     let mut w0 = -a[1];
@@ -333,6 +469,9 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], haze: u8, out: &mut 
                     }
                 }
             }
+            if dir == 1 && ground_last(out, n) {
+                gb = b;
+            }
             put_fill(out, &mut n, m, if c == 0 { SKY_BYTE } else { haze });
             b += m;
             w0 = w - rays.dw[0];
@@ -350,11 +489,17 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], haze: u8, out: &mut 
         // A one-byte run whose far end is already haze: its step (so its level) is unknown, and it is the
         // last ground byte before the haze, so it joins the haze.
         if k == 0 && w0 < rays.t[0] {
+            if dir == 1 && ground_last(out, n) {
+                gb = b;
+            }
             put_fill(out, &mut n, 1, haze);
             b += 1;
             w0 -= rays.dw[0];
             start = None;
             continue;
+        }
+        if dir == 0xFF && !ground_last(out, n) {
+            gb = b;
         }
         let len = 1u8 << k;
         let w1 = w0 - rays.dw[k];
@@ -368,30 +513,81 @@ pub fn make_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], haze: u8, out: &mut 
         let d = ray_at(b + len);
         let p1 = ground_offset(rays.hc, d[0], d[2], w1);
         let (du, dv) = ((p1.0 - p0.0) >> k, (p1.1 - p0.1) >> k);
-        match level_for(du, dv) {
-            Some(level) => {
-                out[n] = Span {
-                    len,
-                    flags: level,
-                    u: (cam.u + p0.0) >> level,
-                    v: (cam.v + p0.1) >> level,
-                    du: (du >> level) as i16,
-                    dv: (dv >> level) as i16,
-                };
-                n += 1;
-            }
-            None => put_fill(out, &mut n, len, haze),
-        }
+        // (Steeper than the last level allows: the last level still, rather than a run of haze.)
+        let level = level_for(du, dv).unwrap_or(LEVELS - 1);
+        out[n] = Span {
+            len,
+            flags: level,
+            u: ((cam.u + p0.0) >> level) + ((MIP_OFFSET[level as usize] as i32) << 8),
+            v: ((cam.v + p0.1) >> level) + ((MIP_OFFSET[level as usize] as i32) << 8),
+            du: (du >> level) as i16,
+            dv: (dv >> level) as i16,
+        };
+        n += 1;
         start = Some(p1);
         b += len;
         w0 = w1;
     }
+    if dir == 1 && ground_last(out, n) {
+        gb = COLS;
+    }
+    if dir != 0 {
+        paint(dir, fog_at, gb, haze, fog);
+    }
+    out[n - 1].len -= 1;
+    if out[n - 1].len == 0 {
+        n -= 1;
+    }
     n
+}
+
+/// Whether the last of the `n` runs is ground.
+fn ground_last(out: &[Span; MAX_SPANS], n: usize) -> bool {
+    n > 0 && out[n - 1].fill().is_none()
+}
+
+/// The first `k` pixels of a byte (`LMASK[k]`) and the last `k` (`RMASK[k]`).
+const LMASK: [u8; 5] = [0x00, 0xC0, 0xF0, 0xFC, 0xFF];
+const RMASK: [u8; 5] = [0x00, 0x03, 0x0F, 0x3F, 0xFF];
+
+/// A painted byte: `keep` its ground pixels, `sky` its sky pixels, the rest haze.
+fn patch(fog: &mut Patches, e: u8, keep: u8, sky: u8, haze: u8) {
+    if (fog.n as usize) < MAX_PATCHES {
+        fog.p[fog.n as usize] = [e, keep, haze & !(keep | sky) | SKY_BYTE & sky];
+        fog.n += 1;
+    }
+}
+
+/// The line's painted bytes from its crossings `at` ([`FogArgs`]) and the ground's fog end `gb`: the
+/// ground bytes the fog line covers part or all of, and the byte the horizon splits (when the runs did
+/// not draw it as ground; the hidden byte 39 never).
+fn paint(dir: u8, at: [i32; 2], gb: u8, haze: u8, fog: &mut Patches) {
+    let px = |p: i32| (p >> 16).clamp(0, 4 * COLS as i32) as u8;
+    let (g, s) = (px(at[0]), px(at[1]));
+    let c4 = |x: i32| x.clamp(0, 4) as usize;
+    let hs = s >> 2;
+    if dir == 1 {
+        for e in g >> 2..gb.min(DRAWN) {
+            let x = 4 * e as i32;
+            patch(fog, e, LMASK[c4(g as i32 - x)], RMASK[c4(x + 4 - s as i32)], haze);
+        }
+        if s & 3 != 0 && hs >= gb && hs < DRAWN {
+            patch(fog, hs, 0, RMASK[4 - (s & 3) as usize], haze);
+        }
+    } else {
+        for e in gb..((g + 3) >> 2).min(DRAWN) {
+            let x = 4 * e as i32;
+            patch(fog, e, RMASK[c4(x + 4 - g as i32)], LMASK[c4(s as i32 - x)], haze);
+        }
+        if s & 3 != 0 && hs < gb && hs < DRAWN {
+            patch(fog, hs, 0, LMASK[(s & 3) as usize], haze);
+        }
+    }
 }
 
 /// REU bank of tile `(tx, ty)` (mod 16) of mip `level`; off the map, the sea.
 pub fn tile_bank(level: u8, tx: u8, ty: u8) -> u8 {
-    let tiles = MAP_TILES >> level;
+    let tiles = (MAP_TILES >> level).max(1);
     let (tx, ty) = (tx & 15, ty & 15);
     if tx < tiles && ty < tiles { crate::format::LEVEL_BANK[level as usize] + ty * tiles + tx } else { crate::format::SEA_BANK }
 }
@@ -414,12 +610,12 @@ pub struct LineCost {
     pub io_writes: u32,
 }
 
-/// Draw one line's runs into the 40 bytes at `buf` (the reference for `asm/floor.S` `floor_line`):
+/// Draw one line's runs into the [`DRAWN`] bytes at `buf` (the reference for `asm/floor.S` `floor_line`):
 /// fills by CPU stores; ground by one REU DMA per byte, the C64 address auto-incrementing within a run.
 /// REU address registers: mid and bank when they change (`shadow`), lo always and last (the C64U
 /// reloads all three from the last written values on any address write). `$DF07/$DF08 = 1` and
 /// `$DF0A = 0` are set once per frame by [`floor_begin`].
-pub fn draw_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], buf: u16, shadow: &mut [u8; 2]) -> LineCost {
+pub fn draw_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], fog: &Patches, buf: u16, shadow: &mut [u8; 2]) -> LineCost {
     let mut cost = LineCost::default();
     let mut x = 0u16;
     for s in spans {
@@ -460,7 +656,13 @@ pub fn draw_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], buf: u16, shadow: &
         }
         x += s.len as u16;
     }
-    debug_assert_eq!(x, COLS as u16);
+    debug_assert_eq!(x, DRAWN as u16);
+    // The fog line over it.
+    for &[at, keep, bits] in &fog.p[..fog.n as usize] {
+        let a = buf + at as u16;
+        let b = hw.peek(a);
+        hw.poke(a, b & keep | bits);
+    }
     cost
 }
 
@@ -476,10 +678,10 @@ pub fn floor_begin<H: Hw + ?Sized>(hw: &mut H) -> [u8; 2] {
     [0, 0]
 }
 
-/// Copy a drawn line (40 bytes at `buf`) into band line `line` (0..7) of the 320-byte cell-row stage,
+/// Copy a drawn line ([`DRAWN`] bytes at `buf`) into band line `line` (0..7) of the 320-byte cell-row stage,
 /// and into the next line too when `doubled`.
 pub fn copy_line<H: Hw + ?Sized>(hw: &mut H, buf: u16, stage: u16, line: u8, doubled: bool) {
-    for col in 0..COLS as u16 {
+    for col in 0..DRAWN as u16 {
         let b = hw.peek(buf + col);
         hw.poke(stage + col * 8 + line as u16, b);
         if doubled {

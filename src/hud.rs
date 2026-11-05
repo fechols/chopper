@@ -94,6 +94,16 @@ const _: () = assert!(crate::world_sim::NOBODY == 0xFFFF);
 /// u8: 1 when the waypoint was last to the right (its arrow keeps that side while it is near dead astern).
 pub const CARET_SIDE: u16 = LOCK_STATE + 5;
 const _: () = assert!(LOCK_STATE + LOCK_BYTES as u16 <= BUF);
+/// The damage shake's state, the IRQ's own (`asm/hud.S` `hud_shake`; zeroed by [`init`]): frames left,
+/// the hit flash last seen, the sprites' offsets this frame, two bytes of scratch.
+pub const SHAKE: u16 = PAGE + 0x0A;
+pub const SHAKE_BYTES: u16 = 6;
+const _: () = assert!(CARET_SIDE < SHAKE && SHAKE + SHAKE_BYTES <= BUF);
+/// The hit flash the IRQ watches (`asm/hud.S` `FLASH`): a rise starts the shake.
+pub const SHAKE_FLASH: u16 = 0x8ED3;
+const _: () = assert!(crate::combat::PLAYER + crate::combat::player::FLASH == SHAKE_FLASH);
+/// The rest fine scroll the IRQ adds to every sprite X (`asm/hud.S` `REST_X`, `REST_Y`).
+const _: () = assert!(crate::layout::D016 & 7 == 4 && crate::layout::D011 & 7 == 3);
 pub const NONE: u8 = 0xFF;
 pub const BUF: u16 = PAGE + 0x10;
 pub const ROWS: usize = 4;
@@ -117,6 +127,9 @@ pub const LEAD: u8 = 3;
 pub const SPAN: u8 = 22;
 /// Sprite Ys over the view: from the top border to the view's last line (the cockpit has none).
 pub const Y_MIN: u8 = 30;
+/// The view's centre (hires px across, view lines down): the boresight, `geom`'s optical axis.
+pub const CX: i16 = 160;
+pub const CY: i16 = crate::geom::CY as i16;
 pub const Y_MAX: u8 = 50 + crate::floor::VIEW_LINES as u8 - 21;
 
 /// Lock-on: ticks inside the reticle to lock; the reticle's half-size (hires px, lines); the range.
@@ -259,14 +272,14 @@ pub fn to_camera(eye: &Eye, p: [i16; 3]) -> [i16; 3] {
 }
 
 /// Screen position (hires px, view line) of a camera-space point in front of the near plane:
-/// `geom`'s projection (`sx = 80 + 80·X/Z`, `sy = 68 − 133·Y/Z`), in hires pixels across.
+/// `geom`'s projection (`sx = 80 + 80·X/Z`, `sy = CY − 133·Y/Z`), in hires pixels across.
 #[inline(never)]
 // (Resident on the C64: shared by the overlays.)
 pub fn screen(c: [i16; 3]) -> (i16, i16) {
     let z = c[2] as i32;
     let x = div_clamp(mul16(c[0], 160), z);
     let y = div_clamp(mul16(c[1], 133), z);
-    (160 + x, 68 - y)
+    (CX + x, CY - y)
 }
 
 /// `(n / z).clamp(-1000, 1000)`: only quotients up to 1000 matter, so for `z > 0` a ten-step restoring
@@ -344,11 +357,12 @@ fn div_clamp_is_the_clamped_quotient() {
     }
 }
 
-/// Whether a screen position is inside the view (with a margin for the sprite).
+/// Whether a screen position is inside the view, with a margin for the sprite (12 px across, 10 lines)
+/// that keeps it in the screen's safe area (`layout::SAFE_X`, `SAFE_Y`) however the shake moves it.
 #[inline(never)]
 // (Resident on the C64: shared by the overlays.)
 pub fn on_screen(x: i16, y: i16) -> bool {
-    x >= 8 && x < 312 && y >= 4 && y < 132
+    x >= 18 && x < 291 && y >= 18 && y < crate::floor::VIEW_LINES as i16 - 4
 }
 
 /// A shape placed with its anchor at screen (`x` hires px, `y` view line).
@@ -362,7 +376,8 @@ pub fn place(slot: u8, shape: u8, x: i16, y: i16) -> Sprite {
 }
 
 /// The edge arrow toward a direction on the screen (`dx` right, `dy` down; any scale): its shape and
-/// where it sits on the view's edge (stepped out from the centre to a 140 × 52 box).
+/// where it sits on the view's edge (stepped out from the centre to a 126 × 42 box: a step overshoots it
+/// by up to 6, and the arrow reaches 9 px and 8 lines past its centre, all inside the safe area).
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.hud"))]
 fn edge(mut dx: i16, mut dy: i16) -> (u8, i16, i16) {
@@ -386,8 +401,8 @@ fn edge(mut dx: i16, mut dy: i16) -> (u8, i16, i16) {
     } else {
         5
     };
-    let (mut x, mut y) = (160i16, 68i16);
-    while (x - 160).abs() < 140 && (y - 68).abs() < 52 {
+    let (mut x, mut y) = (CX, CY);
+    while (x - CX).abs() < 126 && (y - CY).abs() < 42 {
         x += dx;
         y += dy;
     }
@@ -441,9 +456,10 @@ pub fn build<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &FloorCam) {
     for (k, s) in [shape::BORESIGHT, shape::DIAMOND, shape::LOCK, shape::BOX, shape::CARET, shape::LABEL, shape::RANGE].into_iter().enumerate() {
         hw.poke(S_SHAPES + k as u16, s);
     }
-    put(hw, &mut n, place(slot::BORESIGHT, shape::BORESIGHT, 160, 68));
-    put(hw, &mut n, Sprite { x: 24 + 4, y: 50 + 3, ptr: pointer(slot::LABEL) });
-    put(hw, &mut n, Sprite { x: 24 + 28, y: 50 + 3, ptr: pointer(slot::RANGE) });
+    put(hw, &mut n, place(slot::BORESIGHT, shape::BORESIGHT, CX, CY));
+    // The waypoint readout in the top left corner, inside the safe area (its text on the shape's rows 7-13).
+    put(hw, &mut n, Sprite { x: 24 + 10, y: 50 + 3, ptr: pointer(slot::LABEL) });
+    put(hw, &mut n, Sprite { x: 24 + 34, y: 50 + 3, ptr: pointer(slot::RANGE) });
     // The waypoint: the caret over it, or an arrow at the edge.
     let (u, v) = a.at();
     let c = to_camera(&eye, [a.wu << 2, 0, a.wv << 2]);
@@ -489,7 +505,7 @@ pub fn build<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &FloorCam) {
             continue;
         }
         let z = if rd(hw, at + 5) == target { i16::MIN } else { c[2] };
-        if (x - 160).abs() <= RETICLE_X && (y - 68).abs() <= RETICLE_Y && c[2] <= LOCK_RANGE && z < best_z {
+        if (x - CX).abs() <= RETICLE_X && (y - CY).abs() <= RETICLE_Y && c[2] <= LOCK_RANGE && z < best_z {
             (best, best_z, bx, by) = (k, z, x, y);
         }
         if boxes < BOXES {
@@ -509,7 +525,7 @@ pub fn build<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &FloorCam) {
     hw.poke(LOCK_STATE + 3, a.t as u8);
     hw.poke(LOCK_STATE + 4, (a.t >> 8) as u8);
     if best == NONE {
-        put(hw, &mut n, place(slot::DIAMOND, shape::DIAMOND, 160, 68));
+        put(hw, &mut n, place(slot::DIAMOND, shape::DIAMOND, CX, CY));
     } else {
         let s = if ticks >= LOCK_TICKS { shape::LOCKED } else { shape::ACQUIRE + ticks / 32 };
         hw.poke(S_SHAPES + slot::DIAMOND as u16, s);

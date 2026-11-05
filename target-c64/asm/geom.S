@@ -25,8 +25,10 @@ BMP    = GA + 32
 TRIS   = GA + 34
 TOP    = GA + 35
 ; The view (`geom::LINES`, `geom::BANDS`): the lines above the cockpit.
-LINES  = 136
-NBANDS = 17
+LINES  = 128
+NBANDS = 16
+; The optical axis' line (`geom::CY`), Q4.
+CY16   = 1088
 ; The near plane (`geom::NEAR`, Q4): 2 texels.
 NEARZ  = 32
 PATE   = $C7E0
@@ -430,7 +432,7 @@ project:
     lda Q+2
     adc V+2
     sta BH
-    ; sy = 1088 + (-y * ry) >> (14 + e)
+    ; sy = CY16 + (-y * ry) >> (14 + e)
     sec
     lda #0
     sbc PY
@@ -446,10 +448,10 @@ project:
     jsr sarv
     clc
     lda V
-    adc #$40            ; 1088 = $0440
+    adc #<CY16
     sta V
     lda V+1
-    adc #$04
+    adc #>CY16
     sta V+1
     lda V+2
     adc #0
@@ -855,7 +857,7 @@ geo_affine:
     clc
     adc #1
     sta ASHX
-    ; ex = (sx - 1280) * 205 >> 11, ey = (1088 - sy) * 123 >> 11: magnitudes clamped to 255, signs
+    ; ex = (sx - 1280) * 205 >> 11, ey = (CY16 - sy) * 123 >> 11: magnitudes clamped to 255, signs
     sec
     lda ACX
     sbc #<1280
@@ -869,10 +871,10 @@ geo_affine:
     lda MS
     sta AEXS
     sec
-    lda #<1088
+    lda #<CY16
     sbc ACY
     sta MT0
-    lda #>1088
+    lda #>CY16
     sbc ACY+1
     sta MT1
     lda #123
@@ -2202,9 +2204,9 @@ ssetup:
 1:  lda #0
     sta J0
     sta J0+1
-2:  ; j1 = min(wb, 40 - base)
+2:  ; j1 = min(wb, 39 - base) (`layout::DRAWN_COLS`)
     sec
-    lda #40
+    lda #39
     sbc SBL
     sta J1
     lda #0
@@ -3653,7 +3655,7 @@ sphere:
     sta AL
     lda SZ+1
     sta AH
-    lda #68
+    lda #CY16 / 16
     sta BL
     lda #0
     sta BH

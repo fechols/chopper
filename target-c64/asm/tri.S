@@ -28,18 +28,20 @@ ROW    = $B1
 K      = $B2
 LP     = $B3
 
-; A = pixel of the Q16 bound at \src: (x + $7FFF) >> 16, clamped to 0..160. The edges are stored with
-; the $7FFF already added (geom.S putedge), so that is bytes 2-3.
+; A = pixel of the Q16 bound at \src: (x + $7FFF) >> 16, clamped to 0..XMAX (`geom::pixel`: the drawn
+; columns, `layout::DRAWN_COLS`). The edges are stored with the $7FFF already added (geom.S putedge), so
+; that is bytes 2-3.
+XMAX = 156
 .macro PIXEL src
     lda \src+3
     bne 1f
     lda \src+2
-    cmp #161
+    cmp #XMAX + 1
     bcc 3f
-    lda #160
+    lda #XMAX
     jmp 3f
 1:  bmi 2f
-    lda #160
+    lda #XMAX
     jmp 3f
 2:  lda #0
 3:

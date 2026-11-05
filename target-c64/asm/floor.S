@@ -43,11 +43,15 @@ LINEBUF = $BF00
 TILES   = $C000
 SPANS   = $C400
 STAGE   = $8C00
+FLV     = $C609       ; layout::FLOOR_LEVEL: the ground run's mip level
+TABLE_LEVELS = 3      ; floor::TABLE_LEVELS: levels from here are one tile (`lookup`)
+SEA_BANK = 85         ; format::SEA_BANK
+PATCH   = $C5F0       ; layout::FOG_PATCHES (`floor::Patches`): count, then byte, keep, bits
 SAVE_MID  = $C7D4
 SAVE_BANK = $C7D5
 FETCH   = $91
 RECORD  = 12
-COLS    = 40
+COLS    = 39          ; floor::DRAWN (layout::DRAWN_COLS): the bytes a line draws
 
 ; Mid written when it changes (X = 1 if it did). The bank is written by `lookup`, when it changes: a new
 ; bank means a new tile, so a new u or v texel too (steps here are under a texel).
@@ -158,6 +162,7 @@ run:
     jmp next
 
 ground:
+    sta FLV
     clc
     adc #>TILES
     sta TP+1
@@ -322,14 +327,33 @@ next:
     inc RUNP+1
 9:  jmp run
 done:
-    lda SHMID
+    ; the fog line over it (`floor::draw_line`): LINEBUF[byte] = LINEBUF[byte] & keep | bits
+    lda PATCH
+    beq 2f
+    sta REM
+    ldy #0
+1:  ldx PATCH+1,y
+    lda LINEBUF,x
+    and PATCH+2,y
+    ora PATCH+3,y
+    sta LINEBUF,x
+    iny
+    iny
+    iny
+    dec REM
+    bne 1b
+2:  lda SHMID
     sta SAVE_MID
     lda SHBANK
     sta SAVE_BANK
     rts
 
-; BK = the level's tile table at (VHH & 15) · 16 + (UHH & 15).
+; BK = the level's tile table at (VHH & 15) · 16 + (UHH & 15); for a one-tile level, its bank at tile 0
+; and the sea elsewhere (`floor::tile_bank`).
 lookup:
+    lda FLV
+    cmp #TABLE_LEVELS
+    bcs 2f
     lda VHH
     asl
     asl
@@ -341,12 +365,23 @@ lookup:
     ora BK
     tay
     lda (TP),y
-    sta BK
+3:  sta BK
     cmp SHBANK
     beq 1f
     sta $df06
     sta SHBANK
 1:  rts
+2:  lda UHH
+    ora VHH
+    and #15
+    bne 4f
+    ldy FLV
+    lda lvbank - TABLE_LEVELS,y
+    bne 3b
+4:  lda #SEA_BANK
+    bne 3b
+; format::LEVEL_BANK from TABLE_LEVELS on
+lvbank: .byte 84, 89, 86
 .size floor_line, .-floor_line
 
 ; floor_copy(A = band line 0..7, X = doubled): LINEBUF into STAGE column by column (+8 a column), and
@@ -428,6 +463,18 @@ PB_TOP = $B4
 PB_BOT = $B5
 PB_D   = $B6        ; (2)
 
+; X:Y += 56, into the store at dst's operand.
+.macro PBNEXT56 dst
+    txa
+    clc
+    adc #56
+    tax
+    bcc 6f
+    iny
+6:  stx \dst+1
+    sty \dst+2
+.endm
+
 ; X:Y += 64, into the store at dst's operand.
 .macro PBNEXT dst
     txa
@@ -457,9 +504,9 @@ band_publish:
     asl
     asl
     clc
-    adc #49
+    adc #46             ; (the shake's fine scroll moves the row by -3..+4 lines)
     sta PB_TOP
-    adc #10
+    adc #17
     sta PB_BOT          ; first safe line after the row
 1:  lda $d011
     bmi 2f              ; line >= 256: below every row
@@ -476,7 +523,7 @@ band_publish:
     PBNEXT pbs1
     PBNEXT pbs2
     PBNEXT pbs3
-    PBNEXT pbs4
+    PBNEXT56 pbs4           ; (the last stripe from 248: bytes 0-311, the drawn columns)
     ldy #0
 3:  lda STAGE,y
 pbs0: sta $ffff,y
@@ -486,7 +533,7 @@ pbs1: sta $ffff,y
 pbs2: sta $ffff,y
     lda STAGE+192,y
 pbs3: sta $ffff,y
-    lda STAGE+256,y
+    lda STAGE+248,y         ; (bytes 248-311: the last overlaps the fourth stripe by 8)
 pbs4: sta $ffff,y
     iny
     cpy #64

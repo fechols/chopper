@@ -45,7 +45,7 @@ DATA = [
     (0xB760, 0xB800, 'combat::FX (16 x 10)'),
     (0xB800, 0xBB00, 'BT ray table (set-up: world page half 1)'),
     (0xBF00, 0xC000, 'LINEBUF'),
-    (0xC000, 0xC400, 'TILES'),
+    (0xC000, 0xC300, 'TILES'),
     (0xC400, 0xC640, 'SPANS'),
     (0xC640, 0xC6A0, 'RAYS / SpanArgs'),
     (0xC6A0, 0xC756, 'WALK_ARGS'),

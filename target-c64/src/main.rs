@@ -434,7 +434,7 @@ fn boot(c: &mut C64) -> u16 {
         poke(PATS + i as u16, p[0]);
         poke(PATS + 16 + i as u16, p[1]);
     }
-    for level in 0..floor::LEVELS {
+    for level in 0..floor::TABLE_LEVELS {
         // Entry by entry (`floor::tile_table`): a 256-byte table on the soft stack would push the boot's
         // frame into llvm-mos's static frames.
         for i in 0..=255u8 {
@@ -585,6 +585,7 @@ pub extern "C" fn main() -> i16 {
         // The moving objects (actors overlay, over the HUD's).
         hw::fetch(c, OVERLAY_ACTORS, WORK, actors_size);
         chopper::actors::update(c, &cam);
+        floor::write_fog(&cam);
         stream(c, now);
         // The floor's rays and the grids' set-up from their overlay (then the window is the frame's
         // geometry again).
@@ -609,6 +610,7 @@ pub extern "C" fn main() -> i16 {
         poke16(STATUS + status::GEOM_US, stopwatch_stop());
 
         let doubled = peek(STATUS + status::MODE) & 1;
+        poke(chopper::layout::FOG_DOUBLED, doubled);
         stopwatch_start();
         unsafe { floor_begin() };
         // The bands can take longer than the 16-bit stopwatch: add it up band by band.

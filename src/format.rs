@@ -5,10 +5,10 @@
 //! | banks | contents |
 //! |---|---|
 //! | 0-63 | ground map level 0: 2048×2048 texels, 8×8 tiles, tile (tx, ty) in bank `ty·8 + tx` |
-//! | 64-79, 80-83, 84 | mip levels 1-3 (1024², 512², 256²), tiled the same way |
+//! | 64-79, 80-83, 84 | mip levels 1-3 (1024², 512², 256²), tiled the same way; levels 4 (128²) and 5 (64²) are centred in banks 89 and 86, with sea around them (`floor::MIP_OFFSET`) |
 //! | 85 | the sea (one tile, shown off the map) |
-//! | 86 | header |
-//! | 87 / 88 / 89 | objects by grid cell / per-angle visibility lists / the scene block (`geom`, `scene`) |
+//! | 86 | header; mip level 5 |
+//! | 87 / 88 / 89 | objects by grid cell / per-angle visibility lists / the scene block (`geom`, `scene`); mip level 4 |
 //! | 90-95 | sprites |
 //! | 96-106 | the rotor sound, DLT5 (`digital`) |
 //! | 107 | the AI: decision trees, hazard map (`brain`, `goap`) |
@@ -28,12 +28,12 @@ pub const REU_BANK: u32 = 0x8_0000;
 pub const MAX_DMA: u16 = 256;
 
 /// First bank of each mip level's tiles.
-pub const LEVEL_BANK: [u8; 4] = [0, 64, 80, 84];
+pub const LEVEL_BANK: [u8; crate::floor::LEVELS as usize] = [0, 64, 80, 84, SCENE_BANK, HEADER_BANK];
 pub const SEA_BANK: u8 = 85;
 
 /// Package version: the PRG refuses an image whose header carries another one (a PRG and REU from
 /// different builds). Bump it whenever this layout changes.
-pub const PACKAGE_VERSION: u16 = 3;
+pub const PACKAGE_VERSION: u16 = 4;
 
 /// Header: magic[8], version u16.
 pub const HEADER_BANK: u8 = 86;

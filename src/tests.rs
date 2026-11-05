@@ -79,7 +79,7 @@ fn exact_line(cam: &FloorCam, y: u16) -> Vec<Option<(f64, f64)>> {
     let h = cam.h as f64 / 256.0;
     (0..COLS as usize)
         .map(|b| {
-            let d = [((4 * b + 2) as f64 - 80.0) / floor::FX as f64, (68.0 - (y as f64 + 0.5)) / floor::FY as f64, 1.0];
+            let d = [((4 * b + 2) as f64 - 80.0) / floor::FX as f64, (crate::geom::CY as f64 - (y as f64 + 0.5)) / floor::FY as f64, 1.0];
             let w: [f64; 3] = core::array::from_fn(|i| r(i, 0) * d[0] + r(i, 1) * d[1] + r(i, 2) * d[2]);
             if w[1] >= 0.0 {
                 return None;
@@ -113,13 +113,16 @@ fn every_ground_byte_samples_within_a_texel_of_the_exact_ray() {
         let rays = Rays::new(&cam);
         let mut spans = [Span::default(); MAX_SPANS];
         for y in (0..VIEW_LINES).step_by(5) {
-            let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, &mut spans);
+            let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, rays.fog().at(y), &mut spans, &mut floor::Patches::default());
             let exact = exact_line(&cam, y);
             let mut b = 0usize;
-            for s in &spans[..n] {
-                assert!(s.len.is_power_of_two() || s.fill().is_some(), "{s:?}");
+            for (i, s) in spans[..n].iter().enumerate() {
+                // (The last run is cut one byte short: `floor::DRAWN`.)
+                assert!(s.len.is_power_of_two() || s.fill().is_some() || i + 1 == n && (s.len + 1).is_power_of_two(), "{s:?}");
                 if s.fill().is_none() {
-                    let (mut u, mut v) = (s.u, s.v);
+                    // (Map coordinates: the level's place in its bank, `floor::MIP_OFFSET`, taken off.)
+                    let off = (floor::MIP_OFFSET[s.level() as usize] as i32) << 8;
+                    let (mut u, mut v) = (s.u - off, s.v - off);
                     let unit = (1 << s.level()) as f64;
                     for i in 0..s.len as usize {
                         let (eu, ev) = exact[b + i].expect("a ground run over sky");
@@ -133,7 +136,7 @@ fn every_ground_byte_samples_within_a_texel_of_the_exact_ray() {
                 }
                 b += s.len as usize;
             }
-            assert_eq!(b, COLS as usize);
+            assert_eq!(b, floor::DRAWN as usize);
         }
     }
     assert!(checked > 100_000, "{checked}");
@@ -175,21 +178,21 @@ fn searched_line(cam: &FloorCam, rays: &Rays, a: &[i32; 3], out: &mut [Span; MAX
         }
         let (p0, p1) = (at(b), at(b + len));
         let (du, dv) = ((p1.0 - p0.0) >> k, (p1.1 - p0.1) >> k);
-        match level_for(du, dv) {
-            Some(level) => {
-                out[n] = Span {
-                    len,
-                    flags: level,
-                    u: (cam.u + p0.0) >> level,
-                    v: (cam.v + p0.1) >> level,
-                    du: (du >> level) as i16,
-                    dv: (dv >> level) as i16,
-                };
-                n += 1;
-            }
-            None => put_fill(out, &mut n, len, HAZE_BYTE),
-        }
+        let level = level_for(du, dv).unwrap_or(floor::LEVELS - 1);
+        out[n] = Span {
+            len,
+            flags: level,
+            u: ((cam.u + p0.0) >> level) + ((floor::MIP_OFFSET[level as usize] as i32) << 8),
+            v: ((cam.v + p0.1) >> level) + ((floor::MIP_OFFSET[level as usize] as i32) << 8),
+            du: (du >> level) as i16,
+            dv: (dv >> level) as i16,
+        };
+        n += 1;
         b += len;
+    }
+    out[n - 1].len -= 1;
+    if out[n - 1].len == 0 {
+        n -= 1;
     }
     n
 }
@@ -210,7 +213,7 @@ fn thresholds_and_galloping_give_the_searched_runs() {
         let (mut x, mut y) = ([Span::default(); MAX_SPANS], [Span::default(); MAX_SPANS]);
         for line in 0..VIEW_LINES {
             let a = rays.line(line);
-            let n = floor::make_line(&cam, &rays, &a, floor::HAZE_BYTE, &mut x);
+            let n = floor::make_line(&cam, &rays, &a, floor::HAZE_BYTE, rays.fog().at(line), &mut x, &mut floor::Patches::default());
             let m = searched_line(&cam, &rays, &a, &mut y);
             assert_eq!(&x[..n], &y[..m], "camera {cam:?} line {line}");
         }
@@ -225,7 +228,7 @@ fn a_level_line_is_one_run() {
     let rays = Rays::new(&cam);
     let mut spans = [Span::default(); MAX_SPANS];
     for y in 0..VIEW_LINES {
-        let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, &mut spans);
+        let n = floor::make_line(&cam, &rays, &rays.line(y), floor::HAZE_BYTE, rays.fog().at(y), &mut spans, &mut floor::Patches::default());
         let ground = spans[..n].iter().filter(|s| s.fill().is_none()).count();
         assert!(ground <= 2, "line {y}: {:?}", &spans[..n]);
     }
@@ -240,12 +243,36 @@ fn tiles_map_to_their_banks_and_the_sea_beyond() {
     assert_eq!(floor::tile_bank(0, 0xFF, 3), SEA_BANK); // just west of the map
     assert_eq!(floor::tile_bank(3, 0, 0), LEVEL_BANK[3]);
     assert_eq!(floor::tile_bank(3, 1, 0), SEA_BANK);
+    for k in 4..floor::LEVELS {
+        assert_eq!(floor::tile_bank(k, 0, 0), LEVEL_BANK[k as usize]);
+        assert_eq!(floor::tile_bank(k, 0, 1), SEA_BANK);
+        assert_eq!(floor::tile_bank(k, 0xFF, 0), SEA_BANK);
+    }
     // A texel's address in the image holds that texel.
     let reu = package();
     let w = crate::world::generate(1983);
     for (u, v) in [(0usize, 0usize), (255, 256), (1024, 760), (2047, 2047), (1500, 33)] {
         let a = floor::texel_addr(0, (u as i32) << 8, (v as i32) << 8) as usize;
         assert_eq!(reu[a], crate::world::dither(w.texels[v * 2048 + u], u, v), "texel ({u}, {v})");
+    }
+    // Every level's texels where a run reads them (`floor::MIP_OFFSET` added), and the sea just off the
+    // map at the shared-bank levels (out to 60 texels on every side).
+    let mips = crate::world::mips(&w.texels);
+    for k in 1..floor::LEVELS {
+        let n = 2048i32 >> k;
+        let off = (floor::MIP_OFFSET[k as usize] as i32) << 8;
+        let at = |u: i32, v: i32| reu[floor::texel_addr(k, (u << 8) + off, (v << 8) + off) as usize];
+        for (u, v) in [(0, 0), (n - 1, n - 1), (n / 2, 3), (5, n - 2)] {
+            let want = crate::world::dither(mips[k as usize][(v * n + u) as usize], u as usize, v as usize);
+            assert_eq!(at(u, v), want, "level {k} texel ({u}, {v})");
+        }
+        if k >= 4 {
+            for d in [1, 20, 60] {
+                for (u, v) in [(-d, n / 2), (n - 1 + d, n / 2), (n / 2, -d), (n / 2, n - 1 + d), (-d, -d), (n - 1 + d, n - 1 + d)] {
+                    assert_eq!(at(u, v), crate::world::texel::WATER, "level {k} off the map at ({u}, {v})");
+                }
+            }
+        }
     }
 }
 
@@ -343,7 +370,8 @@ fn triangles_cover_the_pixel_centres_inside_them() {
         let edge = |a: (f64, f64), b: (f64, f64), x: f64, y: f64| (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0);
         // (The triangle pipeline draws the view's lines only, above the cockpit.)
         for y in 0..crate::geom::LINES as usize {
-            for x in 0..160 {
+            // (The drawn columns: the last never shows.)
+            for x in 0..4 * crate::layout::DRAWN_COLS as usize {
                 let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
                 let e = [edge(p[0], p[1], cx, cy), edge(p[1], p[2], cx, cy), edge(p[2], p[0], cx, cy)];
                 let lens = [(p[0], p[1]), (p[1], p[2]), (p[2], p[0])].map(|(a, b)| ((b.0 - a.0).hypot(b.1 - a.1)).max(1e-9));
@@ -828,12 +856,12 @@ fn the_tach_follows_the_rotor_sound() {
 
 #[test]
 fn the_gauge_frames_are_baked_and_move() {
-    use crate::cockpit::{BASE, END, FRAMES, FRAME_STRIDE_SHIFT, TALL, WIDE, gauge::*};
+    use crate::cockpit::{BASE, END, FRAMES, FRAME_STRIDE_SHIFT, TALL_AT, WIDE, gauge::*};
     assert!(END <= crate::format::IMAGE_END);
     let reu = package();
     let frame = |g: usize, k: u16| {
         let at = BASE[g] as usize + ((k as usize) << FRAME_STRIDE_SHIFT);
-        &reu[at..at + WIDE[g] as usize * 8 * TALL as usize]
+        &reu[at..at + WIDE[g] as usize * 8 * TALL_AT[g] as usize]
     };
     for g in [ASI, ALT, WARN, HDG, VSI] {
         for k in 1..FRAMES[g] {
@@ -2257,7 +2285,7 @@ fn the_gun_and_missiles_hit_and_the_effects_play() {
 fn faces_reaching_behind_the_camera_are_cut_at_the_near_plane() {
     use crate::geom::{NEAR, Verts, Work, clip, vert};
     let q = 16.0f64; // Q4
-    let proj = |x: f64, y: f64, z: f64| (80.0 * 16.0 + 1280.0 * x / z, 68.0 * 16.0 - 2128.0 * y / z);
+    let proj = |x: f64, y: f64, z: f64| (80.0 * 16.0 + 1280.0 * x / z, crate::geom::CY as f64 * 16.0 - 2128.0 * y / z);
     // Camera space, texels: corners at depth 10, 6 and −4 (behind).
     let corners = [(-3.0f64, -1.0f64, 10.0f64), (4.0, -1.5, 6.0), (1.0, -2.0, -4.0)];
     for (behind, want) in [(1usize, 2u8), (2, 1)] {
@@ -3041,4 +3069,114 @@ fn a_long_stall_replays_no_sounds() {
     m.ram[PROJ as usize + proj::TTL as usize] = TRACER_TTL;
     sfx::update(&mut m, &a);
     assert!(playing(&m).contains(&(patch::GUN + 1)), "{:?}", playing(&m));
+}
+
+#[test]
+fn nothing_draws_into_the_hidden_column_39() {
+    // Bitmap column 39 never shows in the 38-column window (`layout::DRAWN_COLS`): the floor, the
+    // triangles, the sprites, the band publish and the cockpit's gauges must leave it alone. A sentinel
+    // in every cell row's column 39, then whole frames (ground, lift-off, a heavy one; full and doubled).
+    use crate::hw::Hw;
+    use crate::layout::{DRAWN_COLS, ROW_STRIDE, ROWS};
+    let reu = package();
+    let bitmap = BUFFERS[0].bitmap;
+    let col39 = |r: u16, l: u16| bitmap + r * ROW_STRIDE + DRAWN_COLS * 8 + l;
+    for t in [0, crate::agent::LIFT + 200, 9300, 9315] {
+        for doubled in [false, true] {
+            let mut m = Machine::new(reu);
+            crate::package::setup(&mut m, BUFFERS[0]);
+            for r in 0..ROWS {
+                for l in 0..8 {
+                    m.poke(col39(r, l), 0xA5 ^ (r * 8 + l) as u8);
+                }
+            }
+            let agent = crate::agent::at(reu, t);
+            crate::cockpit::update(&mut m, &agent, &mut [0xFF; crate::cockpit::gauge::COUNT]);
+            let (cam, _) = agent.camera();
+            crate::hud::init(&mut m);
+            crate::hud::update(&mut m, &agent, &cam);
+            crate::actors::update(&mut m, &cam);
+            let st = crate::package::render_floor(&mut m, BUFFERS[0], &crate::package::scene_block(reu), &cam, doubled);
+            for r in 0..ROWS {
+                for l in 0..8 {
+                    assert_eq!(m.peek(col39(r, l)), 0xA5 ^ (r * 8 + l) as u8, "tick {t} doubled {doubled}: cell row {r} line {l}");
+                }
+            }
+            println!("tick {t} doubled {doubled}: {} triangles, column 39 untouched", st.tris);
+        }
+    }
+}
+
+#[test]
+fn the_fog_line_and_the_horizon_are_painted_to_the_pixel() {
+    // Random rolled cameras: after the runs and the fog patches, every pixel of every line is sky,
+    // haze or ground exactly as its own depth says (`floor::FogArgs`: ground nearer than the fog depth,
+    // haze above the horizon), give or take the thresholds' rounding: the edges are straight lines at
+    // multicolour-pixel resolution, not byte steps. (A haze byte of code 2 everywhere tells haze from
+    // sky's code 1.)
+    let mut rng = Rng(0x0bad_cafe);
+    let deg = |d: i32| (d * 182) as u16;
+    const HAZE: u8 = 0xAA;
+    let (mut painted, mut pixels, mut unpainted) = (0u32, 0u32, 0u32);
+    for _ in 0..300 {
+        let yaw = rng.next() as u16;
+        let pitch = deg(rng.below(40) as i32 - 30);
+        let roll = deg(rng.below(121) as i32 - 60);
+        let m = crate::camera::Matrix14::orientation(yaw, pitch, roll);
+        let cam = FloorCam { u: (300 << 8) + rng.below(1400 << 8) as i32, v: (300 << 8) + rng.below(1400 << 8) as i32, h: (2 * 256 + rng.below(120 * 256)) as u16, r: m.m };
+        let rays = Rays::new(&cam);
+        assert_eq!(floor::FogArgs::of_cam(&cam), rays.fog());
+        if rays.fog().dir == 0 && rays.dw[0] != 0 {
+            // (Within about half a degree of level: the lines jump 64 pixels or more a line, unpainted.)
+            unpainted += 1;
+            continue;
+        }
+        let dw0 = rays.dw[0] as f64;
+        let fog_w = (rays.w_haze + 2 * rays.dw[0].abs()) as f64;
+        let mut spans = [Span::default(); MAX_SPANS];
+        let mut fog = floor::Patches::default();
+        for y in 0..VIEW_LINES {
+            let a = rays.line(y);
+            let n = floor::make_line(&cam, &rays, &a, HAZE, rays.fog().at(y), &mut spans, &mut fog);
+            assert!(fog.n as usize <= floor::MAX_PATCHES);
+            painted += fog.n as u32;
+            // Per pixel: 0 sky, 1 haze, 2 ground, as drawn.
+            let mut px = [0u8; 4 * floor::DRAWN as usize];
+            let mut b = 0usize;
+            for s in &spans[..n] {
+                for i in 0..s.len as usize {
+                    for p in 0..4 {
+                        px[4 * (b + i) + p] = match s.fill() {
+                            None => 2,
+                            Some(f) => if f == HAZE { 1 } else { assert_eq!(f, floor::SKY_BYTE); 0 },
+                        };
+                    }
+                }
+                b += s.len as usize;
+            }
+            for &[at, keep, bits] in &fog.p[..fog.n as usize] {
+                for p in 0..4 {
+                    let sh = 6 - 2 * p;
+                    if keep >> sh & 3 == 0 {
+                        px[4 * at as usize + p] = match bits >> sh & 3 { 2 => 1, 1 => 0, c => panic!("paint code {c}") };
+                    } else {
+                        assert_eq!(keep >> sh & 3, 3);
+                    }
+                }
+            }
+            for (i, &got) in px.iter().enumerate() {
+                let (bb, p) = (i / 4, (i % 4) as f64);
+                let wc = -(a[1] + floor::mul_small(rays.bb[1], bb as u8)) as f64;
+                let w = wc - (2.0 * p - 3.0) * dw0 / 8.0;
+                let want = if w >= fog_w { 2 } else if w > 0.0 { 1 } else { 0 };
+                // (16.16 crossings: within a sixteenth of a pixel.)
+                let tol = dw0.abs() / 64.0 + 2.0;
+                let near = (w - fog_w).abs() <= tol || w.abs() <= tol;
+                assert!(got == want || near, "camera {cam:?} line {y} pixel {i}: drawn {got}, depth {w} says {want} (fog {fog_w})");
+                pixels += 1;
+            }
+        }
+    }
+    assert!(painted > 5_000 && unpainted < 10, "{painted} {unpainted}");
+    println!("{pixels} pixels, {painted} painted bytes, {unpainted} cameras unpainted");
 }
