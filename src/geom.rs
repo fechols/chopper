@@ -692,7 +692,7 @@ fn tri(v: &Verts, w: &mut Work, a: u8, b: u8, c: u8, shade: u8) {
 }
 
 /// Draw the buckets back to front, whole triangles at a time into `bitmap` (the per-pixel equivalent of
-/// [`raster_bands`] while nothing is dropped): triangles drawn.
+/// [`raster_bands`] while nothing is dropped, near or far): triangles drawn.
 pub fn raster<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> u8 {
     let mut tris = 0u8;
     for key in (0..256).rev() {
@@ -1074,7 +1074,12 @@ pub mod walk {
     /// out u8: objects drawn, cells streamed.
     pub const OBJECTS: u16 = GRIDS + 2 * GRID_LEN;
     pub const CELLS: u16 = OBJECTS + 1;
-    pub const SIZE: u16 = CELLS + 1;
+    /// `geo_walk`'s own scratch, after the arguments (`asm/geom.S` `SILH`, `SBEST`, `SBI`): u8 this
+    /// object is drawn as its silhouette; `wsil`'s biggest triangle area so far (u32) and its vertex.
+    pub const SILH: u16 = CELLS + 1;
+    pub const SBEST: u16 = SILH + 1;
+    pub const SBI: u16 = SBEST + 4;
+    pub const SIZE: u16 = SBI + 1;
 }
 
 /// Write `geo_walk`'s arguments for `view` at `at`.
@@ -1322,7 +1327,8 @@ impl Bands {
                 Item::Tri(walk) => walk.end,
                 Item::Sprite(s) => s.end,
             };
-            let far = (t.shade & HAZED != 0).then(|| band..=((end as usize - 1) >> 3).min(BANDS - 1));
+            // (At least its first band: `geo_activate` always tests and takes CAP[BAND].)
+            let far = (t.shade & HAZED != 0).then(|| band..=((end as usize - 1) >> 3).min(BANDS - 1).max(band));
             let room = match &far {
                 Some(span) => span.clone().all(|b| self.cap[b] > 0),
                 None => true,
@@ -1378,14 +1384,14 @@ impl Bands {
     }
 }
 
-/// All bands of [`Bands`] straight into `bitmap`'s rows: (triangles, near items dropped).
-pub fn raster_bands<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u8) {
+/// All bands of [`Bands`] straight into `bitmap`'s rows: (triangles, near items dropped, far items
+/// dropped). Far items left out of a full pool are by design ([`Bands`]); near ones are failures.
+pub fn raster_bands<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u8, u8) {
     let mut b = Bands::new(w);
     for band in 0..BANDS {
         b.band(hw, w, band, bitmap.wrapping_add(band as u16 * ROW_STRIDE));
     }
-    // (Far triangles left out of a full pool are by design: [`Bands`]. Near ones are failures.)
-    (b.tris, b.dropped - b.far_dropped)
+    (b.tris, b.dropped - b.far_dropped, b.far_dropped)
 }
 
 /// An active item of the band pipeline: a set-up triangle or a placed sprite.

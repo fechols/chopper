@@ -2683,9 +2683,9 @@ O_DY     = 2
 O_YAW    = 3
 O_MESH   = 4
 O_LANDMARK = 5          ; `geom::scene::O_LANDMARK`
-SILH     = WA + 186     ; this object is drawn as its silhouette (after the walk's arguments)
-SBEST    = WA + 187     ; (4) wsil: the biggest triangle's area so far
-SBI      = WA + 191     ; wsil: its vertex ($ff: none)
+SILH     = WA + 186     ; this object is drawn as its silhouette (`geom::walk::SILH`, inside walk::SIZE)
+SBEST    = WA + 187     ; (4) wsil: the biggest triangle's area so far (`geom::walk::SBEST`)
+SBI      = WA + 191     ; wsil: its vertex ($ff: none) (`geom::walk::SBI`; the last byte before RAY_STEP)
 ; RAM (XFORM_RAM, past geo_xform's MAB / MSG)
 WROW     = $8F20        ; (12) the row's first cell: `Look::cell_sums`, 3 x i32
 WCEL     = $8F2C        ; (12) this cell's

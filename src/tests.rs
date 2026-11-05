@@ -50,7 +50,7 @@ fn render_objects(tick: u16) -> (Machine, crate::geom::Stats) {
     let mut m = Machine::new(reu);
     let mut work = Box::new(crate::geom::Work::new());
     let mut st = crate::geom::draw(&mut m, scene(reu), &lap_view(tick), &mut work, &mut Box::new(crate::geom::Verts::new()));
-    let (tris, dropped) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+    let (tris, dropped, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
     st.tris = tris;
     st.dropped = st.dropped.saturating_add(dropped);
     (m, st)
@@ -402,7 +402,7 @@ fn a_face_toward_the_camera_is_drawn_and_away_is_culled() {
         let mut work = Box::new(Work::new());
         let view = View { cam: camera_at(128.0, 128.0, 4.0, 0, 0, 0), pop: 1 };
         draw(&mut m, &baked.block, &view, &mut work, &mut Box::new(crate::geom::Verts::new()));
-        let (tris, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+        let (tris, _, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
         assert_eq!(tris, want, "normal along v {toward}");
     }
 }
@@ -531,8 +531,9 @@ fn band_rendering_equals_whole_triangle_painting() {
         let mut b = Machine::new(&[]);
         b.ram.copy_from_slice(&a.ram);
         let whole = raster(&mut a, &work, buf.bitmap);
-        let (banded, dropped) = raster_bands(&mut b, &work, buf.bitmap);
-        assert_eq!(dropped, 0, "tick {tick}");
+        let (banded, dropped, far) = raster_bands(&mut b, &work, buf.bitmap);
+        // (`raster` draws every far item: a far one left out would show only as a bitmap mismatch.)
+        assert_eq!((dropped, far), (0, 0), "tick {tick}");
         assert_eq!(whole, banded, "tick {tick}");
         assert_eq!(a.ram[buf.bitmap as usize..][..8000], b.ram[buf.bitmap as usize..][..8000], "tick {tick}");
         checked += whole as u32;
@@ -550,7 +551,7 @@ fn a_full_pool_drops_the_later_triangles() {
         push(&mut w, [10 * 16, (60 + (k % 50)) * 16, 10 * 16], [30 * 16, 40 * 16, 90 * 16], (k % 4) as u8, 200 - k as u8);
     }
     let mut m = Machine::new(&[]);
-    let (tris, dropped) = raster_bands(&mut m, &w, BUFFERS[0].bitmap);
+    let (tris, dropped, _) = raster_bands(&mut m, &w, BUFFERS[0].bitmap);
     assert_eq!((tris as usize, dropped as usize), (POOL, 120 - POOL));
 }
 
@@ -644,7 +645,7 @@ fn the_ground_and_lift_off_frames_draw_inside_ram() {
         let mut m = Machine::new(reu);
         let mut work = Box::new(crate::geom::Work::new());
         let st = crate::geom::draw(&mut m, scene(reu), &flight_view(t), &mut work, &mut Box::new(crate::geom::Verts::new()));
-        let (_, dropped) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
+        let (_, dropped, _) = crate::geom::raster_bands(&mut m, &work, BUFFERS[0].bitmap);
         let (_, fs) = crate::package::render(reu, t, false);
         assert_eq!((m.stats.stray_writes, st.dropped, dropped), (0, 0, 0), "frame {t}");
         println!("frame {t}: {} objects, {} runs", st.objects, fs.spans);
