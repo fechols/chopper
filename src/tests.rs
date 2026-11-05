@@ -2944,9 +2944,12 @@ fn far_fire_is_cut_before_a_near_effect() {
     combat::fx(&mut m, &a, &cam);
     let n = m.ram[FXDYN as usize];
     assert_eq!(n, FXDYN_MAX, "the cap reached");
-    // The first placed is the near explosion (the far ones after it): the rightmost anchor.
+    // After the clouds (listed first: never the ones cut), the first placed is the near explosion (the
+    // far ones after it): the rightmost anchor.
+    let fx: Vec<u16> = (0..n as u16).filter(|k| m.ram[(FXDYN + 1 + k * FXDYN_ENTRY + 7) as usize] != crate::clouds::KEY).collect();
+    assert!(fx.len() < n as usize && fx[0] == n as u16 - fx.len() as u16, "the clouds first");
     let x = |k: u16| rd16(&m, FXDYN + 1 + k * FXDYN_ENTRY) as i16;
-    assert!((1..n as u16).all(|k| x(0) > x(k)), "the explosion placed first: {:?}", (0..n as u16).map(x).collect::<Vec<_>>());
+    assert!(fx[1..].iter().all(|&k| x(fx[0]) > x(k)), "the explosion placed first: {:?}", fx.iter().map(|&k| x(k)).collect::<Vec<_>>());
 }
 
 /// The sound effects' placing: a source on the left is louder in the left ear; one behind is muffled
@@ -3021,37 +3024,79 @@ fn the_sound_pairs_go_to_the_loudest_and_most_important() {
     assert!(!locks(&mut m, &mut a, crate::hud::LOCK_TICKS), "only once a lock");
 }
 
-/// The gun keeps to one pair: bursts held go onto the pair already firing, and a missile launched then is
-/// heard with them on the other.
+/// The player's own sounds (gun, launch, hit, lock) keep to one pair, and the world's effects keep the
+/// other: the gun's bursts go onto the pair already firing, a near explosion never takes it, a launch cuts
+/// in over the gun on that same pair, a burst while the launch is held is not heard, and the gun is back
+/// once the launch's gate is released; a hit and the lock land there too.
 #[test]
-fn the_gun_keeps_to_one_pair_and_a_launch_plays_with_it() {
-    use crate::combat::{self, PROJ, PROJ_ENTRY, TRACER_TTL, MISSILE_TTL, proj};
-    use crate::sfx::{self, PAIR, STATE, pair, patch, state};
+fn the_players_sounds_keep_to_one_pair_and_a_launch_wins_over_the_gun() {
+    use crate::combat::{self, MISSILE_TTL, PLAYER, PROJ, PROJ_ENTRY, PROJ_MAX, TRACER_TTL, player, proj, spawn};
+    use crate::effects::effect::EXPLOSION;
+    use crate::sfx::{self, PAIR, PATCHES, STATE, field, pair, patch, state};
     let mut m = Machine::new(package());
     combat::init(&mut m);
     let mut a = crate::agent::Agent::new();
     (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
     sfx::update(&mut m, &a);
     let playing = |m: &Machine| -> Vec<u8> { (0..sfx::PAIRS).map(|p| m.ram[(STATE + state::PAIRS + p * PAIR + pair::PATCH) as usize]).collect() };
-    // A burst a frame (a new tracer each), for a few frames.
-    for k in 0..4u16 {
-        a.t += 6;
-        let p = (PROJ + (k % 2) * PROJ_ENTRY) as usize;
-        m.ram[p + proj::KIND as usize] = crate::actors::kind::TRACER;
-        m.ram[p + proj::TTL as usize] = TRACER_TTL;
-        sfx::update(&mut m, &a);
-        assert_eq!(playing(&m).iter().filter(|&&id| id == patch::GUN + 1).count(), 1, "burst {k}: {:?}", playing(&m));
-    }
-    // A missile, the gun still firing: both heard.
+    // One new projectile of `kind` this frame (the others gone).
+    let fire = |m: &mut Machine, kind: u8| {
+        for k in 0..PROJ_MAX {
+            m.ram[(PROJ + k * PROJ_ENTRY + proj::KIND) as usize] = 0;
+        }
+        if kind != 0 {
+            m.ram[(PROJ + proj::KIND) as usize] = kind;
+            m.ram[(PROJ + proj::TTL) as usize] = if kind == crate::actors::kind::MISSILE { MISSILE_TTL } else { TRACER_TTL };
+        }
+    };
+    // A near explosion: the world's pair.
     a.t += 6;
-    let p = (PROJ + 2 * PROJ_ENTRY) as usize;
-    m.ram[p + proj::KIND as usize] = crate::actors::kind::MISSILE;
-    m.ram[p + proj::TTL as usize] = MISSILE_TTL;
-    m.ram[PROJ as usize + proj::TTL as usize] = TRACER_TTL;
+    spawn(&mut m, EXPLOSION, 1030 << 4, 1110 << 4, 0, a.t as u16 - 1);
     sfx::update(&mut m, &a);
-    let mut now = playing(&m);
-    now.sort();
-    assert_eq!(now, [patch::GUN + 1, patch::LAUNCH + 1]);
+    let world = playing(&m).iter().position(|&id| id == patch::EXPLOSION + 1).expect("the explosion sounds") as usize;
+    let own = 1 - world;
+    // A burst a frame: on the other pair, and only there.
+    for k in 0..4 {
+        a.t += 6;
+        fire(&mut m, crate::actors::kind::TRACER);
+        sfx::update(&mut m, &a);
+        assert_eq!(playing(&m)[own], patch::GUN + 1, "burst {k}: {:?}", playing(&m));
+        assert_eq!(playing(&m)[world], patch::EXPLOSION + 1, "burst {k}: the world's pair taken");
+    }
+    // Another near explosion: onto the world's pair, never the gun's.
+    a.t += 6;
+    fire(&mut m, crate::actors::kind::TRACER);
+    spawn(&mut m, EXPLOSION, 1020 << 4, 1105 << 4, 0, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m), { let mut v = [0; 2]; v[own] = patch::GUN + 1; v[world] = patch::EXPLOSION + 1; v });
+    // A missile, the gun still firing: the launch takes the gun's pair, the world's untouched.
+    a.t += 6;
+    fire(&mut m, crate::actors::kind::MISSILE);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m)[own], patch::LAUNCH + 1, "the launch over the gun");
+    assert_eq!(playing(&m)[world], patch::EXPLOSION + 1, "the launch kept to the player's pair");
+    // A burst while the launch is held: not heard.
+    let gate = PATCHES[patch::LAUNCH as usize][field::GATE] as u32;
+    a.t += gate - 2;
+    fire(&mut m, crate::actors::kind::TRACER);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m)[own], patch::LAUNCH + 1, "the gun over a held launch");
+    // Once the launch's gate is released, the gun is back.
+    a.t += 4;
+    fire(&mut m, crate::actors::kind::TRACER);
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m)[own], patch::GUN + 1, "the gun after the launch's attack");
+    // A hit on the player, then the lock: on the player's pair too.
+    a.t += 4;
+    fire(&mut m, 0);
+    m.ram[(PLAYER + player::FLASH) as usize] = 5;
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m)[own], patch::HIT + 1, "the hit on the player's pair");
+    a.t += PATCHES[patch::HIT as usize][field::GATE] as u32 + 1;
+    m.ram[crate::hud::LOCK_STATE as usize + 2] = crate::hud::LOCK_TICKS;
+    sfx::update(&mut m, &a);
+    assert_eq!(playing(&m)[own], patch::LOCK + 1, "the lock on the player's pair");
+    assert_eq!(playing(&m)[world], patch::EXPLOSION + 1, "the world's pair kept throughout");
 }
 
 /// After a stall nothing recent reads as new (every live tracer and effect would); the next frame's are.
@@ -3687,11 +3732,10 @@ fn cloud_frames_draw_back_exactly() {
     assert!(crate::effects_bake::install(&mut reu).end <= CLOUDS_BLOCKS);
 }
 
-/// The clouds compete as far items (`SPRITE | HAZED`): drawn first (behind the hazed mountains), each
-/// holding a slot only in the bands it spans, so they never cost a near item its slot and drop nothing
-/// that was drawn without them (tick 6000 lost two mountain triangles when a cloud counted as near).
+/// The clouds are drawn first (behind the hazed mountains) and as near items: sure of their slots, so
+/// they never cost a near item its slot; only far (hazed) triangles give way.
 #[test]
-fn the_clouds_are_far_items_behind_the_mountains() {
+fn the_clouds_are_drawn_first_and_cost_only_far_triangles() {
     use crate::geom::{HAZED, SPRITE, Work, bin};
     let render = |t: u32, clouds: bool| {
         let reu = package();
@@ -3711,15 +3755,114 @@ fn the_clouds_are_far_items_behind_the_mountains() {
     for t in [600u32, 6000, 7800, 9300] {
         let (with, without) = (render(t, true), render(t, false));
         assert!(with.tris > without.tris, "tick {t}: no cloud drawn");
-        assert_eq!(with.dropped, without.dropped, "tick {t}: the clouds cost slots");
+        assert_eq!(with.dropped, without.dropped, "tick {t}: the clouds cost near slots");
     }
     // Painter's order: the clouds' bucket first, then the far triangles.
     let mut w = Work::new();
     crate::geom::push(&mut w, [0, 160, 0], [0, 0, 160], HAZED | crate::geom::HAZE_PAT, crate::geom::FAR_KEY + 3);
-    crate::geom::push_sprite(&mut w, 10, 10, 8, 2, 0, 3, crate::clouds::KEY, true);
+    crate::geom::push_sprite(&mut w, 10, 10, 8, 2, 0, 3, crate::clouds::KEY);
     let (order, n, _, _) = bin(&w);
     assert_eq!(n, 2);
-    assert_eq!(w.tri(order[0]).shade, SPRITE | HAZED, "the cloud first");
+    assert_eq!(w.tri(order[0]).shade, SPRITE, "the cloud first");
+}
+
+/// Clouds never flicker: every cloud `clouds::place` lists (at most `clouds::MOST`) is pushed into the
+/// Work and given a slot in the band pool, over the autopilot's flight and over the whole map from low to
+/// high, level and rolled (u 1280 v 1280, 12 high, facing south, rolled 20° lost one as a far item: the
+/// near mountains' over-count had the bands it reached). A full Work still takes them
+/// (`geom::SPRITE_ROOM`), and so does a full effects list (the clouds are listed first).
+#[test]
+fn the_clouds_are_never_dropped() {
+    use crate::clouds::{KEY, MOST};
+    use crate::combat::{FXDYN, FXDYN_ENTRY, FXDYN_MAX};
+    use crate::geom::{Bands, MAX_TRIS, SPRITE, TRI_LIMIT, Verts, View, Work};
+    let reu = package();
+    let scene = crate::package::scene_block(reu);
+    let clouds_in = |m: &Machine| {
+        let n = m.ram[FXDYN as usize] as u16;
+        (0..n).filter(|k| m.ram[(FXDYN + 1 + k * FXDYN_ENTRY + 7) as usize] == KEY).count()
+    };
+    let mut frames = 0;
+    let mut one = |what: String, cam: FloorCam, agent: Option<crate::agent::Agent>| {
+        let mut m = Machine::new(reu);
+        crate::package::setup(&mut m, crate::layout::BUFFERS[0]);
+        crate::hud::init(&mut m);
+        crate::actors::update(&mut m, &cam);
+        match agent {
+            Some(a) => crate::combat::fx(&mut m, &a, &cam),
+            None => {
+                let n = crate::clouds::place(&mut m, &crate::hud::Eye::new(&cam), 0, 0);
+                m.ram[FXDYN as usize] = n;
+            }
+        }
+        let listed = clouds_in(&m);
+        assert!(listed <= MOST as usize, "{what}: {listed} clouds listed");
+        let mut w = Box::new(Work::new());
+        let mut v = Box::new(Verts::new());
+        let view = View { cam, pop: 0 };
+        crate::geom::draw(&mut m, &scene, &view, &mut w, &mut v);
+        crate::geom::walk_args(&mut m, crate::layout::WALK_ARGS, &view);
+        crate::geom::push_dynamic(&mut m, &mut w, &mut v);
+        let mut i = w.head[KEY as usize];
+        let mut pushed = 0;
+        while i != crate::geom::NONE {
+            pushed += 1;
+            i = w.next[i as usize];
+        }
+        assert_eq!(pushed, listed, "{what}: a cloud left out of the Work");
+        let mut b = Bands::new(&w);
+        for band in 0..crate::geom::BANDS {
+            b.band(&mut m, &w, band, crate::layout::STAGE);
+        }
+        assert_eq!(b.clouds_dropped, 0, "{what}: a cloud left out of the band pool ({} far items dropped)", b.far_dropped);
+        frames += 1;
+    };
+    // The frame that lost one.
+    one("u 1280 v 1280".into(), camera_at(1280.0, 1280.0, 12.0, 0x8000, 0, 20), None);
+    for t in (0..20000).step_by(97) {
+        let agent = crate::agent::at(reu, t);
+        let (cam, _) = agent.camera();
+        one(format!("tick {t}"), cam, Some(agent));
+    }
+    for u in (0..2048).step_by(256) {
+        for v in (0..2048).step_by(256) {
+            for h in [12.0, 40.0, 120.0] {
+                for yaw in (0..8u16).map(|k| k << 13) {
+                    for roll in [-20, 0, 20] {
+                        one(format!("u {u} v {v} h {h} yaw {yaw:#06x} roll {roll}"), camera_at(u as f64, v as f64, h, yaw, 0, roll), None);
+                    }
+                }
+            }
+        }
+    }
+    // At most `MOST` on screen, over every bearing, roll and a pitch either way.
+    let mut most = 0;
+    for yaw in (0..256u16).map(|k| k << 8) {
+        for roll in [-30, -15, 0, 15, 30] {
+            for pitch in [-20, 0, 20] {
+                let mut m = Machine::new(reu);
+                let n = crate::clouds::place(&mut m, &crate::hud::Eye::new(&camera_at(1024.0, 1100.0, 40.0, yaw, pitch, roll)), 0, 0);
+                most = most.max(n);
+            }
+        }
+    }
+    assert!(most <= MOST, "{most} clouds at once");
+    // A full Work: the triangles stop short, the clouds still go in.
+    let mut w = Work::new();
+    for k in 0..300 {
+        crate::geom::push(&mut w, [0, 160, 0], [0, 0, 160 + (k % 7) as i16], 3, 10);
+    }
+    assert_eq!(w.n as usize, TRI_LIMIT);
+    for _ in 0..MOST {
+        crate::geom::push_sprite(&mut w, 10, 10, 8, 2, 0, 3, KEY);
+    }
+    assert_eq!(w.n as usize, MAX_TRIS);
+    assert_eq!((0..w.n).filter(|&i| w.tri(i).shade == SPRITE).count(), MOST as usize);
+    // The asm's copy of the limit, and room in the list.
+    let asm = include_str!("../target-c64/asm/geom.S");
+    assert!(asm.contains(&format!("TRI_LIMIT = {TRI_LIMIT} ")), "asm/geom.S's TRI_LIMIT");
+    assert!(FXDYN_MAX > MOST);
+    println!("{frames} frames");
 }
 
 /// `depth_key`: 2/3-texel buckets to 128 texels, 5.3 to the fog (`FAR_KEY` there), 21 beyond; monotone,

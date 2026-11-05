@@ -64,6 +64,7 @@ HEAD   = WORK + $D00
 NEXT   = WORK + $E00
 CLIP   = WORK + $F00
 WN     = WORK + $1000
+TRI_LIMIT = 251         ; geom::TRI_LIMIT: the triangles leave the Work's last places to the sprites
 WDROP  = WORK + $1001
 WNCLIP = WORK + $1002
 
@@ -1300,8 +1301,8 @@ tryface:
 5:  lda #HAZED | HAZE_PAT
     sta SHD
 6:  lda WN
-    cmp #255
-    bne 1f
+    cmp #TRI_LIMIT
+    bcc 1f
     lda WDROP
     cmp #255
     beq 9f
@@ -1975,7 +1976,7 @@ btri:
 11: tya
     sta FTAIL,x
     ; a near item: one more starting in this band (CAP counts them, then `bcap` makes them slots); far
-    ; ones (HAZED: a triangle beyond the fog, or a cloud sprite) don't count
+    ; ones (HAZED: a triangle beyond the fog) don't count; sprites, the clouds too, are near
     ldy IDX
     lda TSHADE,y
     and #HAZED
@@ -2048,12 +2049,12 @@ anext:
 16:
     bcs 13f
     jmp 3f              ; nothing to draw (long branches as bxx/jmp)
-13: ; a far item (a triangle beyond the fog, or a cloud sprite) needs a slot in CAP in every band it
-    ; spans (`geom::Bands::band`)
+13: ; a far item (a triangle beyond the fog) needs a slot in CAP in every band it spans
+    ; (`geom::Bands::band`)
     lda FSHD
     and #HAZED
     beq 17f
-    lda TRI_ARGS + 26   ; its end line (exclusive; a sprite's slot keeps it there too): last band (end - 1) >> 3
+    lda TRI_ARGS + 26   ; its end line (exclusive): last band (end - 1) >> 3
     sec
     sbc #1
     lsr

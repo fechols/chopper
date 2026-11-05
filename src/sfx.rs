@@ -15,9 +15,11 @@
 //!   on the player (`player::FLASH` rising) and the seeker's lock (`hud::LOCK_STATE` reaching
 //!   `LOCK_TICKS`).
 //! - **Who gets a pair:** a free one, else the one with the least left of its sound (its score, its
-//!   priority × gain, running down over its length), if the new one scores at least that. The gun keeps
-//!   to one pair (its bursts onto the pair already firing, which nothing else takes from it), so it is
-//!   heard with whatever else is going on.
+//!   priority × gain, running down over its length), if the new one scores at least that. The player's
+//!   own sounds (the gun, a launch, a hit, the lock: `OWN`) keep to one pair, which nothing else takes
+//!   from them, so the other is always the world's (its effects, the engines). On it a sound of higher
+//!   priority wins while it is held: a launch cuts in over the gun, and the gun's bursts are back once
+//!   the launch's attack is over (its gate released).
 //! - **Pitch sweeps** run at 60 Hz in the raster IRQ (`asm/hud.S`, from [`SWEEP`]); the frame (13-20 a
 //!   second) triggers sounds, releases their gates, sweeps their cutoffs and places them again (the
 //!   player turning pans what is playing).
@@ -613,19 +615,25 @@ fn play<H: Hw + ?Sized>(hw: &mut H, a: &Agent, sound: u8, u: u16, v: u16, flags:
     if score == 0 {
         return;
     }
-    // The pair with the least left (a free one: nothing). The gun keeps to one pair: a burst goes onto the
-    // pair already firing, and nothing else takes that one from it (so the gun and a launch, say, are
-    // heard together).
+    // The pair with the least left (a free one: nothing). The player's own sounds keep to one pair (the
+    // other is the world's): one goes onto the pair already playing one of them, unless that one is still
+    // held (before its gate's release) and of a higher priority (a launch over the gun: the gun is back
+    // once the launch's attack is over); and nothing else takes that pair from them.
     let (mut best, mut least) = (0u16, u16::MAX);
     for p in 0..PAIRS {
         let s = STATE + state::PAIRS + p * PAIR;
         let id = hw.peek(s + pair::PATCH);
-        if id == patch::GUN + 1 {
-            if sound == patch::GUN {
-                (best, least) = (p, 0);
-                break;
+        if id != 0 && !is_engine(id) && hw.peek(s + pair::FLAGS) & OWN != 0 {
+            if flags & OWN == 0 {
+                continue;
             }
-            continue;
+            let on = &PATCHES[(id - 1) as usize % patch::ONE_SHOTS];
+            // (From its age: `sounds` marks it released only after the frame's events.)
+            if now.wrapping_sub(rd(hw, s + pair::START)) < on[field::GATE] as u16 && on[field::PRIORITY] > t[field::PRIORITY] {
+                return;
+            }
+            (best, least) = (p, 0);
+            break;
         }
         // (A free pair: nothing left; an engine's next to nothing, so a free one goes first. A crackle or
         // the far battle leaves an engine be: they would keep it fading out and in.)

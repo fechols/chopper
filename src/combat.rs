@@ -81,8 +81,8 @@ const _: () = assert!(WRECKS + 1 + WRECK_MAX as u16 * WRECK_ENTRY <= crate::hud:
 /// the depth key. (After the transform tables, before the reciprocals.)
 pub const FXDYN: u16 = 0x8F84;
 pub const FXDYN_ENTRY: u16 = 8;
-/// (Fewer than the effects and the wrecks: the far battle's flashes and the clouds fill the free slots,
-/// and the room before the reciprocals is this.)
+/// (Fewer than the effects and the wrecks: the clouds come first, the far battle's flashes fill the free
+/// slots, and the room before the reciprocals is this.)
 pub const FXDYN_MAX: u8 = 15;
 const _: () = assert!(FXDYN >= crate::layout::XFORM_RAM + 0x84 && FXDYN + 1 + FXDYN_MAX as u16 * FXDYN_ENTRY <= crate::fixed::RECIP);
 /// Effect frames last `1 << FX_TICKS_SHIFT` ticks; looping effects (smoke, a burning wreck) play this
@@ -140,7 +140,9 @@ pub fn sea<H: Hw + ?Sized>(hw: &mut H, u: u16, v: u16) -> bool {
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.fx"))]
 fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16, drift: u16) {
     use crate::effects::{FRAMES, HEIGHT_Q4, LOOPS, record, scale_for};
-    let mut n = 0u8;
+    // The clouds on the horizon first: big, so never the ones the cap cuts (and first of the sprites
+    // into the Work, `geom::SPRITE_ROOM`).
+    let mut n = crate::clouds::place(hw, eye, drift, 0);
     let wrecks = hw.peek(WRECKS).min(WRECK_MAX) as u16;
     // The fight at hand's effects, then the wrecks' smoke columns, then the battle on the horizon's (so
     // those are what the cap cuts).
@@ -200,8 +202,6 @@ fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16, drift: u
         hw.poke(at + 7, crate::geom::depth_key(3 * z4).min(crate::geom::FAR_KEY - 1));
         n += 1;
     }
-    // The clouds on the horizon, in the slots left.
-    let n = crate::clouds::place(hw, eye, drift, n);
     hw.poke(FXDYN, n);
 }
 

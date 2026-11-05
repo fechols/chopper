@@ -190,6 +190,11 @@ pub struct Tri {
 }
 
 pub const MAX_TRIS: usize = 255;
+/// The Work's places the triangles leave to the sprites: [`push`] (`asm/geom.S` `geo_tri`) stops at
+/// [`TRI_LIMIT`]. `push_dynamic` pushes the clouds first of the sprites (`combat::fx` lists them first),
+/// so even a full Work draws every cloud.
+pub const SPRITE_ROOM: usize = crate::clouds::MOST as usize;
+pub const TRI_LIMIT: usize = MAX_TRIS - SPRITE_ROOM;
 pub const MAX_VERTS: usize = 64;
 pub const NONE: u8 = 0xFF;
 
@@ -297,7 +302,7 @@ impl Default for Work {
 pub struct Stats {
     pub objects: u8,
     pub tris: u8,
-    /// Triangles that did not fit in [`MAX_TRIS`].
+    /// Items that did not fit: triangles past [`TRI_LIMIT`], sprites past [`MAX_TRIS`].
     pub dropped: u8,
     /// Grid cells whose objects were streamed in.
     pub cells: u8,
@@ -369,17 +374,18 @@ pub fn far_shade(s: i32, shade: u8) -> u8 {
     if s >= 3 * FAR { HAZED | HAZE_PAT } else { shade }
 }
 
-/// Append a sprite to depth bucket `key` (an item the band pipeline draws in painter's order); `far`: it
-/// competes for the far items' slots ([`Bands`]), as a cloud does.
+/// Append a sprite to depth bucket `key` (an item the band pipeline draws in painter's order). Sprites,
+/// the clouds too, are near items to the band pool ([`Bands`]): sure of their slots. They take the
+/// Work's last [`SPRITE_ROOM`] places, which the triangles leave them.
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.dyn"))]
-pub fn push_sprite(w: &mut Work, left: i16, top: i16, h: u16, wb: u8, block: u32, shift: u8, key: u8, far: bool) {
+pub fn push_sprite(w: &mut Work, left: i16, top: i16, h: u16, wb: u8, block: u32, shift: u8, key: u8) {
     if w.n as usize >= MAX_TRIS {
         w.dropped = w.dropped.saturating_add(1);
         return;
     }
     let i = w.n;
     let x = [left, block as u16 as i16, ((block >> 16) as u16 | (shift as u16) << 8) as i16];
-    w.set_tri(i, &Tri { x, y: [top, h as i16, wb as i16], shade: if far { SPRITE | HAZED } else { SPRITE } });
+    w.set_tri(i, &Tri { x, y: [top, h as i16, wb as i16], shade: SPRITE });
     w.next[i as usize] = w.head[key as usize];
     w.head[key as usize] = i;
     w.n += 1;
@@ -390,7 +396,7 @@ pub fn push(w: &mut Work, x: [i16; 3], y: [i16; 3], shade: u8, key: u8) {
     if area(x, y) <= 0 {
         return;
     }
-    if w.n as usize >= MAX_TRIS {
+    if w.n as usize >= TRI_LIMIT {
         w.dropped = w.dropped.saturating_add(1);
         return;
     }
@@ -1044,7 +1050,7 @@ pub fn push_dynamic<H: Hw + ?Sized>(hw: &mut H, w: &mut Work, v: &mut Verts) {
         let p = if rec[frame::PHASE_COUNT] == 4 { (left & 3) as usize } else { 0 };
         let ph = frame::PHASES + p * frame::PHASE_LEN;
         let block = rec[ph + 1] as u32 | (rec[ph + 2] as u32) << 8 | (rec[ph + 3] as u32) << 16;
-        push_sprite(w, left, top, h, rec[ph], block, rec[frame::BAND_SHIFT], key, key == crate::clouds::KEY);
+        push_sprite(w, left, top, h, rec[ph], block, rec[frame::BAND_SHIFT], key);
     }
 }
 
@@ -1279,12 +1285,15 @@ pub fn bin(w: &Work) -> ([u8; 256], u16, [[u8; 256]; BANDS], [u8; BANDS]) {
 /// active list in painter's order (at most [`POOL`]; the rest are dropped), is walked one row per band
 /// and leaves after its last. Per pixel this is the whole-frame painter's order.
 ///
-/// Far items ([`HAZED`]: distant mountains, in the horizon's bands, and the clouds, sprites marked
-/// `SPRITE | HAZED`) come first in painter's order, so they would fill the pool before the near objects
-/// drawn over them. Each band's `cap` counts the slots its near items leave: [`POOL`] less the near items
-/// starting in it or above (as if each stayed to the view's bottom: an over-count, so near items always
-/// find a slot). A far item joins only if every band it spans still has a slot in `cap`, and takes one
-/// in each.
+/// Far items ([`HAZED`]: distant mountains, in the horizon's bands) come early in painter's order, so
+/// they would fill the pool before the near objects drawn over them. Each band's `cap` counts the slots
+/// its near items leave: [`POOL`] less the near items starting in it or above (as if each stayed to the
+/// view's bottom: an over-count, so near items always find a slot). A far item joins only if every band
+/// it spans still has a slot in `cap`, and takes one in each.
+///
+/// The clouds (the last bucket's sprites, first in painter's order) are near items here: they are big,
+/// so one left out flickers, and as far items they lost to the over-count low over the mountains (and to
+/// hazed triangles holding the last slot of a band they reach). The farthest hazed triangles give way.
 pub struct Bands {
     order: [u8; 256],
     bins: [[u8; 256]; BANDS],
@@ -1296,19 +1305,29 @@ pub struct Bands {
     pub tris: u8,
     pub dropped: u8,
     pub far_dropped: u8,
+    /// The clouds: how many (the first sequence numbers, `clouds::KEY`'s bucket), and of the items
+    /// dropped, how many were clouds (host checks only: none ever should be).
+    clouds: u16,
+    pub clouds_dropped: u8,
 }
 
 impl Bands {
     /// `asm/geom.S` `geo_bin`.
     pub fn new(w: &Work) -> Self {
         let (order, _, bins, lens) = bin(w);
+        let mut clouds = 0u16;
+        let mut i = w.head[crate::clouds::KEY as usize];
+        while i != NONE {
+            clouds += 1;
+            i = w.next[i as usize];
+        }
         let mut cap = [0u8; BANDS];
         let mut near = 0usize;
         for b in 0..BANDS {
             near += bins[b][..lens[b] as usize].iter().filter(|&&seq| w.tri(order[seq as usize]).shade & HAZED == 0).count();
             cap[b] = POOL.saturating_sub(near) as u8;
         }
-        Bands { order, bins, lens, active: [(0, Item::default()); POOL], n: 0, cap, tris: 0, dropped: 0, far_dropped: 0 }
+        Bands { order, bins, lens, active: [(0, Item::default()); POOL], n: 0, cap, tris: 0, dropped: 0, far_dropped: 0, clouds, clouds_dropped: 0 }
     }
 
     /// Band `band`'s rows of the active items into the 320-byte row at `row` (`geo_activate`, then
@@ -1322,7 +1341,7 @@ impl Bands {
         for &seq in &self.bins[band][..self.lens[band] as usize] {
             let t = w.tri(self.order[seq as usize]);
             let Some(item) = activate(bitmap, &t) else { continue };
-            // (A far item, a triangle beyond the fog or a cloud, holds a slot down to its last band.)
+            // (A far item, a triangle beyond the fog, holds a slot down to its last band.)
             let end = match &item {
                 Item::Tri(walk) => walk.end,
                 Item::Sprite(s) => s.end,
@@ -1336,6 +1355,7 @@ impl Bands {
             if !room || self.n + m >= POOL {
                 self.dropped = self.dropped.saturating_add(1);
                 self.far_dropped = self.far_dropped.saturating_add(far.is_some() as u8);
+                self.clouds_dropped = self.clouds_dropped.saturating_add(((seq as u16) < self.clouds) as u8);
                 continue;
             }
             if let Some(span) = far {

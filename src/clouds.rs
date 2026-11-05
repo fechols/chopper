@@ -1,9 +1,11 @@
 //! Clouds on the horizon (`no_std`, shared): a ring of flat, pre-rendered cloud sprites at bearings around
 //! the sky, above the horizon, turning slowly with the clock (the wind). They are at infinity: a cloud is
 //! a direction, so it moves on the screen only as the camera turns, pitches and rolls, and as the ring
-//! drifts. Each one rides the effects' path: [`place`] appends it to `combat::FXDYN` (after the effects,
-//! so a full list cuts the clouds first), and `geom::push_dynamic` pushes it as a sprite in the farthest
-//! depth bucket, so the hazed mountains are drawn over it.
+//! drifts. Each one rides the effects' path: [`place`] lists it in `combat::FXDYN` (before the effects,
+//! so a full list cuts the effects, never a cloud), and `geom::push_dynamic` pushes it as a sprite in the
+//! farthest depth bucket, so the hazed mountains are drawn over it. Clouds are big, so one left out
+//! flickers: every draw limit gives them first claim (`geom::SPRITE_ROOM` in the Work, a near item's
+//! sure slot in the band pool, `geom::Bands`), and the farthest hazed mountain triangles give way.
 //!
 //! A sprite can't rotate, so every shape is baked at every roll angle the chopper reaches ([`ANGLES`]
 //! steps of [`STEP_DEG`]°, ±30°). [`place`] lists the level frame; `geom::push_dynamic` turns it to the
@@ -24,6 +26,9 @@ pub const ANGLES: usize = 31;
 pub const STEP_DEG: i32 = 2;
 pub const LEVEL: u8 = (ANGLES / 2) as u8;
 pub const CLOUDS: usize = 10;
+/// The most clouds [`place`] lists at once: the ring's bearings are at least 23/256 of a turn apart and
+/// its cull keeps about 112° across (checked by a test), so 4.
+pub const MOST: u8 = 4;
 /// Each cloud: its bearing (a 256th of a turn, 0 north, 64 east), its shape, and how high its base
 /// stands over the horizon, `e`: the up component of a direction 4096 long horizontally is `4·e`, so the
 /// base is about `e / 7.7` lines above the horizon ahead (12-22 lines here), higher toward the sides.
@@ -92,7 +97,7 @@ pub fn angle(ux: i16, uy: i16) -> u8 {
 }
 
 /// Append the clouds in view to `combat::FXDYN` from entry `n` on (at most `FXDYN_MAX`), and return
-/// the new count; `drift` is the ring's turn (`clock >> DRIFT_SHIFT`). In the effects' overlay, after
+/// the new count; `drift` is the ring's turn (`clock >> DRIFT_SHIFT`). In the effects' overlay, before
 /// the effects.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.fx"))]
