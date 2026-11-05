@@ -37,7 +37,7 @@ MEMORY {
      * block, below the soft stack ($CD80-$CFFF: tools/emu.py checks how much of it a run touches).
      * Never loaded. */
     frames (rw) : ORIGIN = 0xCB00, LENGTH = 0x0280
-    bandram (rwx) : ORIGIN = 0xAF00, LENGTH = 0x0900   /* after the band state, below the ray table */
+    bandram (rwx) : ORIGIN = 0xAF00, LENGTH = 0x0860   /* after the band state, below combat::FX ($B760, then the ray table) */
     bandram2 (rwx) : ORIGIN = 0xBB00, LENGTH = 0x0400  /* after the ray table, below the line buffer */
     hiram (rwx) : ORIGIN = 0xF800, LENGTH = 0x0700     /* under the KERNAL, after the sprite chunk */
     /* Boot-only code, then the relocated code's load images. */
@@ -69,10 +69,10 @@ SECTIONS {
         *(.text.umul .text.geo_orow)
     } >lowram AT>boot
     .spantext : {
-        *(.text.span_line .rodata.span_tables .text.geo_bin .text.bt_build .text._ZN7chopper2hw5fetch*)
+        *(.text.span_line .rodata.span_tables .text.geo_bin .text._ZN7chopper2hw5fetch*)
     } >spanram AT>boot
     .victext : {
-        *(.text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable)
+        *(.text.geo_helpers .text.turbo_probe .text.hud_irq .text.hud_irq_enable .text.hud_shake)
     } >vicrom AT>boot
     .sparetext : {
         *(.text.floor_draw .text.spare .text.spare.*)

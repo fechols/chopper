@@ -81,9 +81,9 @@ const _: () = assert!(WRECKS + 1 + WRECK_MAX as u16 * WRECK_ENTRY <= crate::hud:
 /// the depth key. (After the transform tables, before the reciprocals.)
 pub const FXDYN: u16 = 0x8F84;
 pub const FXDYN_ENTRY: u16 = 8;
-/// (Fewer than the effects and the wrecks: the far battle's flashes fill the free slots, and the room
-/// before the reciprocals is this.)
-pub const FXDYN_MAX: u8 = 14;
+/// (Fewer than the effects and the wrecks: the far battle's flashes and the clouds fill the free slots,
+/// and the room before the reciprocals is this.)
+pub const FXDYN_MAX: u8 = 15;
 const _: () = assert!(FXDYN >= crate::layout::XFORM_RAM + 0x84 && FXDYN + 1 + FXDYN_MAX as u16 * FXDYN_ENTRY <= crate::fixed::RECIP);
 /// Effect frames last `1 << FX_TICKS_SHIFT` ticks; looping effects (smoke, a burning wreck) play this
 /// long.
@@ -138,7 +138,7 @@ pub fn sea<H: Hw + ?Sized>(hw: &mut H, u: u16, v: u16) -> bool {
 /// The effects on: each one's frame, its scale for its distance, placed for the drawing; done ones freed.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.fx"))]
-fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16) {
+fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16, drift: u16) {
     use crate::effects::{FRAMES, HEIGHT_Q4, LOOPS, record, scale_for};
     let mut n = 0u8;
     let wrecks = hw.peek(WRECKS).min(WRECK_MAX) as u16;
@@ -194,9 +194,14 @@ fn effects<H: Hw + ?Sized>(hw: &mut H, eye: &crate::hud::Eye, now: u16) {
         wr(hw, at + 2, y as u16);
         wr(hw, at + 4, rec as u16);
         hw.poke(at + 6, (rec >> 16) as u8);
-        hw.poke(at + 7, crate::geom::depth_key(3 * z4));
+        // (Nearer than the fog's buckets: `geom::bin` takes those nearest first, one flat haze shade, so a
+        // flash binned among them could be drawn under a mountain behind it; and the last bucket is the
+        // clouds', which `geom::push_dynamic` turns to the horizon's tilt.)
+        hw.poke(at + 7, crate::geom::depth_key(3 * z4).min(crate::geom::FAR_KEY - 1));
         n += 1;
     }
+    // The clouds on the horizon, in the slots left.
+    let n = crate::clouds::place(hw, eye, drift, n);
     hw.poke(FXDYN, n);
 }
 
@@ -643,7 +648,7 @@ pub fn fx<H: Hw + ?Sized>(hw: &mut H, a: &Agent, cam: &crate::floor::FloorCam) {
         wr(hw, p + proj::V, v as u16);
         wr(hw, p + proj::H, h as u16);
     }
-    effects(hw, &eye, now);
+    effects(hw, &eye, now, (a.t >> crate::clouds::DRIFT_SHIFT) as u16);
     // The projectiles to draw, after the near units.
     let mut n = hw.peek(OBJLIST).min(OBJLIST_UNITS) as u16;
     for k in 0..PROJ_MAX {

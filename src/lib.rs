@@ -9,6 +9,7 @@ pub mod actors;
 pub mod agent;
 pub mod brain;
 pub mod camera;
+pub mod clouds;
 pub mod cockpit;
 pub mod combat;
 pub mod cost;

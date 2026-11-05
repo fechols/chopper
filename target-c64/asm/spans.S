@@ -1027,7 +1027,55 @@ fdown:
     lda #0
     sta FKEEP
     jsr fpush
-9:
+9:  jmp fstep
+
+; A patch at byte FI: keep FKEEP's pixels, FSKY's sky, the rest the line's haze (`floor::patch`).
+fpush:
+    ldx PATCH
+    cpx #4
+    bcs 9f
+    lda FKEEP
+    ora FSKY
+    eor #$ff
+    and R_HAZE
+    sta FT
+    lda #SKY
+    and FSKY
+    ora FT
+    sta FT
+    txa
+    asl
+    adc PATCH
+    tay
+    lda FI
+    sta PATCH+1,y
+    lda FKEEP
+    sta PATCH+2,y
+    lda FT
+    sta PATCH+3,y
+    inc PATCH
+9:  rts
+
+; the first k pixels of a byte, the last k
+lmask: .byte $00, $c0, $f0, $fc, $ff
+rmask: .byte $00, $03, $0f, $3f, $ff
+
+; A = the integer part of the 16.16 at FOG + X, clamped to 0..160
+fpx:
+    lda FOG+3,x
+    bmi 1f
+    bne 2f
+    lda FOG+2,x
+    cmp #161
+    bcc 3f
+2:  lda #160
+    rts
+1:  lda #0
+3:  rts
+
+; (In the clipping overlay, window 3: loaded before the band loop, where span_line runs, and kept
+; through it. Resident RAM is full.)
+.section .text.clip.fog,"ax",@progbits
 ; pf, ph += step (twice when the lines are doubled)
 fstep:
     jsr 1f
@@ -1062,52 +1110,10 @@ fstep:
     sta F_PH+3
     rts
 
-; A = the integer part of the 16.16 at FOG + X, clamped to 0..160
-fpx:
-    lda FOG+3,x
-    bmi 1f
-    bne 2f
-    lda FOG+2,x
-    cmp #161
-    bcc 3f
-2:  lda #160
-    rts
-1:  lda #0
-3:  rts
-
-; A patch at byte FI: keep FKEEP's pixels, FSKY's sky, the rest the line's haze (`floor::patch`).
-fpush:
-    ldx PATCH
-    cpx #4
-    bcs 9f
-    lda FKEEP
-    ora FSKY
-    eor #$ff
-    and R_HAZE
-    sta FT
-    lda #SKY
-    and FSKY
-    ora FT
-    sta FT
-    txa
-    asl
-    adc PATCH
-    tay
-    lda FI
-    sta PATCH+1,y
-    lda FKEEP
-    sta PATCH+2,y
-    lda FT
-    sta PATCH+3,y
-    inc PATCH
-9:  rts
-
-; the first k pixels of a byte, the last k
-lmask: .byte $00, $c0, $f0, $fc, $ff
-rmask: .byte $00, $03, $0f, $3f, $ff
 
 ; BT's x and z rows by adding bb up (the sums' low three bytes are all goff uses).
-.section .text.bt_build,"ax",@progbits
+; (In the geometry set-up's REU overlay: called once a frame right after `Rays::new`, while it is in.)
+.section .text.geomsetup.bt_build,"ax",@progbits
 .globl bt_build
 .type bt_build,@function
 bt_build:

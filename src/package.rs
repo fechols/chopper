@@ -71,6 +71,7 @@ pub fn bake(world: &World) -> Vec<u8> {
         reu[h + at as usize..][..2].copy_from_slice(&v.to_le_bytes());
     }
     crate::effects_bake::install(&mut reu);
+    crate::clouds::bake::install(&mut reu);
     reu
 }
 
@@ -179,7 +180,8 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
         }
     }
     let _ = COLS;
-    (st.tris, st.dropped) = (bands.tris, bands.dropped);
+    // (Near items only, as `raster_bands` and the C64's DROPC count them: far ones are left out by design.)
+    (st.tris, st.dropped) = (bands.tris, bands.dropped - bands.far_dropped);
     st
 }
 
@@ -204,6 +206,8 @@ pub fn render_from(reu: &[u8], tick: u32, doubled: bool, lock: [u8; crate::hud::
     }
     crate::hud::update(&mut m, &agent, &cam);
     crate::actors::update(&mut m, &cam);
+    // The effects pass (none playing on a fresh machine): the clouds on the horizon.
+    crate::combat::fx(&mut m, &agent, &cam);
     let scene = scene_block(reu);
     let st = render_floor(&mut m, BUFFERS[0], &scene, &cam, doubled);
     (m, st)

@@ -1192,10 +1192,9 @@ front:
 1:  inc CNT
 2:  rts
 
-; One triangle of vertices IA, IB, IC with shade SHD (Rust `geom::clip`'s cuts).
-.globl geo_tri
-geo_tri:
-tryface:
+; Twice the screen area of triangle IA, IB, IC (`geom::area`), corners loaded into TX/TY: V+0..2 and
+; A (its top byte, N its sign).
+farea:
     ldx IA
     lda SXL,x
     sta TXL
@@ -1276,14 +1275,31 @@ tryface:
     sta V+2
     lda Q+3
     sbc P3
-    bmi 9f
-    ora V+2
+    rts
+
+; One triangle of vertices IA, IB, IC with shade SHD (Rust `geom::clip`'s cuts).
+.globl geo_tri
+geo_tri:
+tryface:
+    jsr farea
+    bpl 7f
+    rts                 ; (back-facing)
+7:  ora V+2
     ora V+1
     ora V
     beq 9f
     jsr facekey
     sta KEY
-    lda WN
+    ; beyond the fog (z sum >= 3 * FAR): the far shade (`geom::far_shade`)
+    lda V+2
+    bmi 6f
+    bne 5f
+    lda V+1
+    cmp #>(3 * FARQ)
+    bcc 6f
+5:  lda #HAZED | HAZE_PAT
+    sta SHD
+6:  lda WN
     cmp #255
     bne 1f
     lda WDROP
@@ -1327,7 +1343,8 @@ tryface:
 9:  rts
 
 ; A = the depth key of z sum s = za + zb + zc (`geom::depth_key`): s >> 5 below 6144, then
-; 192 + (s - 6144) >> 8, clamped to 0..255.
+; 192 + (s - 6144) >> 8 below 3 FAR (15360), then FAR_KEY + (s - 15360) >> 10, clamped to 0..255.
+; (V keeps s.)
 facekey:
     ldx IA
     lda VZL,x
@@ -1360,13 +1377,18 @@ facekey:
     lsr
     ora Q
     rts
-4:  cmp #$58
-    bcs 2f
+4:  cmp #$3c
+    bcs 6f
+    adc #192 - $18       ; (carry clear) 192 + (s >> 8) - 24
+    rts
+6:  sbc #$3c             ; (carry set) (s >> 8) - 60, quartered: (s - 15360) >> 10
+    lsr
+    lsr
     clc
-    adc #192 - $18
-    rts
+    adc #FAR_KEY
+    bcc 5f
 2:  lda #255
-    rts
+5:  rts
 3:  lda #0
     rts
 
@@ -1816,6 +1838,9 @@ NFREE  = $ACFB
 NSEQ   = $ACFC
 TRISC  = $ACFD          ; triangles set up this frame
 DROPC  = $ACFE          ; triangles dropped (pool full)
+FSHD   = $ACF8          ; the activating triangle's shade (tsetup's zero page holds IDX)
+FLAST  = $ACF9          ; a far triangle's last band
+CAP    = $ACD0          ; per band: the pool slots no near item will need (`geom::Bands`), 16 bytes
 BNEXT  = $AD00          ; next sequence number in the same band list
 SEQTRI = $AE00          ; sequence number -> triangle index
 STAGE  = $8C00
@@ -1835,8 +1860,13 @@ BS     = $BF            ; current sequence number
 .type geo_bin,@function
 geo_bin:
     lda #$ff
-    ldx #24
+    ldx #NBANDS - 1
 1:  sta FHEAD,x
+    dex
+    bpl 1b
+    lda #0
+    ldx #NBANDS - 1
+1:  sta CAP,x
     dex
     bpl 1b
     ldx #POOL - 1
@@ -1854,7 +1884,7 @@ geo_bin:
     sta TRIS
     lda #NBANDS
     sta TOP
-    lda #255
+    lda #255            ; the clouds' bucket, then beyond the fog nearest first (`geom::bin`)
     sta KEY
 bkey:
     ldx KEY
@@ -1944,16 +1974,50 @@ btri:
     ldx BAND
 11: tya
     sta FTAIL,x
+    ; a near item: one more starting in this band (CAP counts them, then `bcap` makes them slots); far
+    ; ones (HAZED: a triangle beyond the fog, or a cloud sprite) don't count
+    ldy IDX
+    lda TSHADE,y
+    and #HAZED
+    bne 9f
+    inc CAP,x
 9:  inc NSEQ
     ldx IDX
     lda NEXT,x
     jmp btri
 bnext:
     lda KEY
+    cmp #FAR_KEY
+    bcc 13f
+    cmp #255
+    beq 15f             ; the clouds' bucket done: beyond the fog, nearest first
+    cmp #254
+    beq 14f
+    inc KEY
+    jmp bkey
+15: lda #FAR_KEY
+    sta KEY
+    jmp bkey
+14: lda #FAR_KEY - 1
+    sta KEY
+    jmp bkey
+13: cmp #0
     beq 12f
     dec KEY
     jmp bkey
-12: rts
+12: ; CAP[b] = POOL less the near items starting in band b or above (as if they stayed to the bottom)
+    ldx #0
+    lda #POOL
+bcap:
+    sec
+    sbc CAP,x
+    bcs 15f
+    lda #0
+15: sta CAP,x
+    inx
+    cpx #NBANDS
+    bne bcap
+    rts
 
 .size geo_bin, .-geo_bin
 
@@ -1976,6 +2040,7 @@ anext:
     sta IDX
     tax
     lda TSHADE,x
+    sta FSHD
     bpl 15f
     jsr ssetup
     jmp 16f
@@ -1983,8 +2048,39 @@ anext:
 16:
     bcs 13f
     jmp 3f              ; nothing to draw (long branches as bxx/jmp)
-13: lda NFREE
+13: ; a far item (a triangle beyond the fog, or a cloud sprite) needs a slot in CAP in every band it
+    ; spans (`geom::Bands::band`)
+    lda FSHD
+    and #HAZED
+    beq 17f
+    lda TRI_ARGS + 26   ; its end line (exclusive; a sprite's slot keeps it there too): last band (end - 1) >> 3
+    sec
+    sbc #1
+    lsr
+    lsr
+    lsr
+    cmp #NBANDS
+    bcc 19f
+    lda #NBANDS - 1
+19: sta FLAST
+    ldx BAND
+20: lda CAP,x
+    beq 22f
+    cpx FLAST
+    inx
+    bcc 20b
+    lda NFREE
+    beq 22f
+    ldx BAND
+21: dec CAP,x
+    cpx FLAST
+    inx
+    bcc 21b
+    bcs 2f
+22: jmp 3f              ; a far item left out: by design, not a drop (`raster_bands` counts near ones)
+17: lda NFREE
     bne 2f
+18:
     lda DROPC
     cmp #$ff
     bne 14f
@@ -2560,8 +2656,8 @@ W_V     = WA + 22
 W_Y     = WA + 26
 W_SCALE = WA + 28
 W_GRIDS = WA + 30
-W_OBJ   = WA + 180
-W_CELLS = WA + 181
+W_OBJ   = WA + 184
+W_CELLS = WA + 185
 G_DIR    = 0          ; `geom::GridIn`, from walk_args
 G_STRIDE = 3
 G_NU     = 5
@@ -2578,13 +2674,18 @@ G_EV     = 33
 G_S0     = 39
 G_SU     = 51
 G_SV     = 63
-GRID_LEN = 75
+G_CAP    = 75         ; `geom::GridIn::cap` (walk::CAP): the objects' cull distance
+GRID_LEN = 77
 ; object records (`geom::scene`)
 O_DU     = 0
 O_DV     = 1
 O_DY     = 2
 O_YAW    = 3
 O_MESH   = 4
+O_LANDMARK = 5          ; `geom::scene::O_LANDMARK`
+SILH     = WA + 186     ; this object is drawn as its silhouette (after the walk's arguments)
+SBEST    = WA + 187     ; (4) wsil: the biggest triangle's area so far
+SBI      = WA + 191     ; wsil: its vertex ($ff: none)
 ; RAM (XFORM_RAM, past geo_xform's MAB / MSG)
 WROW     = $8F20        ; (12) the row's first cell: `Look::cell_sums`, 3 x i32
 WCEL     = $8F2C        ; (12) this cell's
@@ -2598,6 +2699,9 @@ CELL_MAX  = 44
 SCENE_RAM = $8000
 OBJ_BANK  = 88
 FARQ      = 5120        ; geom::FAR
+HAZED     = $40         ; geom::HAZED: a triangle beyond the fog
+HAZE_PAT  = 7           ; geom::HAZE_PAT
+FAR_KEY   = 228         ; geom::FAR_KEY: the first depth bucket beyond the fog
 
 GP     = $A0    ; (2) the grid's GridWalk
 ROWN   = $A2    ; rows left
@@ -2673,6 +2777,8 @@ geo_walk:
 
 ; One grid (`geom::grid`).
 wgrid:
+    lda #$ff            ; (POPD's cap is the grid's: work it out afresh)
+    sta PDR
     ldy #G_NV
     lda (GP),y
     bne 1f
@@ -3368,6 +3474,7 @@ wobject:
     sta ORGX,x
     dex
     bpl 7b
+    jsr silflag         ; (a landmark beyond the fog: its silhouette, `wfaces`)
     ; far (`geom::AFFINE_SHIFT`: z > rad << 7, SR = rad << 4): weak perspective
     lda SZ+1
     bmi 8f
@@ -3387,9 +3494,9 @@ wobject:
     sbc SZ+1
     bcs 8f              ; rad << 7 >= z
     jsr geo_affine
-    jmp geo_faces
+    jmp wfaces
 8:  jsr geo_xform
-    jmp geo_faces
+    jmp wfaces
 
 ; MP = SCENE_RAM + 8 + A * 10
 meshp:
@@ -3548,7 +3655,7 @@ oprod:
     rts
 
 .section .text.geo_walk,"ax",@progbits
-; POPD = min(A * scale, FAR) (`geom::pop_depth`); the last radius's is kept (they repeat).
+; POPD = min(A * scale, the grid's cap) (`geom::pop_depth`); the last radius's is kept (they repeat).
 popdepth:
     cmp PDR
     bne 2f
@@ -3565,9 +3672,11 @@ popdepth:
     lda P2
     ora P3
     bne 1f
-    lda #<FARQ
+    ldy #G_CAP
+    lda (GP),y
     cmp P0
-    lda #>FARQ
+    iny
+    lda (GP),y
     sbc P1
     bcc 1f
     lda P0
@@ -3575,9 +3684,11 @@ popdepth:
     lda P1
     sta POPD+1
     rts
-1:  lda #<FARQ
+1:  ldy #G_CAP
+    lda (GP),y
     sta POPD
-    lda #>FARQ
+    iny
+    lda (GP),y
     sta POPD+1
     rts
 
@@ -3822,3 +3933,113 @@ accpos:
 
 .size geo_walk, .-geo_walk
 
+
+; A distant landmark as one triangle: its leftmost and rightmost vertices on screen and the top one of
+; the others (the first of equals), in the far shade (`geom::silhouette`). Resident, with `silflag` and `wfaces`: the walk's
+; region is full (its tail is combat::FX).
+.section .text.geo_sil,"ax",@progbits
+; SILH: the object is a landmark wholly beyond the fog (z - r >= FAR; SZ, SR = rad << 4, before the
+; transform overwrites them) (`geom::object`).
+silflag:
+    lda #0
+    sta SILH
+    ldy #O_LANDMARK
+    lda (RECP),y
+    beq 9f
+    sec
+    lda SZ
+    sbc SR
+    tax
+    lda SZ+1
+    sbc SR+1
+    tay
+    txa
+    sec
+    sbc #<FARQ
+    tya
+    sbc #>FARQ
+    bvc 1f
+    eor #$80
+1:  bmi 9f
+    inc SILH
+9:  rts
+; After the transform: the faces, or the silhouette.
+wfaces:
+    lda SILH
+    bne wsil
+    jmp geo_faces
+wsil:
+    lda #0
+    sta IA
+    sta IC
+    ldx #1
+1:  cpx NV
+    bcs 8f
+    ldy IA              ; SX[x] < SX[left]
+    lda SXL,x
+    cmp SXL,y
+    lda SXH,x
+    sbc SXH,y
+    bvc 4f
+    eor #$80
+4:  bpl 5f
+    stx IA
+5:  ldy IC              ; SX[right] < SX[x]
+    lda SXL,y
+    cmp SXL,x
+    lda SXH,y
+    sbc SXH,x
+    bvc 6f
+    eor #$80
+6:  bpl 7f
+    stx IC
+7:  inx
+    jmp 1b
+8:  ; of the others, the one making the biggest triangle with them (`geom::silhouette`); SBI $ff while
+    ; none above the chord
+    lda #$ff
+    sta SBI
+    lda #0
+    sta SBEST
+    sta SBEST+1
+    sta SBEST+2
+    sta SBEST+3
+    ldx #0
+1:  cpx NV
+    bcs 9f
+    cpx IA
+    beq 3f
+    cpx IC
+    beq 3f
+    stx IB
+    jsr farea           ; area - best > 0: the new best
+    sta V+3
+    sec
+    lda SBEST
+    sbc V
+    lda SBEST+1
+    sbc V+1
+    lda SBEST+2
+    sbc V+2
+    lda SBEST+3
+    sbc V+3
+    bvc 4f
+    eor #$80
+4:  bpl 2f
+    lda IB
+    sta SBI
+    ldx #3
+5:  lda V,x
+    sta SBEST,x
+    dex
+    bpl 5b
+2:  ldx IB              ; (farea took X)
+3:  inx
+    jmp 1b
+9:  lda SBI
+    bmi 10f
+    sta IB
+    lda #HAZED | HAZE_PAT
+    sta SHD
+    jmp tryface
+10: rts

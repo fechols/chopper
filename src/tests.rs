@@ -468,19 +468,19 @@ fn a_ground_point_projects_onto_the_floor_byte_that_samples_it() {
 fn the_grid_visits_every_object_the_cull_accepts() {
     // Brute force: every object of the package against the per-object cull, at many cameras; the grid
     // walk must accept exactly as many (a cell skipped wrongly would lose some).
-    use crate::geom::{BIG_CELL, BIG_GRID, BIG_SHIFT, CELL, GRID, Look, Q, SHIFT, View, object_centre, pop_depth, sphere_visible};
+    use crate::geom::{BIG_CELL, BIG_GRID, BIG_SHIFT, CELL, FAR, FAR_BIG, GRID, Look, Q, SHIFT, View, object_centre, pop_depth, sphere_visible};
     use crate::format::{BIG_DIR, OBJ_DIR, OBJ_RECORDS};
     let reu = package();
     let block = scene(reu);
     // Every cell of both grids: its centre (Q4), its records, the records' shift.
     let mut cells = Vec::new();
-    for (dir, n, cell, sh) in [(OBJ_DIR, GRID, CELL * Q, SHIFT), (BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_SHIFT)] {
+    for (dir, n, cell, sh, cap) in [(OBJ_DIR, GRID, CELL * Q, SHIFT, FAR), (BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_SHIFT, FAR_BIG)] {
         for k in 0..n * n {
             let e = &reu[dir as usize + 4 * k..][..4];
             let (first, count) = (u16::from_le_bytes([e[0], e[1]]) as usize, e[2] as usize);
             let centre = ((k % n) as i32 * cell + cell / 2, (k / n) as i32 * cell + cell / 2);
             for r in 0..count {
-                cells.push((centre, sh, &reu[OBJ_RECORDS as usize + 8 * (first + r)..][..8]));
+                cells.push((centre, sh, cap as i16, &reu[OBJ_RECORDS as usize + 8 * (first + r)..][..8]));
             }
         }
     }
@@ -496,14 +496,14 @@ fn the_grid_visits_every_object_the_cull_accepts() {
         let view = View { cam, pop };
         let look = Look::new(&view);
         let mut want = 0u32;
-        for &((cu, cv), sh, rec) in &cells {
+        for &((cu, cv), sh, cap, rec) in &cells {
             // Only near enough for the offsets to fit i16 (the walk's reach is well inside this).
             if (cu - (cam.u >> 4)).abs() > 20000 || (cv - (cam.v >> 4)).abs() > 20000 {
                 continue;
             }
             let rad = block[8 + rec[crate::geom::scene::O_MESH] as usize * 10 + 7];
             let c = object_centre(&look, look.cell_sums(cu, cv), sh, rec);
-            if sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale)) {
+            if sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale, cap)) {
                 want += 1;
             }
         }
@@ -2192,7 +2192,11 @@ fn wrecks_smoke_then_go() {
     assert_eq!(m.ram[OBJLIST as usize + 1], crate::actors::wreck_of(crate::actors::kind::TANK), "drawn as a wreck");
     assert_eq!(m.ram[WRECKS as usize], 1, "smoking");
     combat::fx(&mut m, &a, &cam);
-    assert_eq!(m.ram[FXDYN as usize], 1, "its smoke column placed");
+    // (Not counting the clouds, also listed there.)
+    let keys: Vec<u8> = (0..m.ram[FXDYN as usize] as usize).map(|k| m.ram[FXDYN as usize + 8 + 8 * k]).filter(|&k| k != crate::clouds::KEY).collect();
+    assert_eq!(keys.len(), 1, "its smoke column placed");
+    // (Short of the fog's buckets, which `bin` takes nearest first: `combat::effects`.)
+    assert!(keys.iter().all(|&k| k < crate::geom::FAR_KEY), "{keys:?}");
     a.t = 1000 + WRECK_TICKS as u32;
     combat::update(&mut m, &mut a.clone(), &cam);
     assert_eq!(m.ram[WRECKS as usize], 0, "burnt out");
@@ -3179,4 +3183,257 @@ fn the_fog_line_and_the_horizon_are_painted_to_the_pixel() {
     }
     assert!(painted > 5_000 && unpainted < 10, "{painted} {unpainted}");
     println!("{pixels} pixels, {painted} painted bytes, {unpainted} cameras unpainted");
+}
+
+/// The clouds on the horizon: a level camera sees two or more (the ring is ~35° apart, the view ~90°),
+/// each standing 12-22 lines above the horizon ahead (`geom::CY`; higher off the axis), in the farthest
+/// depth bucket, level; none behind it; and the ring drifts east (to the right, facing north) with the u32
+/// clock, smoothly across the u16 tick's wrap.
+#[test]
+fn the_clouds_stand_on_the_horizon_and_drift() {
+    use crate::clouds::{DRIFT_SHIFT, KEY, LEVEL, place, record};
+    use crate::combat::{FXDYN, FXDYN_ENTRY};
+    let list = |cam: &FloorCam, t: u32| -> Vec<(i16, i16)> {
+        let mut m = Machine::new(package());
+        let n = place(&mut m, &crate::hud::Eye::new(cam), (t >> DRIFT_SHIFT) as u16, 0);
+        (0..n as u16)
+            .map(|k| {
+                let at = FXDYN + 1 + k * FXDYN_ENTRY;
+                assert_eq!(m.ram[(at + 7) as usize], KEY, "the farthest bucket");
+                let rec = rd16(&m, at + 4) as u32 | (m.ram[(at + 6) as usize] as u32) << 16;
+                assert!((0..4).any(|s| rec == record(s, LEVEL)), "a level cloud's record: ${rec:06X}");
+                let r = crate::effects_bake::read_record_at(&m.reu, rec);
+                assert!(r.h > 0 && r.phases == 4, "a baked cloud");
+                (rd16(&m, at) as i16, rd16(&m, at + 2) as i16)
+            })
+            .collect()
+    };
+    let cy = crate::geom::CY as i16;
+    for yaw in (0..8u16).map(|k| k << 13) {
+        let cam = camera_at(1024.0, 1100.0, 10.0, yaw, 0, 0);
+        let seen = list(&cam, 0);
+        assert!((2..=4).contains(&seen.len()), "yaw {yaw:#06x}: {seen:?}");
+        for &(x, y) in &seen {
+            // (12-22 lines up ahead, and 1/cos of the bearing off the axis more toward the sides.)
+            assert!((cy - 42..cy - 11).contains(&y), "yaw {yaw:#06x}: base {y}, horizon {cy}");
+            // (Kept while a frame can still reach the screen: `clouds::REACH_X` pixels either side.)
+            let r = crate::clouds::REACH_X;
+            assert!((-r..160 + r).contains(&x), "yaw {yaw:#06x}: x {x}");
+        }
+    }
+    // Matched by their base line (one may leave or enter at an edge; a base rises a little off the axis):
+    // 3000 ticks move them right a little,
+    // across the u16 clock's wrap as anywhere.
+    let cam = camera_at(1024.0, 1100.0, 10.0, 0, 0, 0);
+    for t in [1000u32, 65536 - 1500] {
+        let (a, b) = (list(&cam, t), list(&cam, t + 3000));
+        let inner: Vec<_> = a.iter().filter(|p| (0..150).contains(&p.0)).collect();
+        assert!(!inner.is_empty());
+        assert!(inner.iter().all(|p| b.iter().any(|q| (q.1 - p.1).abs() <= 4 && (1..12).contains(&(q.0 - p.0)))), "{t}: {a:?} -> {b:?}");
+    }
+}
+
+/// The clouds roll with the horizon: `clouds::angle` picks the level frame for a level camera, and for a
+/// rolled one the step nearest the roll (the horizon's tilt on the screen), turned the same way as the
+/// horizon (its right end lower on the screen: a higher index). Past the baked range it clamps.
+#[test]
+fn the_clouds_roll_with_the_horizon() {
+    use crate::clouds::{LEVEL, STEP_DEG};
+    let eye = |roll: i32| crate::hud::Eye::new(&camera_at(1024.0, 1100.0, 10.0, 0x3000, 0, roll));
+    // (`push_dynamic` reads world up from the walk's `Look::rt`: the same numbers as the HUD's eye.)
+    let angle = |e: &crate::hud::Eye| crate::clouds::angle(e.m[1], e.m[4]);
+    for roll in [-20, 0, 20] {
+        let cam = camera_at(1024.0, 1100.0, 10.0, 0x3000, 0, roll);
+        let rt = crate::geom::Look::new(&crate::geom::View { cam, pop: 0 }).rt;
+        assert_eq!((rt[0][1], rt[1][1]), (eye(roll).m[1], eye(roll).m[4]));
+    }
+    assert_eq!(angle(&eye(0)), LEVEL);
+    for roll in [-28, -20, -9, -4, 4, 9, 20, 28] {
+        let e = eye(roll);
+        // The horizon's tilt: two level directions ahead, 20° either side.
+        let at = |deg: f64| {
+            let a = 0x3000 as f64 / 65536.0 * 360.0 + deg;
+            let (s, c) = (a.to_radians().sin(), a.to_radians().cos());
+            let p = [e.p[0].wrapping_add((4096.0 * s) as i16), e.p[1], e.p[2].wrapping_add((4096.0 * c) as i16)];
+            crate::hud::screen(crate::hud::to_camera(&e, p))
+        };
+        let ((x0, y0), (x1, y1)) = (at(-20.0), at(20.0));
+        // (Hires pixels across are 133/160 of a line.)
+        let tilt = ((y1 - y0) as f64).atan2((x1 - x0) as f64 * 133.0 / 160.0).to_degrees();
+        let a = angle(&e) as i32;
+        let want = LEVEL as i32 + (tilt / STEP_DEG as f64).round() as i32;
+        assert!((a - want).abs() <= 1, "roll {roll}: tilt {tilt:.1}°, index {a}, want {want}");
+        assert_eq!(a > LEVEL as i32, tilt > 0.0, "roll {roll}: the same way");
+    }
+    // (Whichever way a roll tilts the horizon, rolling on past 30° stays at that end.)
+    let end = |roll: i32| if angle(&eye(roll)) > LEVEL { crate::clouds::ANGLES as u8 - 1 } else { 0 };
+    assert_eq!(angle(&eye(60)), end(28));
+    assert_eq!(angle(&eye(-60)), end(-28));
+}
+
+/// Every cloud frame (each shape at each angle, every phase), drawn back out of the image by the C64's
+/// sprite code, is exactly the image baked; the blocks sit in `CLOUDS_BLOCKS..CLOUDS_END`, each inside one
+/// 512 KiB region, and the effects end before them.
+#[test]
+fn cloud_frames_draw_back_exactly() {
+    use crate::clouds::{ANGLES, SHAPES, bake, record};
+    use crate::format::{CLOUDS_BLOCKS, CLOUDS_END, REU_BANK};
+    let mut m = Machine::new(package());
+    for s in 0..SHAPES {
+        for a in 0..ANGLES {
+            let (want, ax, ay) = bake::image(s, a);
+            let r = crate::effects_bake::read_record_at(&m.reu, record(s as u8, a as u8));
+            assert_eq!((r.ax, r.ay), (ax, ay));
+            for (p, &(_, block, len)) in r.phase.iter().enumerate() {
+                assert!(block >= CLOUDS_BLOCKS && block + len as u32 <= CLOUDS_END && block / REU_BANK == (block + len as u32 - 1) / REU_BANK, "cloud {s} angle {a} phase {p}");
+                let got = crate::effects_bake::draw_back_at(&mut m, record(s as u8, a as u8), p as u8);
+                assert_eq!((got.w, got.h), (want.w, want.h));
+                assert!(got.pixels == want.pixels, "cloud {s} angle {a} phase {p}");
+            }
+        }
+    }
+    let mut reu = vec![0u8; crate::format::IMAGE_END as usize];
+    assert!(crate::effects_bake::install(&mut reu).end <= CLOUDS_BLOCKS);
+}
+
+/// The clouds compete as far items (`SPRITE | HAZED`): drawn first (behind the hazed mountains), each
+/// holding a slot only in the bands it spans, so they never cost a near item its slot and drop nothing
+/// that was drawn without them (tick 6000 lost two mountain triangles when a cloud counted as near).
+#[test]
+fn the_clouds_are_far_items_behind_the_mountains() {
+    use crate::geom::{HAZED, SPRITE, Work, bin};
+    let render = |t: u32, clouds: bool| {
+        let reu = package();
+        let mut m = Machine::new(reu);
+        crate::package::setup(&mut m, crate::layout::BUFFERS[0]);
+        let agent = crate::agent::at(reu, t);
+        let (cam, _) = agent.camera();
+        crate::hud::init(&mut m);
+        crate::actors::update(&mut m, &cam);
+        crate::combat::fx(&mut m, &agent, &cam);
+        if !clouds {
+            m.ram[crate::combat::FXDYN as usize] = 0;
+        }
+        let scene = crate::package::scene_block(reu);
+        crate::package::render_floor(&mut m, crate::layout::BUFFERS[0], &scene, &cam, false)
+    };
+    for t in [600u32, 6000, 7800, 9300] {
+        let (with, without) = (render(t, true), render(t, false));
+        assert!(with.tris > without.tris, "tick {t}: no cloud drawn");
+        assert_eq!(with.dropped, without.dropped, "tick {t}: the clouds cost slots");
+    }
+    // Painter's order: the clouds' bucket first, then the far triangles.
+    let mut w = Work::new();
+    crate::geom::push(&mut w, [0, 160, 0], [0, 0, 160], HAZED | crate::geom::HAZE_PAT, crate::geom::FAR_KEY + 3);
+    crate::geom::push_sprite(&mut w, 10, 10, 8, 2, 0, 3, crate::clouds::KEY, true);
+    let (order, n, _, _) = bin(&w);
+    assert_eq!(n, 2);
+    assert_eq!(w.tri(order[0]).shade, SPRITE | HAZED, "the cloud first");
+}
+
+/// `depth_key`: 2/3-texel buckets to 128 texels, 5.3 to the fog (`FAR_KEY` there), 21 beyond; monotone,
+/// and nothing within `FAR_BIG` and its pad reaches the clouds' bucket (255). The asm `facekey` matches
+/// it (the emulator's frames).
+#[test]
+fn depth_keys_keep_their_precision_to_the_fog() {
+    use crate::geom::{FAR, FAR_BIG, FAR_KEY, depth_key};
+    let q = 16;
+    assert_eq!((depth_key(6143), depth_key(6144), depth_key(6144 + 255), depth_key(6144 + 256)), (191, 192, 192, 193));
+    assert_eq!((depth_key(3 * FAR - 1), depth_key(3 * FAR)), (FAR_KEY - 1, FAR_KEY));
+    assert_eq!((depth_key(3 * FAR + 1023), depth_key(3 * FAR + 1024)), (FAR_KEY, FAR_KEY + 1));
+    assert_eq!((depth_key(-5), depth_key(1 << 20)), (0, 255));
+    let mut last = 0;
+    for s in (-64..3 * (FAR_BIG + 255 * q)).step_by(7) {
+        let k = depth_key(s);
+        assert!(k >= last, "monotone at {s}");
+        last = k;
+    }
+    assert!(depth_key(3 * (FAR_BIG + 51 * q)) < crate::clouds::KEY);
+    // Two objects 6 texels apart at 200 texels sort apart (they shared a bucket at 10.7 texels).
+    let at = |t: i32| depth_key(3 * t * q);
+    assert!(at(200) < at(206));
+}
+
+/// A distant mountain banked over: its ring's end can rise past its peak and be the leftmost (or
+/// rightmost) vertex too; the silhouette's top is taken from the others, so its triangle keeps its area.
+#[test]
+fn banked_silhouettes_keep_their_area() {
+    use crate::geom::{Obj, Verts, Work, silhouette, vert};
+    let mut degenerate_before = 0;
+    for roll in [-30i32, -28, -20, 0, 20, 28, 30] {
+        // A wide, low cone (radius 50, height 28) on screen: a ring of 12 and the peak, rolled.
+        let th = (roll as f64).to_radians();
+        let (c, s) = (th.cos(), th.sin());
+        let mut pts: Vec<(f64, f64)> = (0..12).map(|k| {
+            let a = k as f64 * std::f64::consts::TAU / 12.0;
+            (50.0 * a.cos(), 6.0 * a.sin())
+        }).collect();
+        pts.push((0.0, -28.0));
+        let mut v = Verts::new();
+        for (i, &(x, y)) in pts.iter().enumerate() {
+            v.set(vert::SX, i, (16.0 * (1000.0 + x * c - y * s)).round() as i16);
+            v.set(vert::SY, i, (16.0 * (500.0 + x * s + y * c)).round() as i16);
+            v.set(vert::Z, i, 9000);
+        }
+        let o = Obj { nv: pts.len() as u8, ..Obj::default() };
+        // (The old pick: the top among all, which can be the left or right one.)
+        let (sx, sy) = (|i: usize| v.get(vert::SX, i), |i: usize| v.get(vert::SY, i));
+        let n = pts.len();
+        let (l, r) = ((0..n).min_by_key(|&i| (sx(i), i)).unwrap(), (0..n).max_by_key(|&i| (sx(i), usize::MAX - i)).unwrap());
+        let t = (0..n).min_by_key(|&i| (sy(i), i)).unwrap();
+        degenerate_before += (t == l || t == r) as u32;
+        let mut w = Work::new();
+        silhouette(&o, &v, &mut w);
+        assert_eq!(w.n, 1, "roll {roll}: drawn");
+        let tri = w.tri(0);
+        let a = (tri.x[1] as i32 - tri.x[0] as i32) * (tri.y[2] as i32 - tri.y[0] as i32) - (tri.y[1] as i32 - tri.y[0] as i32) * (tri.x[2] as i32 - tri.x[0] as i32);
+        assert!(a > 16 * 16 * 2000, "roll {roll}: area {a} {tri:?}");
+    }
+    assert!(degenerate_before > 0, "the case the old pick lost");
+}
+
+/// `clouds::place`'s depth cull (`CULL_Z`) never drops a cloud the full projection would place: over yaw,
+/// pitch, roll and drift its list equals one projected without it.
+#[test]
+fn the_clouds_depth_cull_loses_nothing() {
+    use crate::clouds::{KEY, LEVEL, REACH_DOWN, REACH_UP, REACH_X, RING, place, record};
+    use crate::combat::{FXDYN, FXDYN_ENTRY};
+    use crate::hud::{Eye, NEAR, screen, to_camera};
+    let mut m = Machine::new(package());
+    let (mut seen, mut early) = (0, 0);
+    for yaw in (0..16u16).map(|k| k << 12 | 0x123) {
+        for pitch in [-20, -10, 0, 10, 20] {
+            for roll in [-30, -15, 0, 15, 30] {
+                for drift in [0u16, 0x5555, 0xC000] {
+                    let eye = Eye::new(&camera_at(1024.0, 1100.0, 10.0, yaw, pitch, roll));
+                    let n = place(&mut m, &eye, drift, 0);
+                    let got: Vec<[u8; 8]> = (0..n as u16).map(|k| {
+                        let at = (FXDYN + 1 + k * FXDYN_ENTRY) as usize;
+                        m.ram[at..at + 8].try_into().unwrap()
+                    }).collect();
+                    let mut want = Vec::new();
+                    for c in RING.iter() {
+                        let a = ((c[0] as u16) << 8).wrapping_add(drift);
+                        let (s, co) = ((crate::camera::sin(a) >> 2) as i16, (crate::camera::cos(a) >> 2) as i16);
+                        let p = [eye.p[0].wrapping_add(s), eye.p[1].wrapping_add(c[2] as i16 * 4), eye.p[2].wrapping_add(co)];
+                        let cam = to_camera(&eye, p);
+                        early += (cam[2] < crate::clouds::CULL_Z) as usize;
+                        if cam[2] < NEAR {
+                            continue;
+                        }
+                        let (x, y) = screen(cam);
+                        if !(-2 * REACH_X..320 + 2 * REACH_X).contains(&x) || !(-REACH_DOWN..crate::geom::LINES as i16 + REACH_UP).contains(&y) {
+                            continue;
+                        }
+                        let ([x0, x1], [y0, y1], [r0, r1, r2, _]) = ((x >> 1).to_le_bytes(), y.to_le_bytes(), record(c[1], LEVEL).to_le_bytes());
+                        want.push([x0, x1, y0, y1, r0, r1, r2, KEY]);
+                    }
+                    assert_eq!(got, want, "yaw {yaw:#06x} pitch {pitch} roll {roll} drift {drift:#06x}");
+                    seen += want.len();
+                }
+            }
+        }
+    }
+    // (Most of the ring stops at the depth.)
+    assert!(seen > 0 && early > 2 * seen, "{seen} placed, {early} stopped early");
 }

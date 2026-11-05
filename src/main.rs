@@ -400,6 +400,48 @@ fn effects(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The cloud shapes as baked, drawn back out by the C64's sprite code on the sky: shapes down, every third
+/// roll angle across, each frame's anchor marked in green: output/clouds.png.
+fn clouds(args: &[String]) -> Result<(), String> {
+    use chopper::clouds::{ANGLES, SHAPES, record};
+    use chopper::effects_bake::{draw_back_at, read_record_at};
+    let out = PathBuf::from(arg(args, "--out").unwrap_or("output/clouds.png".into()));
+    let reu = package::bake(&world::generate(SEED));
+    let mut m = chopper::model::Machine::new(&reu);
+    let sky = PALETTE[COLORS[1] as usize];
+    let mark = PALETTE[COLORS[0] as usize];
+    let angles: Vec<u8> = (0..ANGLES as u8).step_by(3).collect();
+    let (cw, ch) = (2 * (2 * chopper::clouds::REACH_X as usize) + 8, (chopper::clouds::REACH_UP + chopper::clouds::REACH_DOWN) as usize + 4);
+    let (w, h) = (angles.len() * cw, SHAPES * ch);
+    let mut rgb = vec![sky; w * h];
+    let mut bytes = 0u32;
+    for s in 0..SHAPES as u8 {
+        for (i, &a) in angles.iter().enumerate() {
+            let r = read_record_at(&m.reu, record(s, a));
+            bytes += r.phase.iter().map(|p| p.2 as u32).sum::<u32>();
+            let img = draw_back_at(&mut m, record(s, a), 0);
+            // The anchor at the cell's (centre, REACH_UP + 2).
+            let (ox, oy) = (i * cw + cw / 2, s as usize * ch + chopper::clouds::REACH_UP as usize + 2);
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    if let Some(c) = img.get(x, y) {
+                        let at = (oy + y as usize - r.ay as usize) * w + ox + 2 * x as usize - 2 * r.ax as usize;
+                        rgb[at] = PALETTE[COLORS[c as usize] as usize];
+                        rgb[at + 1] = rgb[at];
+                    }
+                }
+            }
+            rgb[oy * w + ox] = mark;
+        }
+    }
+    println!("{} frames (every third angle shown): {bytes} bytes of blocks in those", SHAPES * angles.len());
+    let z = 2;
+    let zoom: Vec<[u8; 3]> = (0..z * h).flat_map(|y| (0..z * w).map(move |x| (x, y))).map(|(x, y)| rgb[(y / z) * w + x / z]).collect();
+    png::save(&out, (z * w) as u32, (z * h) as u32, &zoom)?;
+    println!("{}", out.display());
+    Ok(())
+}
+
 /// Wrecks and the living side by side ahead of a hovering camera, drawn at a few ages of the wrecks
 /// (`world_sim::WRECK_TICKS`): output/wrecks-<seconds>.png.
 fn wrecks(args: &[String]) -> Result<(), String> {
@@ -500,6 +542,7 @@ fn main() -> Result<(), String> {
         Some("cockpit") => cockpit(&args),
         Some("war") => war(&args),
         Some("effects") => effects(&args),
+        Some("clouds") => clouds(&args),
         Some("wrecks") => wrecks(&args),
         Some("carrier") => carrier_views(&args),
         _ => Err("usage: chopper bake [OUT] | frame [--reu R] [--tick N] [--doubled] [--out O] | map [--out O] [--level K] | flight [--out DIR] [--from T] [--every N] [--frames K] | pcm [--out O] | agent [--reu R] [--at T] [--out O] [--trace N] | brain | cockpit [--out DIR] | effects [--out DIR] | war [--minutes M] [--knobs E,A,P,W,WP] [--quiet] [--fleet] | wrecks [--reu R] [--out DIR] [--v V] [--h H] [--pitch P] | carrier [--reu R] [--at T] [--back B] [--h H] [--pitch P]".into()),

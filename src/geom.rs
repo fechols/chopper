@@ -25,6 +25,9 @@ pub const NEAR: i32 = 2 * Q;
 /// Objects whose centre is farther than this (plus their radius) along the view are skipped: the floor
 /// is haze beyond it (`floor::HAZE_TEXELS`).
 pub const FAR: i32 = crate::floor::HAZE_TEXELS * Q;
+/// The big grid's objects (mountains: landmarks) are drawn out to this instead, in the haze beyond
+/// [`FAR`] ([`HAZED`]).
+pub const FAR_BIG: i32 = 2 * FAR;
 /// The object grid: [`GRID`]² cells of [`CELL`] texels over the map. An object is filed under the cell
 /// of its centre; objects reaching more than [`CELL_PAD`] texels from it go in the big grid instead:
 /// [`BIG_GRID`]² cells of [`BIG_CELL`] texels.
@@ -40,9 +43,11 @@ pub const BIG_SHIFT: u8 = 4;
 /// Cells either way from the camera's cell that can hold an object the cull accepts: within [`FAR`]
 /// plus its radius along the view and 45° to either side, so up to about √2 of that away.
 pub const REACH: i32 = 8;
-pub const BIG_REACH: i32 = 3;
+pub const BIG_REACH: i32 = 5;
 const _: () = assert!(CELL - 1 + (FAR / Q + CELL_PAD) * 17 / 12 < (REACH + 1) * CELL);
-const _: () = assert!(BIG_CELL - 1 + (FAR / Q + 160) * 17 / 12 < (BIG_REACH + 1) * BIG_CELL);
+const _: () = assert!(BIG_CELL - 1 + (FAR_BIG / Q + 160) * 17 / 12 < (BIG_REACH + 1) * BIG_CELL);
+// (The big grid's cell offsets from the camera, `GridIn::d0` and the walk's sums, stay in i16.)
+const _: () = assert!((2 * BIG_REACH + 1) * BIG_CELL * Q / 2 < 32768 && FAR_BIG + 255 * Q < 32768);
 /// Screen coordinates are clamped to ±1000 pixels (Q4), which keeps every edge product in i32.
 pub const LIMIT: i32 = 1000 * 16;
 /// Screen lines the band pipeline draws (the view above the cockpit) and its bands.
@@ -72,13 +77,15 @@ pub mod scene {
     pub const DIR_ENTRY: usize = 4;
     /// Object record: the offset from its cell's centre (east, north, up: i8 each, in quarter texels in
     /// the grid, whole texels in the big grid; see [`super::object_centre`]), yaw u8 (256 a turn, quarter
-    /// turns only: the top two bits), mesh u8, 3 spare.
+    /// turns only: the top two bits), mesh u8, landmark u8 (nonzero: drawn as its silhouette beyond the
+    /// fog, [`super::silhouette`]), 2 spare.
     pub const OBJECT: usize = 8;
     pub const O_DU: usize = 0;
     pub const O_DV: usize = 1;
     pub const O_DY: usize = 2;
     pub const O_YAW: usize = 3;
     pub const O_MESH: usize = 4;
+    pub const O_LANDMARK: usize = 5;
     /// Vertex: u, v (east, north) and h (up), i8 in quarter texels << shift.
     pub const VERTEX: usize = 3;
     /// Face: three vertex indices, shade (`poly::PATTERNS` index), wound so that the front is clockwise
@@ -91,8 +98,8 @@ pub mod scene {
 pub struct View {
     pub cam: FloorCam,
     /// Pop-in size: an object is drawn once its bounding radius would cover at least this many pixels
-    /// (0: [`POP`]). Its pop distance is `80·r / pop` texels along the view, capped at [`FAR`]: small
-    /// objects appear close, big ones far away.
+    /// (0: [`POP`]). Its pop distance is `80·r / pop` texels along the view, capped at its grid's cull
+    /// distance ([`FAR`], or [`FAR_BIG`] for the big grid): small objects appear close, big ones far away.
     pub pop: u8,
 }
 
@@ -110,9 +117,10 @@ pub fn pop_scale(pop: u8) -> i16 {
     (1280 / p as u16) as i16
 }
 
-/// The depth (Q4) beyond which an object of bounding radius `r` texels is not drawn.
-pub fn pop_depth(r: u8, scale: i16) -> i32 {
-    mul(r as i16, scale).min(FAR)
+/// The depth (Q4) beyond which an object of bounding radius `r` texels is not drawn, in a grid that culls
+/// at `cap` ([`GridIn::cap`]).
+pub fn pop_depth(r: u8, scale: i16, cap: i16) -> i32 {
+    mul(r as i16, scale).min(cap as i32)
 }
 
 /// Per-frame values the cull shares: world → camera (`Rᵀ`, Q14), the camera in Q4 texels, and
@@ -325,21 +333,53 @@ fn area(x: [i16; 3], y: [i16; 3]) -> i32 {
 }
 
 /// A depth bucket from a camera-space depth sum `s` (three corners, Q4): 2/3-texel buckets out to about
-/// 128 texels, then 16 times coarser to beyond the haze; nearer is a lower key.
+/// 128 texels, then 8 times coarser (about 5.3 texels) out to the fog ([`FAR`]: key [`FAR_KEY`]), then
+/// 4 times coarser again (about 21 texels: beyond the fog everything is one flat shade, so the order
+/// barely matters) out past [`FAR_BIG`] (key 245 at 691 texels); nearer is a lower key. Key 255 is never
+/// reached by anything within [`FAR_BIG`] and its pad: it is the clouds' alone (`clouds::KEY`).
 pub fn depth_key(s: i32) -> u8 {
-    if s < 6144 { (s >> 5).max(0) as u8 } else { (192 + ((s - 6144) >> 8)).min(255) as u8 }
+    if s < 6144 {
+        (s >> 5).max(0) as u8
+    } else if s < 3 * FAR {
+        (192 + ((s - 6144) >> 8)) as u8
+    } else {
+        (FAR_KEY as i32 + ((s - 3 * FAR) >> 10)).min(255) as u8
+    }
+}
+const _: () = assert!((FAR_KEY as i32 + (3 * (FAR_BIG + 51 * Q) - 3 * FAR) / 1024) < crate::clouds::KEY as i32);
+
+/// A triangle beyond the fog ([`FAR`]: its corners' depth sum at least 3·FAR) gets this shade: the
+/// haze bit, which the band pool reads ([`Bands`]: far triangles only take slots no near item will
+/// need), and pattern [`HAZE_PAT`].
+pub const HAZED: u8 = 0x40;
+/// The far shade: light blue and blue in a checker (`poly::PATTERNS`), so a mountain in the haze reads
+/// as a blue silhouette against the light-blue sky and against the green and light-blue haze of the
+/// ground (atmospheric perspective).
+pub const HAZE_PAT: u8 = 7;
+const _: () = assert!(HAZED & SPRITE == 0 && HAZE_PAT < 16);
+
+/// The first depth bucket beyond the fog: exactly the [`HAZED`] triangles' (`depth_key` of `3·FAR`).
+/// [`bin`] takes these nearest first (their order does not matter: one flat shade), so when the pool
+/// is short, the farthest mountains are the ones left out.
+pub const FAR_KEY: u8 = 228;
+const _: () = assert!(192 + (3 * FAR - 6144) / 256 == FAR_KEY as i32 && (3 * FAR - 6144) % 256 == 0 && 3 * FAR % 256 == 0);
+
+/// A face's shade: its own, or [`HAZED`] | [`HAZE_PAT`] beyond the fog (corner depth sum `s`).
+pub fn far_shade(s: i32, shade: u8) -> u8 {
+    if s >= 3 * FAR { HAZED | HAZE_PAT } else { shade }
 }
 
-/// Append a sprite to depth bucket `key` (an item the band pipeline draws in painter's order).
+/// Append a sprite to depth bucket `key` (an item the band pipeline draws in painter's order); `far`: it
+/// competes for the far items' slots ([`Bands`]), as a cloud does.
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.dyn"))]
-pub fn push_sprite(w: &mut Work, left: i16, top: i16, h: u16, wb: u8, block: u32, shift: u8, key: u8) {
+pub fn push_sprite(w: &mut Work, left: i16, top: i16, h: u16, wb: u8, block: u32, shift: u8, key: u8, far: bool) {
     if w.n as usize >= MAX_TRIS {
         w.dropped = w.dropped.saturating_add(1);
         return;
     }
     let i = w.n;
     let x = [left, block as u16 as i16, ((block >> 16) as u16 | (shift as u16) << 8) as i16];
-    w.set_tri(i, &Tri { x, y: [top, h as i16, wb as i16], shade: SPRITE });
+    w.set_tri(i, &Tri { x, y: [top, h as i16, wb as i16], shade: if far { SPRITE | HAZED } else { SPRITE } });
     w.next[i as usize] = w.head[key as usize];
     w.head[key as usize] = i;
     w.n += 1;
@@ -485,10 +525,14 @@ pub fn xform_affine(scene: &[u8], o: &Obj, a: &Affine, v: &mut Verts) {
     }
 }
 
-/// A face's depth bucket: [`depth_key`] of its corners' z sum.
-fn key(v: &Verts, idx: [usize; 3]) -> u8 {
+/// A face's corners' z sum (its [`depth_key`], and [`far_shade`]).
+fn zsum(v: &Verts, idx: [usize; 3]) -> i32 {
     let z = |k: usize| v.get(vert::Z, idx[k]) as i32;
-    depth_key(z(0) + z(1) + z(2))
+    z(0) + z(1) + z(2)
+}
+
+fn key(v: &Verts, idx: [usize; 3]) -> u8 {
+    depth_key(zsum(v, idx))
 }
 
 /// One object's faces (`asm/geom.S` `geo_faces`): faces wholly in front of the near plane are culled and
@@ -502,7 +546,8 @@ pub fn faces(scene: &[u8], o: &Obj, v: &mut Verts, w: &mut Work) {
         if front == 3 {
             let x = idx.map(|i| v.get(vert::SX, i));
             let y = idx.map(|i| v.get(vert::SY, i));
-            push(w, x, y, scene[at + 3], key(v, idx));
+            let s = zsum(v, idx);
+            push(w, x, y, far_shade(s, scene[at + 3]), depth_key(s));
         } else if front > 0 {
             w.clip[w.nclip as usize] = f;
             w.nclip += 1;
@@ -675,12 +720,13 @@ pub fn raster<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> u8 {
 /// Cull one object (a `scene::OBJECT` record) and, if it may be in view, transform and sort it (the
 /// reference for `asm/geom.S` `wobject`).
 #[inline(never)]
-fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], look: &Look, s: [i32; 3], sh: u8, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], look: &Look, s: [i32; 3], g: &GridIn, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+    let sh = g.sh;
     let (yaw, mesh) = (rec[scene::O_YAW], rec[scene::O_MESH] as usize);
     let m = scene::MESHES + mesh * scene::MESH;
     let rad = scene[m + 7];
     let c = object_centre(look, s, sh, rec);
-    if !sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale)) {
+    if !sphere_visible(c, (rad as i32) << 4, pop_depth(rad, look.scale, g.cap)) {
         return;
     }
     st.objects = st.objects.wrapping_add(1);
@@ -709,19 +755,54 @@ fn object<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], rec: &[u8; scene::OBJECT], l
         org: c.map(|x| x as i16),
         m: rot,
     };
+    // A landmark wholly beyond the fog: its silhouette only.
+    let sil = rec[scene::O_LANDMARK] != 0 && c[2] - ((rad as i32) << 4) >= FAR;
     // Far: weak perspective, no divide per vertex.
     if c[2] > (rad as i32) << AFFINE_SHIFT {
         xform_affine(scene, &ob, &affine(&ob), v);
     } else {
         hw.xform(scene, &ob, v);
     }
-    hw.faces(scene, &ob, v, w);
+    if sil {
+        silhouette(&ob, v, w);
+    } else {
+        hw.faces(scene, &ob, v, w);
+    }
+}
+
+/// A distant landmark (a mountain beyond the fog, in one flat haze shade) as one triangle: its leftmost
+/// vertex on screen and its rightmost, and of the others the one making the biggest triangle with them
+/// (the first of equals): the outline's farthest point above that chord. One pool slot instead of a face
+/// per side (`asm/geom.S` `wsil`). (Not simply the top one: banked, a wide mountain's ring end can rise
+/// past its peak, and a triangle on it, or on its neighbour, has little or no area.)
+pub fn silhouette(o: &Obj, v: &Verts, w: &mut Work) {
+    let (sx, sy) = (|i: usize| v.get(vert::SX, i), |i: usize| v.get(vert::SY, i));
+    let (mut l, mut r) = (0, 0);
+    for i in 1..o.nv as usize {
+        if sx(i) < sx(l) {
+            l = i;
+        }
+        if sx(r) < sx(i) {
+            r = i;
+        }
+    }
+    let (mut t, mut best) = (None, 0);
+    for i in 0..o.nv as usize {
+        let a = area([sx(l), sx(i), sx(r)], [sy(l), sy(i), sy(r)]);
+        if i != l && i != r && a > best {
+            (t, best) = (Some(i), a);
+        }
+    }
+    let Some(t) = t else { return };
+    let idx = [l, t, r];
+    let s = zsum(v, idx);
+    push(w, idx.map(sx), idx.map(sy), HAZED | HAZE_PAT, depth_key(s));
 }
 
 /// Stream one cell's objects (directory entry at `DIR_RAM + at`) from the REU into `CELL_RAM` and cull /
 /// draw each.
 #[inline(never)]
-fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, s: [i32; 3], sh: u8, w: &mut Work, v: &mut Verts, st: &mut Stats) {
+fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, s: [i32; 3], g: &GridIn, w: &mut Work, v: &mut Verts, st: &mut Stats) {
     let n = hw.peek(DIR_RAM + at + 2).min(CELL_MAX as u8) as u16;
     if n == 0 {
         return;
@@ -735,7 +816,7 @@ fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, s: [i32;
         for (k, b) in rec.iter_mut().enumerate() {
             *b = hw.peek(p + k as u16);
         }
-        object(hw, scene, &rec, look, s, sh, w, v, st);
+        object(hw, scene, &rec, look, s, g, w, v, st);
         p += scene::OBJECT as u16;
     }
 }
@@ -745,7 +826,8 @@ fn cell<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], at: u16, look: &Look, s: [i32;
 /// apart), the first cell's centre at ground level relative to the camera (`d0`, Q4 world axes), the
 /// cell size (`1 << k`, Q4), the cells' bounding sphere (`r`, Q4: half-diagonal plus padding) and reach
 /// (`far`), how far (`rn`, Q4) an object's centre can be from its cell's, and the shift of the records'
-/// offsets (`sh`: 2 for quarter texels, 4 for whole ones).
+/// offsets (`sh`: 2 for quarter texels, 4 for whole ones); and its objects' cull distance (`cap`, Q4:
+/// [`pop_depth`]'s cap).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GridIn {
     pub dir: u32,
@@ -758,13 +840,17 @@ pub struct GridIn {
     pub far: i16,
     pub rn: i16,
     pub sh: u8,
+    pub cap: i16,
 }
 
 impl GridIn {
     /// The grid of `grid`² cells of `cell_q` (Q4, a power of two) whose directory is at `dir`, within
-    /// `reach` cells of the camera's; `pad`: how far (Q4) beyond its cell an object can reach.
+    /// `reach` cells of the camera's; `pad`: how far (Q4) beyond its cell an object can reach. Its objects
+    /// are culled at [`FAR`] ([`GridIn::far_out`] for the big grid). (Seven arguments: an eighth puts it on
+    /// the C64's soft stack.)
     #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
     pub fn new(look: &Look, dir: u32, grid: usize, cell_q: i32, reach: i32, pad: i32, sh: u8) -> Self {
+        let cap = FAR;
         // Q8 texels → cells.
         let k = cell_q.trailing_zeros();
         let (cu, cv) = (look.u >> (k + 4), look.v >> (k + 4));
@@ -783,11 +869,23 @@ impl GridIn {
             k: k as u8,
             // Half-diagonal (< 0.75 cell) plus the objects' reach and height.
             r: (half + (half >> 1) + pad) as i16,
-            far: (FAR + pad) as i16,
+            far: (cap + pad) as i16,
             // 3/4 of a cell covers the half-diagonal (0.71) with the centres' height (9 texels) too.
             rn: (half + (half >> 1)) as i16,
             sh,
+            cap: cap as i16,
         }
+    }
+
+    /// The same grid, its objects culled at [`FAR_BIG`] instead (its cells' reach moved out with them).
+    #[inline(never)]
+    #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.geomsetup"))]
+    pub fn far_out(mut self) -> Self {
+        if self.nv != 0 {
+            self.far += (FAR_BIG - FAR) as i16;
+        }
+        self.cap = FAR_BIG as i16;
+        self
     }
 }
 
@@ -796,7 +894,7 @@ impl GridIn {
 pub fn grids(look: &Look) -> [GridIn; 2] {
     use crate::format::{BIG_DIR, OBJ_DIR};
     [
-        GridIn::new(look, BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_REACH, 255 * Q, BIG_SHIFT),
+        GridIn::new(look, BIG_DIR, BIG_GRID, BIG_CELL * Q, BIG_REACH, 255 * Q, BIG_SHIFT).far_out(),
         GridIn::new(look, OBJ_DIR, GRID, CELL * Q, REACH, (CELL_PAD + 16) * Q, SHIFT),
     ]
 }
@@ -853,8 +951,8 @@ fn grid<H: Hw + ?Sized>(hw: &mut H, scene: &[u8], look: &Look, gw: &GridWalk, w:
             // Skipped unfetched when even its largest object (radius `rmax`) would pop in nearer than
             // any object of the cell can be.
             let rmax = hw.peek(DIR_RAM + (k << 2) + 3);
-            if sphere_visible(cc, r, g.far as i32) && cc[2] - g.rn as i32 - ((rmax as i32) << 4) <= pop_depth(rmax, look.scale) {
-                cell(hw, scene, k << 2, look, s, g.sh, w, v, st);
+            if sphere_visible(cc, r, g.far as i32) && cc[2] - g.rn as i32 - ((rmax as i32) << 4) <= pop_depth(rmax, look.scale, g.cap) {
+                cell(hw, scene, k << 2, look, s, g, w, v, st);
             }
             c = add(c, gw.eu);
             s = add32(s, gw.su);
@@ -927,10 +1025,15 @@ pub fn push_dynamic<H: Hw + ?Sized>(hw: &mut H, w: &mut Work, v: &mut Verts) {
     use crate::format::frame;
     let n = hw.peek(crate::combat::FXDYN).min(crate::combat::FXDYN_MAX);
     let mut rec = [0u8; crate::format::FRAME_RECORD as usize];
+    // The clouds are listed level; their frame for the horizon's tilt is this many bytes on (their
+    // records share one 64 KiB bank: `format::CLOUDS_DIR`).
+    let tilt = (crate::clouds::angle(rt[0][1], rt[1][1]) as u16).wrapping_sub(crate::clouds::LEVEL as u16).wrapping_mul(crate::format::FRAME_RECORD as u16);
     for i in 0..n as u16 {
         let at = crate::combat::FXDYN + 1 + i * crate::combat::FXDYN_ENTRY;
         let (x, y) = (rd(hw, at), rd(hw, at + 2));
-        let addr = rd(hw, at + 4) as u16 as u32 | (hw.peek(at + 6) as u32) << 16;
+        let key = hw.peek(at + 7);
+        let lo = rd(hw, at + 4) as u16;
+        let addr = (if key == crate::clouds::KEY { lo.wrapping_add(tilt) } else { lo }) as u32 | (hw.peek(at + 6) as u32) << 16;
         crate::hw::read_into(hw, addr, crate::layout::BOUNCE, &mut rec);
         let h = u16::from_le_bytes([rec[frame::H], rec[frame::H + 1]]);
         if h == 0 {
@@ -941,7 +1044,7 @@ pub fn push_dynamic<H: Hw + ?Sized>(hw: &mut H, w: &mut Work, v: &mut Verts) {
         let p = if rec[frame::PHASE_COUNT] == 4 { (left & 3) as usize } else { 0 };
         let ph = frame::PHASES + p * frame::PHASE_LEN;
         let block = rec[ph + 1] as u32 | (rec[ph + 2] as u32) << 8 | (rec[ph + 3] as u32) << 16;
-        push_sprite(w, left, top, h, rec[ph], block, rec[frame::BAND_SHIFT], hw.peek(at + 7));
+        push_sprite(w, left, top, h, rec[ph], block, rec[frame::BAND_SHIFT], key, key == crate::clouds::KEY);
     }
 }
 
@@ -965,7 +1068,9 @@ pub mod walk {
     /// base/eu/ev 3 × i16, s0/su/sv 3 × i32).
     pub const GRIDS: u16 = 30;
     pub const IN_LEN: u16 = 21;
-    pub const GRID_LEN: u16 = IN_LEN + 54;
+    /// After what `wsetup` derives: the grid's [`super::GridIn::cap`].
+    pub const CAP: u16 = IN_LEN + 54;
+    pub const GRID_LEN: u16 = CAP + 2;
     /// out u8: objects drawn, cells streamed.
     pub const OBJECTS: u16 = GRIDS + 2 * GRID_LEN;
     pub const CELLS: u16 = OBJECTS + 1;
@@ -1004,9 +1109,11 @@ pub fn walk_args<H: Hw + ?Sized>(hw: &mut H, at: u16, view: &View) {
         put(hw, &g.far.to_le_bytes());
         put(hw, &g.rn.to_le_bytes());
         put(hw, &[g.sh]);
-        for _ in walk::IN_LEN..walk::GRID_LEN {
+        // (`wsetup` fills these in.)
+        for _ in walk::IN_LEN..walk::CAP {
             put(hw, &[0]);
         }
+        put(hw, &g.cap.to_le_bytes());
     }
     put(hw, &[0, 0]);
 }
@@ -1138,7 +1245,9 @@ pub const POOL: usize = 96;
 pub fn bin(w: &Work) -> ([u8; 256], u16, [[u8; 256]; BANDS], [u8; BANDS]) {
     let (mut order, mut n) = ([0u8; 256], 0u16);
     let (mut bins, mut lens) = ([[0u8; 256]; BANDS], [0u8; BANDS]);
-    for key in (0..256).rev() {
+    // The clouds' bucket (the last: behind everything), then beyond the fog nearest first
+    // ([`FAR_KEY`]: only hazed triangles, one flat shade; the effects stop short of it), then far to near.
+    for key in core::iter::once(255).chain(FAR_KEY as usize..255).chain((0..FAR_KEY as usize).rev()) {
         let mut i = w.head[key];
         while i != NONE {
             let t = w.tri(i);
@@ -1164,22 +1273,37 @@ pub fn bin(w: &Work) -> ([u8; 256], u16, [[u8; 256]; BANDS], [u8; BANDS]) {
 /// `geo_bin` / `geo_activate` / `geo_draw`): a triangle is set up when its first band comes, joins the
 /// active list in painter's order (at most [`POOL`]; the rest are dropped), is walked one row per band
 /// and leaves after its last. Per pixel this is the whole-frame painter's order.
+///
+/// Far items ([`HAZED`]: distant mountains, in the horizon's bands, and the clouds, sprites marked
+/// `SPRITE | HAZED`) come first in painter's order, so they would fill the pool before the near objects
+/// drawn over them. Each band's `cap` counts the slots its near items leave: [`POOL`] less the near items
+/// starting in it or above (as if each stayed to the view's bottom: an over-count, so near items always
+/// find a slot). A far item joins only if every band it spans still has a slot in `cap`, and takes one
+/// in each.
 pub struct Bands {
     order: [u8; 256],
     bins: [[u8; 256]; BANDS],
     lens: [u8; BANDS],
     active: [(u8, Item); POOL],
     n: usize,
-    /// Triangles and sprites set up, and dropped (pool full).
+    cap: [u8; BANDS],
+    /// Triangles and sprites set up, and dropped (pool full); of those, beyond the fog ([`RESERVE`]).
     pub tris: u8,
     pub dropped: u8,
+    pub far_dropped: u8,
 }
 
 impl Bands {
     /// `asm/geom.S` `geo_bin`.
     pub fn new(w: &Work) -> Self {
         let (order, _, bins, lens) = bin(w);
-        Bands { order, bins, lens, active: [(0, Item::default()); POOL], n: 0, tris: 0, dropped: 0 }
+        let mut cap = [0u8; BANDS];
+        let mut near = 0usize;
+        for b in 0..BANDS {
+            near += bins[b][..lens[b] as usize].iter().filter(|&&seq| w.tri(order[seq as usize]).shade & HAZED == 0).count();
+            cap[b] = POOL.saturating_sub(near) as u8;
+        }
+        Bands { order, bins, lens, active: [(0, Item::default()); POOL], n: 0, cap, tris: 0, dropped: 0, far_dropped: 0 }
     }
 
     /// Band `band`'s rows of the active items into the 320-byte row at `row` (`geo_activate`, then
@@ -1191,10 +1315,27 @@ impl Bands {
         let mut new: [(u8, Item); POOL] = [(0, Item::default()); POOL];
         let mut m = 0usize;
         for &seq in &self.bins[band][..self.lens[band] as usize] {
-            let Some(item) = activate(bitmap, &w.tri(self.order[seq as usize])) else { continue };
-            if self.n + m >= POOL {
+            let t = w.tri(self.order[seq as usize]);
+            let Some(item) = activate(bitmap, &t) else { continue };
+            // (A far item, a triangle beyond the fog or a cloud, holds a slot down to its last band.)
+            let end = match &item {
+                Item::Tri(walk) => walk.end,
+                Item::Sprite(s) => s.end,
+            };
+            let far = (t.shade & HAZED != 0).then(|| band..=((end as usize - 1) >> 3).min(BANDS - 1));
+            let room = match &far {
+                Some(span) => span.clone().all(|b| self.cap[b] > 0),
+                None => true,
+            };
+            if !room || self.n + m >= POOL {
                 self.dropped = self.dropped.saturating_add(1);
+                self.far_dropped = self.far_dropped.saturating_add(far.is_some() as u8);
                 continue;
+            }
+            if let Some(span) = far {
+                for b in span {
+                    self.cap[b] -= 1;
+                }
             }
             new[m] = (seq, item);
             m += 1;
@@ -1237,13 +1378,14 @@ impl Bands {
     }
 }
 
-/// All bands of [`Bands`] straight into `bitmap`'s rows: (triangles, dropped).
+/// All bands of [`Bands`] straight into `bitmap`'s rows: (triangles, near items dropped).
 pub fn raster_bands<H: Hw + ?Sized>(hw: &mut H, w: &Work, bitmap: u16) -> (u8, u8) {
     let mut b = Bands::new(w);
     for band in 0..BANDS {
         b.band(hw, w, band, bitmap.wrapping_add(band as u16 * ROW_STRIDE));
     }
-    (b.tris, b.dropped)
+    // (Far triangles left out of a full pool are by design: [`Bands`]. Near ones are failures.)
+    (b.tris, b.dropped - b.far_dropped)
 }
 
 /// An active item of the band pipeline: a set-up triangle or a placed sprite.

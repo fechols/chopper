@@ -592,13 +592,14 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
         out[rec + 8] = lod;
         out[rec + 9] = dist;
     }
-    // File each object under its centre's cell; one that reaches past the padding goes in the big grid.
+    // File each object under its centre's cell; one that reaches past the padding goes in the big grid,
+    // and so does every mountain (a landmark: the big grid is drawn out to `geom::FAR_BIG`).
     // A record holds the offset from the cell's centre: quarter texels in the grid, whole ones in the big
     // grid (`geom::SHIFT`, `geom::BIG_SHIFT`), so positions round to those.
     let mut lists: Vec<Vec<[u8; fmt::OBJECT]>> = vec![Vec::new(); GRID * GRID + BIG_GRID * BIG_GRID];
     for o in objects {
         let r = radius[o.mesh as usize] as i32;
-        let big = r > CELL_PAD;
+        let big = r > CELL_PAD || (mesh::MOUNTAIN..mesh::MOUNTAIN + mesh::MOUNTAINS).contains(&o.mesh);
         assert!(r <= 160, "mesh {} too big for the big grid", o.mesh);
         // units per texel, cells per row, units per cell
         let (per, n, cell) = if big { (1.0, BIG_GRID, BIG_CELL) } else { (4.0, GRID, CELL * 4) };
@@ -614,7 +615,8 @@ pub fn bake_with(meshes: &[Mesh], objects: &[Object]) -> Baked {
         assert!((-128..128).contains(&dy), "object height {}", o.y);
         let at = if big { GRID * GRID + cv as usize * BIG_GRID + cu as usize } else { cv as usize * GRID + cu as usize };
         // Yaw to the nearest quarter turn (`geom::object` turns meshes by quarters only).
-        lists[at].push([off(u, cu), off(v, cv), dy as i8 as u8, o.yaw.wrapping_add(32) & 0xC0, o.mesh, 0, 0, 0]);
+        let landmark = (mesh::MOUNTAIN..mesh::MOUNTAIN + mesh::MOUNTAINS).contains(&o.mesh) as u8;
+        lists[at].push([off(u, cu), off(v, cv), dy as i8 as u8, o.yaw.wrapping_add(32) & 0xC0, o.mesh, landmark, 0, 0]);
     }
     let (mut dir, mut records) = (Vec::new(), Vec::new());
     for l in &lists {

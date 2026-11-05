@@ -9,7 +9,7 @@
 //! ground point; the muzzle flash's is its centre). To draw frame `f` of effect `e` at screen point
 //! (`x`, `y`) (multicolour pixels, lines) with depth key `key`: fetch the record at
 //! `record(e, scale_for(z, HEIGHT_Q4[e]), f)`; `left = x - AX`, `top = y - AY`; phase `p = left & 3`;
-//! then `geom::push_sprite(w, left, top, H, phase[p].WB, phase[p].BLOCK, BAND_SHIFT, key)`.
+//! then `geom::push_sprite(w, left, top, H, phase[p].WB, phase[p].BLOCK, BAND_SHIFT, key, false)`.
 
 use crate::format::{EFFECTS_DIR, FRAME_RECORD};
 

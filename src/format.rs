@@ -17,8 +17,9 @@
 //! | 115 | the HUD: sprite shapes, demo targets (`hud`) |
 //! | 116-117 | the living world: units and sectors, the roles' trees and learned bytes |
 //! | 118 | the moving objects' meshes (`actors`) |
-//! | 119, 120-145 | the effect sprites: frame directory, blocks (`effects`) |
+//! | 119, 120-145 | the effect sprites: frame directory, blocks (`effects`); the clouds' records (`clouds`) in the gap |
 //! | `$BFFF60`-`$D9C0FF` | not in the image: the rotor sound decoded to 8-bit PCM at boot |
+//! | 245-255 | the horizon's cloud sprites: every shape at every roll angle (`clouds`) |
 
 /// 16 MiB REU (C64 Ultimate).
 pub const REU_SIZE: u32 = 16 << 20;
@@ -207,18 +208,30 @@ pub const VEHICLES: u32 = 118 << 16;
 /// The effect sprites (`effects`, baked by `effects_bake`): the frame directory (`FRAME_RECORD` bytes per
 /// frame, `effects::record`) from bank 120 (a 512 KiB region's start), the blocks (each inside one 512
 /// KiB region) from bank 125 up to the rotor sound's ring, then on above it (`EFFECTS_HIGH`) to the end of
-/// the REU. (Bank 119 is free.)
+/// the clouds' blocks (bank 245). (Bank 119 is the sound effects' overlay, `OVERLAY_SFX`.)
 pub const EFFECTS_DIR: u32 = 120 << 16;
 pub const EFFECTS_BLOCKS: u32 = 125 << 16;
 pub const EFFECTS_LOW_END: u32 = AUDIO_PCM - HAAS;
 /// Past the rotor sound's ring.
 pub const EFFECTS_HIGH: u32 = 199 << 16;
 const _: () = assert!(AUDIO_PCM + AUDIO_RING <= EFFECTS_HIGH);
-pub const EFFECTS_BLOCKS_END: u32 = REU_SIZE;
-const _: () = assert!(VEHICLES + 0x10000 <= EFFECTS_DIR && EFFECTS_DIR % REU_BANK == 0);
+/// (The clouds' blocks follow them.)
+pub const EFFECTS_BLOCKS_END: u32 = CLOUDS_BLOCKS;
+/// The horizon's cloud sprites (`clouds`, baked by `clouds::bake`): every shape at every roll angle. Their
+/// frame records sit in the gap between the effects' directory and their blocks (one 512 KiB region);
+/// their blocks fill the REU's last banks.
+pub const CLOUDS_DIR: u32 = (EFFECTS_DIR + crate::effects::DIR_LEN + 0xFF) & !0xFF;
+const _: () = assert!(
+    CLOUDS_DIR + (crate::clouds::SHAPES * crate::clouds::ANGLES) as u32 * FRAME_RECORD <= EFFECTS_BLOCKS
+        && CLOUDS_DIR / REU_BANK == (EFFECTS_BLOCKS - 1) / REU_BANK
+        // (One 64 KiB bank: `geom::push_dynamic` steps between them in 16 bits.)
+        && CLOUDS_DIR >> 16 == (CLOUDS_DIR + (crate::clouds::SHAPES * crate::clouds::ANGLES) as u32 * FRAME_RECORD - 1) >> 16
+);
+pub const CLOUDS_BLOCKS: u32 = 245 << 16;
+pub const CLOUDS_END: u32 = REU_SIZE;
 
 /// The image ends here: upload this much. (The rotor sound's ring in it is zeros until it is decoded.)
-pub const IMAGE_END: u32 = EFFECTS_BLOCKS_END;
+pub const IMAGE_END: u32 = CLOUDS_END;
 
 const _: () = assert!(LEVEL_BANK[1] == 64 && LEVEL_BANK[2] == 64 + 16 && LEVEL_BANK[3] == 80 + 4 && SEA_BANK == 84 + 1);
 

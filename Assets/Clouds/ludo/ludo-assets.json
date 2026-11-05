@@ -1,0 +1,324 @@
+{
+  "assets": [
+    {
+      "file": "anvil_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A single distant cumulonimbus cloud in a 2D side view, centered and fully contained with clear space around it. Its broad, dark, nearly flat base sits beneath a tall tower of densely layered cauliflower-shaped billows. The tower swells upward into a wide, flattened anvil that extends to both sides. Deep charcoal shading under the base and between the lobes contrasts with cool pale highlights along the upper contours, giving the cloud strong, sculpted depth. Isolated against a plain solid light-gray background; no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 1
+    },
+    {
+      "file": "anvil_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A lone cumulonimbus viewed in profile from far away, centered as a compact silhouette with open space around its entire outline. A low, flat, rain-shadowed base supports a massive vertical column of rounded convection lobes, tightly clustered and uneven along the sides. The uppermost billows spread into a broad, level anvil with softly tapered ends. Use a dark slate underside and sharply differentiated gray-white highlights across the upper surfaces to emphasize the imposing height and volume. Plain solid light-gray background, with no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 2
+    },
+    {
+      "file": "anvil_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A single towering thunderstorm cloud shown from a distant side-scrolling viewpoint, isolated in the center of the image. Its long, dark horizontal base is clearly separated from the towering cauliflower-textured column above. Large overlapping billows rise in irregular tiers, narrowing slightly near the top before spreading into a wide, flat anvil. Strong directional light catches selected upper ridges while leaving deep shadows beneath the anvil and between the bulges. Keep the complete cloud silhouette visible with clear margins on a plain solid light-gray background; no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 3
+    },
+    {
+      "file": "anvil_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A centered, distant profile of one cumulonimbus cloud, fully in frame and surrounded by uncluttered space. The cloud has a low, flat, rain-shadowed base, a broad central tower of rounded, densely packed convective lobes, and a wide anvil cap extending horizontally from the summit. Dark charcoal shading defines the lower mass and recessed folds; muted silver highlights trace the upper contours, creating strong light-and-shadow separation without obscuring the cloud’s shape. Place it on a plain solid light-gray background, with no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 4
+    },
+    {
+      "file": "anvil_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A single distant cumulonimbus cloud in a 2D side view, centered and fully contained with clear space around it. Its broad, dark, nearly flat base sits beneath a tall tower of densely layered cauliflower-shaped billows. The tower swells upward into a wide, flattened anvil that extends to both sides. Deep charcoal shading under the base and between the lobes contrasts with cool pale highlights along the upper contours, giving the cloud strong, sculpted depth. Isolated against a plain solid light-gray background; no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 1
+    },
+    {
+      "file": "anvil_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A lone cumulonimbus viewed in profile from far away, centered as a compact silhouette with open space around its entire outline. A low, flat, rain-shadowed base supports a massive vertical column of rounded convection lobes, tightly clustered and uneven along the sides. The uppermost billows spread into a broad, level anvil with softly tapered ends. Use a dark slate underside and sharply differentiated gray-white highlights across the upper surfaces to emphasize the imposing height and volume. Plain solid light-gray background, with no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 2
+    },
+    {
+      "file": "anvil_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A single towering thunderstorm cloud shown from a distant side-scrolling viewpoint, isolated in the center of the image. Its long, dark horizontal base is clearly separated from the towering cauliflower-textured column above. Large overlapping billows rise in irregular tiers, narrowing slightly near the top before spreading into a wide, flat anvil. Strong directional light catches selected upper ridges while leaving deep shadows beneath the anvil and between the bulges. Keep the complete cloud silhouette visible with clear margins on a plain solid light-gray background; no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 3
+    },
+    {
+      "file": "anvil_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_1_1",
+        "prompt": "A single towering cumulonimbus thunderstorm cloud seen from far away at the horizon, side view: a dark, flat, rain-shadowed base, a massive billowing tower of cauliflower convection rising above it, and a wide flat anvil spreading out at the top. Dramatic, menacing, strong light and shadow. The whole cloud fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "82fd297a-a063-43b8-a72f-bd5032ddc44f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:01.634Z",
+      "model": "klimt",
+      "prompt": "A centered, distant profile of one cumulonimbus cloud, fully in frame and surrounded by uncluttered space. The cloud has a low, flat, rain-shadowed base, a broad central tower of rounded, densely packed convective lobes, and a wide anvil cap extending horizontally from the summit. Dark charcoal shading defines the lower mass and recessed folds; muted silver highlights trace the upper contours, creating strong light-and-shadow separation without obscuring the cloud’s shape. Place it on a plain solid light-gray background, with no ground, sky, rain, or lightning.",
+      "variation_set": "745182f8",
+      "variation": 4
+    },
+    {
+      "file": "cluster_still-v1.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "A centered cluster of three distant cumulonimbus cells, with one tall central tower flanked by shorter clouds. Each has a broad, dark, nearly flat base beneath densely layered cauliflower-shaped billows and uneven ragged tops. Pale gray highlights trace the sunlit edges while deep charcoal shadows define the heavy undersides; the tallest cell begins to spread into a compact anvil. Keep the entire cluster isolated with clear space around it on a plain light gray background.",
+      "variation_set": "1e10b5e9",
+      "variation": 1
+    },
+    {
+      "file": "cluster_still-v2.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "Two towering cumulonimbus cells form a compact centered silhouette, one rising higher and beginning to flatten into an anvil toward the side. Their billowing tops have distinct rounded lobes, rough edges, and subtle gray-white highlights against deep slate shading. Broad, dark flat bases anchor the forms, with a narrow gap separating the cells. Present the complete cloud cluster alone on a plain light gray background, leaving generous clear space around it.",
+      "variation_set": "1e10b5e9",
+      "variation": 2
+    },
+    {
+      "file": "cluster_still-v3.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "Three cumulonimbus cells of staggered heights create a wide, centered cluster: a tall billowing tower at one side, a lower mass in the middle, and a second high tower with a slightly spreading anvil. Layered cloud lobes have soft, irregular contours, bright silver-gray edges, and dark, weighty flat bases. Use strong contrast between illuminated upper forms and shaded undersides. Isolate the full cluster on a plain light gray background.",
+      "variation_set": "1e10b5e9",
+      "variation": 3
+    },
+    {
+      "file": "cluster_still-v4.webp",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "A centered pair of distant storm cells, with a broad lower tower beside a taller, sharply rising cumulonimbus whose upper billows begin to spread into a slanted anvil. The cloud tops are uneven and ragged, built from tightly packed rounded lobes; the lower portions merge into dense, nearly black flat bases. Restrained pale highlights pick out selected ridges while strong shadows preserve the heavy silhouette. Keep the entire cluster surrounded by clear space on a plain light gray background.",
+      "variation_set": "1e10b5e9",
+      "variation": 4
+    },
+    {
+      "file": "cluster_still-v1.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "A centered cluster of three distant cumulonimbus cells, with one tall central tower flanked by shorter clouds. Each has a broad, dark, nearly flat base beneath densely layered cauliflower-shaped billows and uneven ragged tops. Pale gray highlights trace the sunlit edges while deep charcoal shadows define the heavy undersides; the tallest cell begins to spread into a compact anvil. Keep the entire cluster isolated with clear space around it on a plain light gray background.",
+      "variation_set": "1e10b5e9",
+      "variation": 1
+    },
+    {
+      "file": "cluster_still-v2.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "Two towering cumulonimbus cells form a compact centered silhouette, one rising higher and beginning to flatten into an anvil toward the side. Their billowing tops have distinct rounded lobes, rough edges, and subtle gray-white highlights against deep slate shading. Broad, dark flat bases anchor the forms, with a narrow gap separating the cells. Present the complete cloud cluster alone on a plain light gray background, leaving generous clear space around it.",
+      "variation_set": "1e10b5e9",
+      "variation": 2
+    },
+    {
+      "file": "cluster_still-v3.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "Three cumulonimbus cells of staggered heights create a wide, centered cluster: a tall billowing tower at one side, a lower mass in the middle, and a second high tower with a slightly spreading anvil. Layered cloud lobes have soft, irregular contours, bright silver-gray edges, and dark, weighty flat bases. Use strong contrast between illuminated upper forms and shaded undersides. Isolate the full cluster on a plain light gray background.",
+      "variation_set": "1e10b5e9",
+      "variation": 3
+    },
+    {
+      "file": "cluster_still-v4.png",
+      "command": "image create",
+      "operation_id": "createImage",
+      "body": {
+        "image_type": "sprite-vfx",
+        "art_style": "Photorealistic 3D",
+        "perspective": "Side-Scroll",
+        "aspect_ratio": "ar_16_9",
+        "prompt": "A cluster of distant thunderstorm clouds seen from far away at the horizon, side view: two or three towering cumulonimbus cells of different heights with dark heavy flat bases, billowing cauliflower towers and ragged tops, one beginning to spread into an anvil. Dramatic, menacing, strong light and shadow. The whole cluster fully in frame and centered with clear space around it, isolated on a plain solid flat bright green background (chroma key), no ground, no sky, no rain, no lightning",
+        "n": 4
+      },
+      "job_id": "52121b06-5564-4ddf-97cd-57a04846366f",
+      "credits": 2,
+      "created_at": "2026-11-05T02:40:05.004Z",
+      "model": "klimt",
+      "prompt": "A centered pair of distant storm cells, with a broad lower tower beside a taller, sharply rising cumulonimbus whose upper billows begin to spread into a slanted anvil. The cloud tops are uneven and ragged, built from tightly packed rounded lobes; the lower portions merge into dense, nearly black flat bases. Restrained pale highlights pick out selected ridges while strong shadows preserve the heavy silhouette. Keep the entire cluster surrounded by clear space on a plain light gray background.",
+      "variation_set": "1e10b5e9",
+      "variation": 4
+    }
+  ]
+}

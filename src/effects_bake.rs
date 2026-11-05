@@ -185,7 +185,12 @@ pub struct Record {
 }
 
 pub fn read_record(reu: &[u8], effect: u8, scale: u8, f: u8) -> Record {
-    let r = &reu[record(effect, scale, f) as usize..][..crate::format::FRAME_RECORD as usize];
+    read_record_at(reu, record(effect, scale, f))
+}
+
+/// The frame record at REU address `at` (an effect's or a cloud's), read back.
+pub fn read_record_at(reu: &[u8], at: u32) -> Record {
+    let r = &reu[at as usize..][..crate::format::FRAME_RECORD as usize];
     let mut phase = [(0, 0, 0); 4];
     for (p, ph) in phase.iter_mut().enumerate() {
         let a = frame::PHASES + p * frame::PHASE_LEN;
@@ -211,7 +216,12 @@ pub fn read_record(reu: &[u8], effect: u8, scale: u8, f: u8) -> Record {
 /// `sprite::sprite_band`, `draw_cols`) into buffer 0's bitmap, once over all-0 bytes and once over
 /// all-$FF bytes, and read it back: a pixel that differs is transparent.
 pub fn draw_back(m: &mut Machine, effect: u8, scale: u8, f: u8, p: u8) -> SpriteImage {
-    let r = read_record(&m.reu, effect, scale, f);
+    draw_back_at(m, record(effect, scale, f), p)
+}
+
+/// [`draw_back`] for the frame record at REU address `at`.
+pub fn draw_back_at(m: &mut Machine, at: u32, p: u8) -> SpriteImage {
+    let r = read_record_at(&m.reu, at);
     let (wb, block, _) = r.phase[p as usize];
     let bitmap = BUFFERS[0].bitmap;
     let (left, top) = (8 + p as i16, 4i16);
