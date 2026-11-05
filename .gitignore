@@ -3,3 +3,4 @@
 /dist
 __pycache__/
 /tools/encode-digital-music/target
+/output
