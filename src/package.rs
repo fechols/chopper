@@ -7,6 +7,16 @@ use crate::layout::{self, BUFFERS, Buffer, LINEBUF, STAGE};
 use crate::model::Machine;
 use crate::world::{self, World};
 
+/// Levels 4 and 5 share their banks' first rows with the scene block and the header, which sit in the
+/// sea around the level: the rows left over must still be sea as far off the map as the ground can show
+/// (the player's farthest at sea, `agent::SEA_LIMIT` and about 200 texels of turn, plus the haze distance).
+const _: () = {
+    let reach = (crate::agent::SEA_LIMIT as u32 + 200 + floor::HAZE_TEXELS as u32) as usize;
+    let (scene_rows, header_rows) = ((SCENE_MAX as u32).div_ceil(256) as usize, (H_BUILD + 4).div_ceil(256) as usize);
+    assert!(scene_rows + (reach >> 4) <= floor::MIP_OFFSET[4] as usize && LEVEL_BANK[4] == SCENE_BANK);
+    assert!(header_rows + (reach >> 5) <= floor::MIP_OFFSET[5] as usize && LEVEL_BANK[5] == HEADER_BANK);
+};
+
 /// The image (only up to [`IMAGE_END`]: everything after is unused for now).
 pub fn bake(world: &World) -> Vec<u8> {
     let mut reu = vec![0u8; IMAGE_END as usize];

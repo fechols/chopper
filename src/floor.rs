@@ -552,6 +552,8 @@ const RMASK: [u8; 5] = [0x00, 0x03, 0x0F, 0x3F, 0xFF];
 
 /// A painted byte: `keep` its ground pixels, `sky` its sky pixels, the rest haze.
 fn patch(fog: &mut Patches, e: u8, keep: u8, sky: u8, haze: u8) {
+    // (`asm/spans.S` `fpush` drops a fifth too; it never comes: `MAX_PATCHES`.)
+    debug_assert!((fog.n as usize) < MAX_PATCHES, "a fifth fog patch at byte {e}");
     if (fog.n as usize) < MAX_PATCHES {
         fog.p[fog.n as usize] = [e, keep, haze & !(keep | sky) | SKY_BYTE & sky];
         fog.n += 1;

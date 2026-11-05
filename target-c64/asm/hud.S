@@ -15,7 +15,7 @@
 ; picture up to 4 pixels either way without showing its edges; at rest the scroll is (REST_X, REST_Y).
 ; The damage shake (hud_shake, once a video frame in row 0): a hit (chopper::combat::player::FLASH rising)
 ; moves the picture by the shake tables for SHAKE_FRAMES frames, and every HUD sprite (and each row's IRQ
-; line) the same distance the other way: the HUD stays with the helmet while the view shakes. The HUD's
+; line) the same distance the other way: the HUD jolts against the view, so the player feels shaken. The HUD's
 ; tables hold positions over the picture at scroll 0; the IRQ adds REST_X (and the shake) to every X.
 
 HUD      = $8B00
