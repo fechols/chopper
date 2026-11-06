@@ -97,3 +97,8 @@ More detail:
 The renderer comes from the same author's mode7 project, which builds on TALON HD. The decision trees
 follow impact's format, and the sound codec comes from sueme64. Clouds and effects are from Ludo.ai
 source art. See [THIRD-PARTY.md](THIRD-PARTY.md).
+
+## License
+
+[MIT](LICENSE). The third-party code and assets listed in [THIRD-PARTY.md](THIRD-PARTY.md) keep their
+own terms.
