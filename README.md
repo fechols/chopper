@@ -5,7 +5,7 @@ being fought, on real C64 hardware (the C64U's 64 MHz turbo and a 16 MB REU).
 
 ![A battle at the treeline: wrecks burning, an explosion, enemy vehicles boxed on the HUD](docs/images/battle.png)
 
-## What it's like
+## Real-time simulation
 
 - **A whole war, not a stage set.** 480 units on both sides, a thousand to two thousand vehicles in
   their platoons, fighting across the island whether you're there or not. Reinforcements come ashore on
@@ -48,20 +48,6 @@ One joystick in port 2 (two buttons), or the keyboard:
 | Missile (at the locked target) | second button | SHIFT |
 | Land | hover over a pad's H | |
 | Lift off | forward | W |
-
-## Coming: the campaign
-
-The enemy has landed on the island's north shore and taken the outposts. One helicopter crew at home
-base is all that's left. Eight missions are in development, played out over the real war:
-
-1. **Shakedown:** a test flight through the gates over each pad, then land.
-2. **Medevac:** land at the field hospital, load the wounded, and get them home inside 4 minutes.
-3. **Recon:** overfly three marked sites under radar and flak.
-4. **Hunter:** stop the convoy before it reaches the enemy HQ.
-5. **Sea Lane:** sink the flotilla off the west coast, then pick up a downed pilot.
-6. **SAM Belt:** take out three SAM sites in the ridge's valleys, using the mountains as cover.
-7. **Gunship Duel:** clear the gunship patrol, then the pair that comes for you.
-8. **Fortress:** the assault on the enemy HQ, its fuel depot and its bunker.
 
 ## Playing it
 
