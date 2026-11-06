@@ -1,6 +1,6 @@
 //! Chopper for the C64 Ultimate: the floor and the 3D objects. The attract-mode helicopter
 //! (`chopper::agent`, shared with the host, run from the AI code overlay) waits on the carrier's deck for
-//! the rotor, lifts off and roams the 2048×2048-texel island, steered by the GOAP-planned decision tree in
+//! the rotor, lifts off and roams the 2048Ã—2048-texel island, steered by the GOAP-planned decision tree in
 //! the REU (`chopper::goap`, `chopper::brain`). Each frame the objects in view
 //! are streamed from the REU, transformed and sorted (`chopper::geom::draw`, `asm/geom.S`); then band by
 //! band every view line is cut into runs (`asm/spans.S`) and drawn by `asm/floor.S`, one REU DMA per
@@ -77,6 +77,8 @@ unsafe extern "C" {
     /// `asm/hud.S`: the HUD's raster IRQ (`chopper::hud`), and `cli`.
     fn hud_irq();
     fn hud_irq_enable();
+    /// `asm/startup.S`: the band code to its pages, under the boot splash's bitmap (`asm/splash.S`).
+    fn chopper_relocate_band();
 }
 
 /// This build's stamp (target-c64/build.rs): `chopper bake --elf` copies it into the image's header
@@ -451,6 +453,10 @@ fn boot(c: &mut C64) -> u16 {
     poke(0xD019, 0xFF);
     poke(0xD01A, 0x01);
     unsafe { hud_irq_enable() };
+    // The splash off (the HUD's IRQ keeps the display bit), then the band code over its bitmap.
+    wait_vblank();
+    poke(0xD011, 0x0B);
+    unsafe { chopper_relocate_band() };
     probes
 }
 
@@ -467,7 +473,7 @@ fn scene_load(c: &mut C64) -> u16 {
 #[unsafe(no_mangle)]
 pub extern "C" fn main() -> i16 {
     let c = &mut C64;
-    poke(0xD011, 0x0B); // display off while booting
+    // (The boot splash stays up till `boot` is done: asm/splash.S.)
     poke(STATUS + status::MAGIC, 0);
     let probes = boot(c);
     // The frame's triangles live at WORK (outside the program image); asm/geom.S reads the scene at

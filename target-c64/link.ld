@@ -11,7 +11,9 @@
  * - Relocated code (copied there at boot by asm/startup.S, whole pages): $0200-$03FF, $8300-$8BFF,
  *   $9B00-$9FFF, $AF00-$B7FF, $BB00-$BEFF, $F800-$FEFF. Boot-only code (`.text.boot`) and the
  *   relocated code's load images sit in $5C00-$82FF, the frame buffer and the scene area, free until
- *   the boot is done. The REU overlays (`.text.ai`, `.text.hud`, .. and asm/stream.S's `.text.stream`)
+ *   the boot is done.
+ * - The boot splash (asm/splash.S), shown in VIC bank 2 while the boot runs: its screen $8C00, colours
+ *   after it (copied to colour RAM in `.init`), bitmap $A000-$BF3F. Loaded with the PRG, then spent. The REU overlays (`.text.ai`, `.text.hud`, .. and asm/stream.S's `.text.stream`)
  *   run at $E000 and are not in the PRG (see `reuimage`); the cockpit overlay (`.text.cockpit`) runs and
  *   loads at $A000 (see `cockpit`).
  * Zero page: the compiler's $02-$7F, fixed.S's $80-$9B, the kernels' $A0-$FF.
@@ -44,12 +46,15 @@ MEMORY {
     boot (rx) : ORIGIN = 0x5C00, LENGTH = 0x2700
     /* Loaded with the PRG, never used: the relocated code is copied over it at boot. */
     gap (r) : ORIGIN = 0x8300, LENGTH = 0x0900
-    /* Free in the PRG (was the AI overlay's load image), between relocated pages. */
+    /* The boot splash's screen and colours (asm/splash.S), between relocated pages. */
     aiload (r) : ORIGIN = 0x8C00, LENGTH = 0x0F00
     gap2 (r) : ORIGIN = 0x9B00, LENGTH = 0x0500
-    /* Free in the PRG (was the cockpit overlay's load image; it is an REU overlay now, `.cocktext`). */
-    cockpit (r) : ORIGIN = 0xA000, LENGTH = 0x0F00
-    gap3 (r) : ORIGIN = 0xAF00, LENGTH = 0x1100
+    /* The boot splash's bitmap, loaded where the VIC shows it (bank 2). The band code's pages ($AF00,
+     * $BB00) are relocated over it only after the boot (asm/startup.S `chopper_relocate_band`). */
+    splashbmp (r) : ORIGIN = 0xA000, LENGTH = 0x2000
+    /* Its link-time address, nowhere: only its load address matters (the overlay windows and the band
+     * code run over $A000-$BEFF, and lld refuses overlapping run addresses). Above `reuimage`. */
+    splashvma (r) : ORIGIN = 0x30000, LENGTH = 0x2000
     /* REU overlays' load images: never in the PRG. `chopper bake --elf` copies each overlay's bytes from
      * the ELF into the REU (format::OVERLAY_AI, OVERLAY_HUD). */
     reuimage (r) : ORIGIN = 0x10000, LENGTH = 0x20000
@@ -137,6 +142,13 @@ SECTIONS {
     OVERLAY 0xF010 : AT (0x28000) {
         .cliptext { *(.text.clip .text.clip.*) }
     } >window3
+    /* The boot splash (asm/splash.S): on screen from `.init` till `video_init`, in VIC bank 2. */
+    .splashscreen : { KEEP(*(.splash.screen)) } >aiload
+    .splashcolors : {
+        __splash_colors = .;
+        KEEP(*(.splash.colors))
+    } >aiload
+    .splashbitmap : { KEEP(*(.splash.bitmap)) } >splashvma AT>splashbmp
     .noinit (NOLOAD) : {
         *(.noinit .noinit.* NULL INIT ZPSAVE)
     } >frames
@@ -214,5 +226,13 @@ OUTPUT_FORMAT {
     FULL(tables)
     FULL(spare)
     FULL(hudblocks)
-    TRIM(boot)
+    FULL(boot)
+    /* On to the boot splash (asm/splash.S): its screen and colours in `aiload`, its bitmap at $A000. */
+    FULL(gap)
+    FULL(aiload)
+    FULL(gap2)
+    TRIM(splashbmp)
 }
+ASSERT(LOADADDR(.splashbitmap) == 0xA000 && SIZEOF(.splashbitmap) == 8000, "the splash's bitmap is not at $A000")
+ASSERT(ADDR(.splashscreen) == 0x8C00 && SIZEOF(.splashscreen) == 1000, "the splash's screen is not at $8C00")
+ASSERT(SIZEOF(.splashcolors) == 1001 && __splash_colors + 1001 <= 0x9B00, "the splash's colours overrun its region")

@@ -1,5 +1,10 @@
 # Chopper
 
+<p align="center">
+  <img src="Assets/Media/Chopper_Box_Cover.png" width="400"
+       alt="Box cover: an attack helicopter over a burning island, armour on the coast road, the carrier offshore">
+</p>
+
 **An open-world combat flight simulator for the Commodore 64 Ultimate.** An island at war, simulated
 whole: hundreds of platoons manoeuvring, fighting and learning in real time, and one attack helicopter
 in the middle of it, yours. It runs on the Commodore 64 Ultimate, using its 64 MHz turbo and its 16 MB virtual REU.

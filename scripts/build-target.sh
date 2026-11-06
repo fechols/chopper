@@ -3,6 +3,8 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+# The committed splash matches its source and converter (standard library only).
+python3 tools/encode-splash.py --verify-assets
 source scripts/env.sh
 native_target="$root/target-c64/target"
 (cd target-c64 && CARGO_TARGET_DIR="$native_target" cargo build --release "$@")

@@ -5,12 +5,21 @@ fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let compiler = env::var("MOS_CLANG").unwrap_or_else(|_| "mos-c64-clang".into());
-    for name in ["startup", "reu", "floor", "poly", "tri", "fixed", "geom", "spans", "blit", "stream", "hud"] {
+    // The boot splash (tools/encode-splash.py), `.incbin`'d by asm/splash.S.
+    let splash_dir = root.join("../Assets/Splash");
+    let splash = splash_dir.join("chopper_splash.bin");
+    println!("cargo:rerun-if-changed={}", splash.display());
+    let image = std::fs::read(&splash).expect("missing Assets/Splash/chopper_splash.bin: run tools/encode-splash.py");
+    assert!(image.len() == 10001 && image[9000..].iter().all(|&c| c < 16),
+            "the splash is 8000 bitmap, 1000 screen and 1000 colour bytes and the background");
+    for name in ["startup", "reu", "floor", "poly", "tri", "fixed", "geom", "spans", "blit", "stream", "hud", "splash"] {
         let source = root.join(format!("asm/{name}.S"));
         println!("cargo:rerun-if-changed={}", source.display());
         let object = out.join(format!("{name}.o"));
         let status = Command::new(&compiler)
-            .args(["-c", "-g", "-o"])
+            .args(["-c", "-g", "-I"])
+            .arg(&splash_dir)
+            .arg("-o")
             .arg(&object)
             .arg(&source)
             .status()
@@ -26,7 +35,13 @@ fn main() {
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|x| x == "S"))
         .collect();
-    let status = Command::new("python3").arg(&audit).args(&sources).status().expect("cannot run python3");
+    let status = Command::new("python3")
+        .arg(&audit)
+        .arg("--include")
+        .arg(&splash_dir)
+        .args(&sources)
+        .status()
+        .expect("cannot run python3");
     assert!(status.success(), "branch audit failed");
     println!("cargo:rerun-if-changed=link.ld");
     // A new build stamp whenever any source changes: `chopper bake --elf` copies it into the image with
@@ -48,7 +63,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,--wrap=__udivsi3");
     // And the u16 divide (`__wrap___udivhi3`: 16 steps; libcrt's is 196 bytes).
     println!("cargo:rustc-link-arg=-Wl,--wrap=__udivhi3");
-    // Likewise the i32 multiply: `__wrap___mulsi3`, up to three 16 × 16 quarter-square products (libcrt's
+    // Likewise the i32 multiply: `__wrap___mulsi3`, up to three 16 Ãƒâ€” 16 quarter-square products (libcrt's
     // `__mulsi3` is then never linked).
     println!("cargo:rustc-link-arg=-Wl,--wrap=__mulsi3");
 }

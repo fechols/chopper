@@ -2,8 +2,8 @@
 
 - `.lowtext`: $0200-$0386 (391 bytes)
 - `.basic_header`: $0801-$080C (12 bytes)
-- `.text`: $080D-$4ABE (17074 bytes)
-- `.rodata`: $4ABF-$4FAA (1260 bytes)
+- `.text`: $080D-$4A74 (17000 bytes)
+- `.rodata`: $4A75-$4F60 (1260 bytes)
 - `.sparetext`: $5680-$59F4 (885 bytes)
 - `.streambss`: $59F5-$5A28 (52 bytes)
 - `.spantext`: $8300-$89ED (1774 bytes)
@@ -38,9 +38,9 @@
 
 ## Free gaps (at least 32 bytes)
 
-- $4FAB-$4FFF: 85 bytes
+- $4F61-$4FFF: 159 bytes
 - $5A29-$5A7F: 87 bytes
 - $C300-$C3FF: 256 bytes
 - $FF4D-$FFF9: 173 bytes
 
-Free in gaps of 32+ bytes: 601 bytes
+Free in gaps of 32+ bytes: 675 bytes

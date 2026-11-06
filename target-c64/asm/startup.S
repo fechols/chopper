@@ -53,10 +53,21 @@ chopper_boot:
     RELOCATE lowtext
     RELOCATE spantext
     RELOCATE victext
-    RELOCATE bandtext
-    RELOCATE bandtext2
     RELOCATE hitext
 3:  nop                 ; (a target inside this section, for tools/branch-audit.py)
+    ; The boot splash (asm/splash.S), up until `video_init`. The band code's pages are under its bitmap:
+    ; they follow after the boot (`chopper_relocate_band`).
+    jsr chopper_splash
+
+; From main.rs once the boot is done and the screen is blanked, before `video_init` fills the frame
+; buffer over these load images (boot-only, like them).
+.section .text.boot.relocate,"ax",@progbits
+.globl chopper_relocate_band
+chopper_relocate_band:
+    RELOCATE bandtext
+    RELOCATE bandtext2
+3:
+    rts
 
 .section .text.chopper_ignore_interrupt,"ax",@progbits
 chopper_ignore_interrupt:

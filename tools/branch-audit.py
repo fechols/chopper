@@ -5,7 +5,7 @@
 
 The llvm-mos assembler silently wraps an out-of-range branch to a label in
 the same section instead of reporting an error, which produces code that
-assembles, links and runs — into the wrong place. The displacement is
+assembles, links and runs â€” into the wrong place. The displacement is
 resolved at assembly time, so the wrapped form cannot be told from a valid
 branch by looking at the object alone. This audit therefore re-assembles each
 source with debug line information and retained local labels, reads the
@@ -33,9 +33,11 @@ numeric_def = re.compile(r"^\s*(\d+):")
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--define", action="append", default=[], metavar="NAME=VALUE",
                     help="assembler definition, matching the production invocation")
+parser.add_argument("--include", action="append", default=[], metavar="DIR",
+                    help="assembler include directory (asm/splash.S's .incbin), matching the production invocation")
 parser.add_argument("sources", nargs="+")
 args = parser.parse_args()
-defines = [f"-Wa,-defsym,{value}" for value in args.define]
+defines = [f"-Wa,-defsym,{value}" for value in args.define] + [f"-I{d}" for d in args.include]
 
 bad = 0
 audited = 0

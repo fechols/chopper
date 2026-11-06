@@ -32,6 +32,7 @@ appendix.) This document describes the game as it is; the code is the authority 
 
 ## Flow
 
+- **Splash:** the box art, from the PRG's first instruction until the first frame (the turbo's start-up, the wait for the REU image with the border flashing, the sound's calibration). A multicolor bitmap in VIC bank 2, background blue (`Assets/Splash/chopper_splash.bin`, made from `Assets/Media/Chopper_splash.png` by `tools/encode-splash.py`, after ../sueme64's): the PRG loads its bitmap at `$A000` and its screen at `$8C00` where the VIC shows them, and `asm/splash.S` copies the colours to colour RAM and turns it on before the CRT runs. Nothing the boot writes lands on it; the band code whose pages are under its bitmap is copied there only after the boot, with the screen blanked (`chopper_relocate_band`). The PRG runs to `$BF40` (46,913 bytes).
 - **Boot:** on the carrier's deck, aft, facing the bow (`Agent::boot`, placed at the first flight; at home if the carrier is gone). The rotor spools up for `LIFT` = 80 s (the sound's 1:20): the tach shows it, the RPM lamp is lit until it is at full power, and nothing lifts off before.
 - **Attract:** the autopilot flies and fights ("The autopilot", below). Any control (the stick, a button, or W A S D, SPACE, SHIFT) takes over: `MODE_PLAYER`, the heading of the moment held as the course.
 - **Hands off:** the copilot (the same pilot, flying to a carrot `CARROT` 256 texels ahead on the course) holds the heading and climbs over what is ahead. The course is retaken whenever left or right is held, and at lift-off.

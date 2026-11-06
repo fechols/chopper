@@ -3,7 +3,8 @@
 code overlay's headroom (`docs/memory.md` is this tool's output).
 
 - Code and data from the ELF (`dist/chopper.elf`): every allocated section at its run address (its VMA;
-  the load images in the boot region are gone after the boot and are not counted).
+  the load images in the boot region are gone after the boot and are not counted, nor is the boot
+  splash's screen and colours at $8C00, asm/splash.S, spent by then).
 - The overlay windows ($E000 and $A000) hold one overlay at a time: listed with each overlay's size against
   the window, not as occupied space.
 - Fixed data areas (`src/layout.rs` and friends), by hand below: keep in step when they move.
@@ -70,6 +71,7 @@ DATA = [
     (0xFF2E, 0xFF4D, 'sfx::HEIGHT, SLEW (the IRQ slews: targets, values), PLACED, HOLD'),
     (0xFFFA, 0x10000, 'vectors'),
 ]
+BOOT_ONLY = ('.boottext', '.splashscreen', '.splashcolors')
 WINDOWS = {0xE000: ('window 1', 0x1800), 0xA000: ('window 2', 0x0F00), 0xF010: ('window 3', 0x07F0)}
 
 
@@ -95,7 +97,7 @@ def main():
     args = ap.parse_args()
     secs = sections(args.elf)
     overlays = [(a, e, n) for a, e, n in secs if any(a == w for w in WINDOWS)]
-    code = [(a, e, n) for a, e, n in secs if (a, e, n) not in overlays and n != '.boottext']
+    code = [(a, e, n) for a, e, n in secs if (a, e, n) not in overlays and n not in BOOT_ONLY]
     used = [0] * 0x10000
     for a, e, n in code + DATA:
         if a in WINDOWS and (a, e, n) in DATA:

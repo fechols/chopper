@@ -1,0 +1,132 @@
+{
+  "format": "chopper-splash-v1",
+  "source": "Chopper_splash.png",
+  "source_sha256": "f3ade4e4cca59efff09e22196badaf8c478e6a2d6c7d2ef61d0519ab470e4e24",
+  "source_size": [
+    1448,
+    1086
+  ],
+  "payload": "chopper_splash.bin",
+  "payload_sha256": "0f55f93da7542ab43ac27ca629a3b45dd5fc400116b7b75a04bd9ea69cadd78c",
+  "layout": {
+    "bitmap_bytes": 8000,
+    "screen_bytes": 1000,
+    "color_bytes": 1000,
+    "background_bytes": 1
+  },
+  "logical_size": [
+    160,
+    200
+  ],
+  "preview_size": [
+    640,
+    480
+  ],
+  "background_index": 6,
+  "palette": {
+    "name": "ultimate-default",
+    "rgb_hex": [
+      "000000",
+      "f7f7f7",
+      "8d2f34",
+      "6ad4cd",
+      "9835a4",
+      "4cb442",
+      "2c29b1",
+      "efef5d",
+      "984e20",
+      "5b3800",
+      "d1676d",
+      "4a4a4a",
+      "7b7b7b",
+      "9fef93",
+      "6d6aef",
+      "b2b2b2"
+    ],
+    "source": "https://github.com/GideonZ/1541ultimate/blob/master/software/u64/u64_config.cc"
+  },
+  "resample": "linear-sRGB Lanczos3; full composition; no tone or saturation adjustment",
+  "method": "spatial",
+  "spatial_refinement": {
+    "seed_strengths": [
+      1.0,
+      0.75,
+      0.5,
+      0.0
+    ],
+    "objective": "squared Oklab after filtering linear RGB",
+    "loss_weights": {
+      "raw": 0.25,
+      "fine": 0.5,
+      "coarse": 0.25
+    },
+    "raw_normalization": "source edge-weight sum",
+    "spatial_normalization": "pixel count",
+    "filters": [
+      {
+        "sigma_xy": [
+          0.6,
+          1.0
+        ],
+        "radius_xy": [
+          1,
+          2
+        ]
+      },
+      {
+        "sigma_xy": [
+          1.2,
+          2.0
+        ],
+        "radius_xy": [
+          2,
+          4
+        ]
+      }
+    ],
+    "boundary": "truncate and renormalize each Gaussian at image edges",
+    "pixel_sweeps_before_palette": 4,
+    "palette_sweeps": 1,
+    "pixel_sweeps_after_palette": 2,
+    "early_stop": "pixel stage stops after a sweep with no accepted move",
+    "minimum_improvement": 1e-12,
+    "linear_rgb_zero_epsilon": 1e-14,
+    "moves": [
+      "legal single-pixel recolor",
+      "legal right/down pixel swap",
+      "replace all occurrences of one local non-background color"
+    ],
+    "tie_break": "first candidate: ascending color index, right swap, down swap",
+    "scan": "alternating forward/reverse raster; row-major palette cells"
+  },
+  "quantization": {
+    "local_triples": 455,
+    "metric": "squared Oklab",
+    "metric_weights": [
+      2.0,
+      1.0,
+      1.0
+    ],
+    "edge_weight": "1 + min(3, 12 * max four-neighbor Oklab distance)",
+    "tie_break": "lowest lexicographic palette indices"
+  },
+  "dither": {
+    "method": "serpentine Floyd-Steinberg",
+    "strength": 1.0,
+    "space": "linear sRGB",
+    "edge_scale": 0.12,
+    "attenuation": "exp(-squared source Oklab distance / edge_scale^2)",
+    "renormalize": false,
+    "gamut": "clip adjusted linear RGB to [0,1] for selection; retain unclipped residual"
+  },
+  "generator": {
+    "script": "tools/encode-splash.py",
+    "script_sha256": "83dea75cadbd5b9bd46fed24483ca196705a4f69deab56abf73b84e3c5da92d7",
+    "script_hash_newlines": "LF",
+    "support_files": {
+      "tools/splash_spatial.py": "5efeb3ceffc869a58a355a9e5518ade9f4b2368ef45d1b0799a0ee245a5bc1e9"
+    },
+    "numpy": "2.5.1",
+    "pillow": "12.3.0"
+  }
+}
