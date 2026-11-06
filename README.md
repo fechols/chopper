@@ -2,7 +2,7 @@
 
 **An open-world combat flight simulator for the Commodore 64 Ultimate.** An island at war, simulated
 whole: hundreds of platoons manoeuvring, fighting and learning in real time, and one attack helicopter
-in the middle of it, yours. It runs on real C64 hardware, the C64U's 64 MHz turbo and its 16 MB REU.
+in the middle of it, yours. It runs on the Commodore 64 Ultimate, using its 64 MHz turbo and its 16 MB virtual REU.
 
 ![A battle at the treeline: wrecks burning, an explosion, enemy vehicles boxed on the HUD](docs/images/battle.png)
 
@@ -86,7 +86,7 @@ Height is the pilot's: it holds cruise and climbs over whatever is ahead.
 
 ## Playing it
 
-You need a **C64 Ultimate** with its **16 MB REU** enabled. Prebuilt releases aren't published yet, so
+You need a **Commodore 64 Ultimate** with its **16 MB virtual REU** enabled. Prebuilt releases aren't published yet, so
 build from source (below), then:
 
 ```
