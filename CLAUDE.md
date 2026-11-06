@@ -49,10 +49,12 @@ Windows host; the C64 toolchain lives in WSL (Ubuntu-24.04, rust-mos + llvm-mos 
   1. `cargo build --release` (host), C64 build, bake;
   2. `python tools/overlay_calls.py`, `python tools/memmap.py`;
   3. `python tools/emu.py --frames 6`, `--frames 6 --doubled-after 3 --full-after 5`, and
-     `--frames 6 --start 9300` (the heavy scene; catches overruns the early ticks don't);
+     `--frames 6 --start 12400` (a heavy scene, 155-165 triangles; catches overruns the early ticks don't.
+     The war's course moves with any change to units or fights: re-pick it with `chopper frame --tick N`'s
+     triangle count when it goes quiet);
   4. the asm checks touched: `tools/test_fixed.py`, `test_tri.py`, `test_poly.py`, `test_blit.py`,
      `test_hud_irq.py`, `test_audio.py`.
-- **Profiling:** `python tools/profile.py --start 9300 --mode doubled [--render|--setup]`.
+- **Profiling:** `python tools/profile.py --start 12400 --mode doubled [--render|--setup]`.
 - **Hardware (C64U, default 192.168.66.178 or `C64U_HOST`):** `python tools/c64u.py config` (applies
   `config/chopper.cfg`), `upload-reu dist/chopper.reu`, `run dist/chopper.prg`, `status`.
   `tools/c64u_audio.py` records the C64U's audio stream (`--hrtf`/`--wav` analyse the effects' placing).

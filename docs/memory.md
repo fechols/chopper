@@ -16,14 +16,14 @@
 ## Overlays (one at a time in their window)
 
 - window 1 $E000: `.worldtext` 6132 of 6144 bytes, 12 free
-- window 1 $E000: `.world2text` 6095 of 6144 bytes, 49 free
+- window 1 $E000: `.world2text` 6096 of 6144 bytes, 48 free
 - window 1 $E000: `.sfxtext` 6085 of 6144 bytes, 59 free
-- window 1 $E000: `.aitext` 6075 of 6144 bytes, 69 free
+- window 1 $E000: `.aitext` 6080 of 6144 bytes, 64 free
 - window 1 $E000: `.fxtext` 5945 of 6144 bytes, 199 free
 - window 1 $E000: `.actorstext` 5837 of 6144 bytes, 307 free
 - window 1 $E000: `.sfxengtext` 5773 of 6144 bytes, 371 free
 - window 1 $E000: `.geomtext` 5684 of 6144 bytes, 460 free
-- window 1 $E000: `.squadtext` 5643 of 6144 bytes, 501 free
+- window 1 $E000: `.squadtext` 5671 of 6144 bytes, 473 free
 - window 1 $E000: `.combattext` 5307 of 6144 bytes, 837 free
 - window 1 $E000: `.hudtext` 4453 of 6144 bytes, 1691 free
 - window 1 $E000: `.world3text` 3160 of 6144 bytes, 2984 free

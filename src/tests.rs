@@ -1952,7 +1952,8 @@ fn the_deck_carries_the_helicopter_until_it_lifts_off() {
     assert!(moved > 40, "the carrier moved only {moved} texels");
     // Still aft on the deck, facing the bow, on top of it.
     let (du, dv) = ((a.u >> 4) - d.u as i32, (a.v >> 4) - d.v as i32);
-    let back = (crate::camera::sin(d.yaw) * -64 >> 14, crate::camera::cos(d.yaw) * -64 >> 14);
+    let aft = -(crate::agent::DECK_AFT as i32);
+    let back = (crate::camera::sin(d.yaw) * aft >> 14, crate::camera::cos(d.yaw) * aft >> 14);
     assert!((du - back.0).abs() <= 2 && (dv - back.1).abs() <= 2, "on the deck at ({du}, {dv}), not ({}, {})", back.0, back.1);
     assert_eq!((a.yaw, a.h), (d.yaw, crate::agent::DECK_EYE + DECK_TOP));
     // The rotor up to speed: off it and away.
@@ -3761,13 +3762,13 @@ fn engines_give_way_only_to_near_sounds_of_note() {
 fn nothing_draws_into_the_hidden_column_39() {
     // Bitmap column 39 never shows in the 38-column window (`layout::DRAWN_COLS`): the floor, the
     // triangles, the sprites, the band publish and the cockpit's gauges must leave it alone. A sentinel
-    // in every cell row's column 39, then whole frames (ground, lift-off, a heavy one; full and doubled).
+    // in every cell row's column 39, then whole frames (ground, lift-off, a heavy one (re-pick it with the emu gate's, CLAUDE.md); full and doubled).
     use crate::hw::Hw;
     use crate::layout::{DRAWN_COLS, ROW_STRIDE, ROWS};
     let reu = package();
     let bitmap = BUFFERS[0].bitmap;
     let col39 = |r: u16, l: u16| bitmap + r * ROW_STRIDE + DRAWN_COLS * 8 + l;
-    for t in [0, crate::agent::LIFT + 200, 9300, 9315] {
+    for t in [0, crate::agent::LIFT + 200, 12400, 12415] {
         for doubled in [false, true] {
             let mut m = Machine::new(reu);
             crate::package::setup(&mut m, BUFFERS[0]);
@@ -4070,7 +4071,7 @@ fn the_clouds_are_drawn_first_and_cost_only_far_triangles() {
         let scene = crate::package::scene_block(reu);
         crate::package::render_floor(&mut m, crate::layout::BUFFERS[0], &scene, &cam, Lines::Full)
     };
-    for t in [600u32, 6000, 7800, 9300] {
+    for t in [600u32, 6000, 7800, 12400] {
         let (with, without) = (render(t, true), render(t, false));
         assert!(with.tris > without.tris, "tick {t}: no cloud drawn");
         assert_eq!(with.dropped, without.dropped, "tick {t}: the clouds cost near slots");

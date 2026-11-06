@@ -82,6 +82,13 @@ pub fn normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 }
 
 impl Mesh {
+    /// Every vertex `s` times as far from the origin (the faces' shades, from their normals, hold).
+    pub fn scale(&mut self, s: f32) {
+        for v in self.verts.iter_mut() {
+            *v = v.map(|c| c * s);
+        }
+    }
+
     /// The bounding radius about the origin, whole texels rounded up, plus one.
     pub fn radius(&self) -> u8 {
         self.verts.iter().map(|v| dot(*v, *v).sqrt()).fold(0f32, f32::max).ceil() as u8 + 1
@@ -339,9 +346,10 @@ pub fn objects(world: &crate::world::World) -> Vec<Object> {
 
 /// The moving objects' meshes (`actors::kind`), each in the enemy's colours then the allies'
 /// (`actors::mesh_of`), then each kind's wreck (`actors::wreck_of`): modelled facing +v (yaw 0 is north),
-/// in texels, at most 18 faces each (the carrier's hull and island).
+/// in texels, at most 18 faces each (the carrier's hull and island); then drawn `actors::UNIT_SCALE`
+/// times that, all but the projectiles.
 pub fn vehicles() -> Vec<Mesh> {
-    use crate::actors::kind;
+    use crate::actors::{UNIT_SCALE, kind, mesh_of, wreck_of};
     let mut out = Vec::new();
     for k in 0..kind::COUNT {
         for mat in [Material::Enemy, Material::Allied] {
@@ -352,6 +360,12 @@ pub fn vehicles() -> Vec<Mesh> {
         out.push(wreck(k));
     }
     out.push(deck());
+    let shot = [kind::TRACER, kind::MISSILE].map(|k| [mesh_of(k, 0), mesh_of(k, 1), wreck_of(k)]).concat();
+    for (i, m) in out.iter_mut().enumerate() {
+        if !shot.contains(&(i as u8)) {
+            m.scale(UNIT_SCALE as f32);
+        }
+    }
     out
 }
 
@@ -389,8 +403,8 @@ pub fn far(k: u8, m: &Mesh, mat: Material) -> Option<Mesh> {
 }
 
 /// The carrier's flight deck (`actors::DECK`, drawn with a live carrier): seven strips across, light and
-/// dark in turn, each 2 texels long, so that from on the deck the strips ahead stay in front of the near
-/// plane (`geom::NEAR`: faces crossing it are left out).
+/// dark in turn, each 2 texels long as modelled (`actors::UNIT_SCALE` times that drawn; a strip crossing the
+/// near plane is cut there, `geom::clip`).
 fn deck() -> Mesh {
     let mut m = Mesh::default();
     for k in 0..7 {

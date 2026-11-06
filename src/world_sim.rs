@@ -422,10 +422,11 @@ pub struct Deck {
     pub yaw: u16,
 }
 
-/// The deck's top above the sea (8.8 texels: the hull's 1.2, `scene::vehicle`), and the half-width and
-/// half-length one can land on (1/16 texel).
-pub const DECK_TOP: i32 = 307;
-pub const DECK_HALF: (i16, i16) = (27, 104);
+/// The deck's top above the sea (8.8 texels: the hull's modelled 1.2, `scene::vehicle`, times
+/// `actors::UNIT_SCALE` as drawn), and the half-width and half-length one can land on (1/16 texel: 1.7
+/// and 6.5 as modelled, scaled likewise).
+pub const DECK_TOP: i32 = 307 * crate::actors::UNIT_SCALE as i32;
+pub const DECK_HALF: (i16, i16) = (27 * crate::actors::UNIT_SCALE, 104 * crate::actors::UNIT_SCALE);
 
 /// The carrier's deck at tick `now`, if it is afloat.
 #[inline(never)]

@@ -53,6 +53,12 @@ pub const fn wreck_of(kind: u8) -> u8 {
 /// The mesh table's records: blob offset u16, blob length u8, the far mesh (0: none), vertices, faces,
 /// shift, radius (`scene::vehicle_bank`).
 pub const MESH_RECORD: usize = 8;
+/// How much larger the units are drawn than they are modelled (`scene::vehicles`): at their modelled 1-2
+/// texels they were a few pixels at fighting range, too small to see as targets. The sizes that follow
+/// the drawn units are the modelled ones times this: the carrier's deck (`world_sim::DECK_TOP`,
+/// `DECK_HALF`, `agent::DECK_AFT`), the formations' spacing (`squad::half`), the wrecks' smoke.
+/// Projectiles keep their size.
+pub const UNIT_SCALE: i16 = 2;
 /// Units further out than this along the view (Q4: 48 texels, where they are a few pixels across) are
 /// drawn with their far mesh (`scene::far`).
 pub const LOD_Z: i32 = 48 * 16;

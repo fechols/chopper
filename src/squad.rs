@@ -74,15 +74,22 @@ pub fn shape(kind: usize, action: u8) -> u8 {
     }
 }
 
-/// Half a spacing ahead along heading `yaw` (1/16 texel, u and v): by class, ground 1.5 texels, air 2.5,
-/// sea 3.
+/// Half a spacing (1/16 texel): by class, ground 1.5 texels, air 2.5, sea 3, times
+/// `actors::UNIT_SCALE` as the units are drawn (ground 3, air 5, sea 6: a truck is 3.6 long).
+#[inline(always)]
+pub fn half(kind: usize) -> i16 {
+    crate::actors::UNIT_SCALE
+        * match stats::CLASS[kind] {
+            2 => 40,
+            4 => 48,
+            _ => 24,
+        }
+}
+
+/// Half a spacing ([`half`]) ahead along heading `yaw` (1/16 texel, u and v).
 #[inline(always)]
 pub fn basis(kind: usize, yaw: u16) -> (i16, i16) {
-    let sp: i16 = match stats::CLASS[kind] {
-        2 => 40,
-        4 => 48,
-        _ => 24,
-    };
+    let sp = half(kind);
     (crate::fixed::mul14(crate::camera::sin(yaw) as i16, sp), crate::fixed::mul14(crate::camera::cos(yaw) as i16, sp))
 }
 
@@ -162,14 +169,14 @@ pub fn expand<H: Hw + ?Sized>(hw: &mut H, now: u16, pu: i16, pv: i16, yaw: u16) 
         let d = ((ws::dist(dx, dy) >> 1).min(255) as u8).saturating_add(back);
         if flags & ALIVE == 0 {
             put(hw, ws::vehicle(id, ws::WRECK_MEMBER), crate::actors::wreck_of(kd), y8, u, v, h, d);
-            // A wreck: its smoke column, while it lasts (rising from a texel and a half up: the wreck
-            // shows under it).
+            // A wreck: its smoke column, while it lasts (rising from a texel and a half up, times
+            // `actors::UNIT_SCALE` as the wreck is drawn: the wreck shows under it).
             let age = now.wrapping_sub(u16::from_le_bytes([r[16], r[17]]));
             if age < ws::WRECK_TICKS && wrecks < WRECK_MAX {
                 let w = WRECKS + 1 + wrecks as u16 * WRECK_ENTRY;
                 wr(hw, w, u);
                 wr(hw, w + 2, v);
-                wr(hw, w + 4, h + 24);
+                wr(hw, w + 4, h + 24 * crate::actors::UNIT_SCALE as u16);
                 wr(hw, w + 6, age);
                 wrecks += 1;
             }
@@ -257,13 +264,10 @@ mod plat {
 }
 
 /// How far (texels / 2) a member of a platoon of `kind` can be from its place, per member: its half
-/// spacing (`basis`) in texels, and a little over for `ws::dist`'s overestimate.
+/// spacing ([`half`]) in texels, and one more for `ws::dist`'s overestimate.
 #[inline(always)]
 fn spacing(kind: usize) -> u8 {
-    match stats::CLASS[kind] {
-        2 | 4 => 3,
-        _ => 2,
-    }
+    (half(kind) >> 4) as u8 + 1
 }
 
 /// The farthest listed vehicle's distance (texels / 2): 255 while the list has room.

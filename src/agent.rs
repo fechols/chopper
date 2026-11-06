@@ -30,6 +30,9 @@ pub const EYE: i32 = 128;
 /// below the view's bottom edge and the deck fills the view down to it (the pad is floor texture, drawn
 /// to the edge at any height).
 pub const DECK_EYE: i32 = 288;
+/// Where a helicopter placed on the carrier starts: this far aft of the deck's middle (1/16 texel: 4
+/// texels of the modelled 14-texel deck, times `actors::UNIT_SCALE` as drawn).
+pub const DECK_AFT: i16 = (4 << 4) * crate::actors::UNIT_SCALE;
 /// The home pad (`world::PADS[0]`), texels.
 pub const HOME: (i32, i32) = (1024, 760);
 /// The soft boundary at sea, texels beyond the map's edge: the caution lamp (`cockpit::lamp::SEA`) past
@@ -333,7 +336,7 @@ impl Agent {
         *self = Agent { t: self.t, ..Self::new() };
         if on_carrier {
             if let Some(d) = deck_of(&carrier_record(reu), self.t as u16) {
-                (self.deck, self.du, self.dv, self.dyaw) = (ON_DECK, 0, -(4 << 4), 0);
+                (self.deck, self.du, self.dv, self.dyaw) = (ON_DECK, 0, -DECK_AFT, 0);
                 self.ride(&d);
             }
         }
