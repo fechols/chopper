@@ -953,6 +953,12 @@ fn the_gauges_read_the_flight() {
         } else {
             assert_eq!(r[RPM], TACH_FRAMES as u8 - 1, "tick {}: the rotor is at 100% from the lift", a.t);
             assert_eq!(r[WARN] & lamp::RPM, 0);
+            // AP is the autopilot's: lit airborne, and off the moment the player takes the aircraft.
+            assert_eq!(r[WARN] & lamp::AP != 0, a.grounded == 0, "tick {}", a.t);
+            let mut p = *a;
+            p.take_over();
+            readings(&p, &mut r);
+            assert_eq!(r[WARN] & lamp::AP, 0, "tick {}: AP lit under the player", a.t);
         }
     }
     for g in [ASI, ATT, ALT, HDG, VSI] {
@@ -1972,11 +1978,12 @@ fn the_sea_lamp_warns_and_the_autopilot_turns_back() {
     (a.t, a.u, a.v, a.h, a.yaw, a.grounded) = (LIFT + 100, 1900 << 8, 1024 << 8, EYE + ((CRUISE as i32) << 8), 0x4000, 0);
     (a.mode, a.throttle, a.vf) = (MODE_PLAYER, THROTTLE_MAX, 8192);
     a.dyaw = (a.yaw >> 8) as u8;
-    let lamp_on = |a: &Agent| {
+    let warn = |a: &Agent| {
         let mut k = [0u8; gauge::COUNT];
         readings(a, &mut k);
-        k[gauge::WARN] & lamp::SEA != 0
+        k[gauge::WARN]
     };
+    let lamp_on = |a: &Agent| warn(a) >= lamp::SEA;
     assert!(!lamp_on(&a), "the lamp over the map");
     let (mut warned, mut taken, mut far, mut held) = (false, false, 0i16, 0u32);
     // The stick forward and fire held (`main.rs`: fire hands the player the controls every frame), until
@@ -1990,7 +1997,12 @@ fn the_sea_lamp_warns_and_the_autopilot_turns_back() {
         if a.mode == MODE_AUTO {
             assert!(warned, "taken over without the lamp first");
             assert_eq!((a.wu, a.wv), (HOME.0 as i16, HOME.1 as i16), "for home");
+            // The autopilot's: SEA with AP.
+            assert_eq!(warn(&a), lamp::SEA_AP, "{} texels out", a.off_map());
             taken = true;
+        } else if warned {
+            // The player's: SEA alone, no AP.
+            assert_eq!(warn(&a), lamp::SEA, "{} texels out", a.off_map());
         }
         held += 4 * taken as u32;
         far = far.max(a.off_map());

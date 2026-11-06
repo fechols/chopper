@@ -200,10 +200,12 @@ pub const OVERLAY_MAX: u32 = 0x1800;
 pub const COCKPIT: u32 = 109 << 16;
 const _: () = assert!(OVERLAYS + 0x10000 <= COCKPIT);
 
-/// The HUD (`hud`): its sprite shapes (64 bytes each), then the demo targets.
-pub const HUD_SHAPES: u32 = 115 << 16;
+/// The HUD (`hud`): its sprite shapes (64 bytes each), then the demo targets. (After the cockpit's frames,
+/// which fill its banks and one frame over.)
+pub const HUD_SHAPES: u32 = (115 << 16) + 0x200;
 pub const HUD_TARGETS: u32 = HUD_SHAPES + 0x8000;
 const _: () = assert!(crate::cockpit::END <= HUD_SHAPES && (crate::hud::shape::COUNT as u32) << 6 <= HUD_TARGETS - HUD_SHAPES);
+const _: () = assert!(HUD_TARGETS + (1 + crate::hud::TARGETS * crate::hud::TARGET) as u32 <= WORLD);
 
 /// The living world (`world_sim`): units and sectors (116), the roles' trees with their learned bytes
 /// (117). The moving objects' meshes (`actors`, `scene::vehicle_bank`): 118.

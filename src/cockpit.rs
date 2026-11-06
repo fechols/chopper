@@ -45,7 +45,7 @@ pub const WIDE: [u8; gauge::COUNT] = [6, 6, 6, 19, 6, 6, 6];
 /// The lamps' cells in the strip: lamp `i` from column `5 i`, `LAMP_WIDE` wide.
 pub const LAMP_WIDE: u8 = 4;
 /// Frames baked per gauge (`readings` returns `0..FRAMES[g]`).
-pub const FRAMES: [u16; gauge::COUNT] = [64, ATT_ROLLS * ATT_PITCHES, 3 * 64, 9, TACH_FRAMES, 128, 41];
+pub const FRAMES: [u16; gauge::COUNT] = [64, ATT_ROLLS * ATT_PITCHES, 3 * 64, 10, TACH_FRAMES, 128, 41];
 /// Attitude frames: roll index × `ATT_PITCHES` + pitch index.
 pub const ATT_ROLLS: u16 = 25;
 pub const ATT_PITCHES: u16 = 10;
@@ -62,15 +62,17 @@ pub mod lamp {
     pub const RPM: u8 = 1;
     /// Airborne under `LOW_ALT`.
     pub const LOW_ALT: u8 = 2;
-    /// The autopilot flying (off the pad).
+    /// The autopilot flying (off the pad; dark while the player has the aircraft, `agent::MODE_PLAYER`).
     pub const AP: u8 = 4;
-    /// Far out to sea (`agent::SEA_WARN` beyond the map): turn back, or the autopilot will. One frame of
-    /// its own, 8 (the cockpit's REU banks have room for one more): out there the rotor is up and the
-    /// helicopter airborne, so it shows with AP lit, and in place of the low-altitude lamp.
+    /// Far out to sea (`agent::SEA_WARN` beyond the map): turn back, or the autopilot will. Two frames of
+    /// its own, in place of the others (out there the rotor is up and the helicopter airborne): 8 alone,
+    /// the player still flying; `SEA_AP` with AP, the autopilot turning back (past `agent::SEA_LIMIT`).
+    /// The frames run to the HUD's shapes (`format::HUD_SHAPES`): no room for more.
     pub const SEA: u8 = 8;
+    pub const SEA_AP: u8 = SEA + 1;
     /// The lamps lit in frame `k`.
     pub const fn lit(k: u8) -> u8 {
-        if k == SEA { SEA | AP } else { k }
+        if k == SEA_AP { SEA | AP } else { k }
     }
 }
 /// Altitude (8.8 texels over the pad's eye height) the low-altitude lamp comes on below.
@@ -163,13 +165,15 @@ pub fn readings(a: &Agent, out: &mut [u8; gauge::COUNT]) {
         lamps |= lamp::RPM;
     }
     if a.grounded == 0 {
-        lamps |= lamp::AP;
+        if a.mode == crate::agent::MODE_AUTO {
+            lamps |= lamp::AP;
+        }
         if alt < LOW_ALT {
             lamps |= lamp::LOW_ALT;
         }
     }
     if a.off_map() > crate::agent::SEA_WARN {
-        lamps = lamp::SEA;
+        lamps = if lamps & lamp::AP != 0 { lamp::SEA_AP } else { lamp::SEA };
     }
     out[WARN] = lamps;
     // The dual tach follows the start-up sound to 100% at the lift.

@@ -8,9 +8,9 @@
 //! - [`ROUTES`]: roads, sea lanes and air patrols as waypoint lists (baked by `war`).
 //! - [`HEADER`]: the next page, the director's wave clock and budgets, each side's units alive.
 //!
-//! Each frame [`step_page`] pages [`PAGE`] records into RAM ([`PAGE_RAM`]: two halves, free during the
-//! set-up) and runs one of two phases over them, each its own code overlay, in turn (round-robin: one
-//! overlay a frame):
+//! Every other frame (the gauges take the others, [`TURN`]) [`step_page`] pages [`PAGE`] records into
+//! RAM ([`PAGE_RAM`]: two halves, free during the set-up) and runs one of three phases over them, each
+//! its own code overlay, in turn (round-robin: one overlay a turn):
 //! - **move** (`.text.world`): along its route since its last step, its sector's counts kept, listed if
 //!   near the player; a dead unit respawned if its side has reinforcements due;
 //! - **decide** (`.text.world3`): it learns from what its last moves brought (damage dealt minus taken)
@@ -18,7 +18,8 @@
 //! - **fight** (`.text.world2`): it represents its side in its sector and, if it chose to attack, fires
 //!   at the other side's representative there by dice; the director, once round the file.
 //!
-//! So every unit moves, decides and fights about every two seconds: a human reaction time, by design.
+//! So every unit moves, decides and fights once a lap of 31 turns, 62 frames: about two seconds at 30
+//! frames a second (a human reaction time, by design), longer at the C64U's frame rates.
 //! Units near the player are listed in [`NEAR`] for the actors (drawn and, later, fought up close).
 
 use crate::format::WORLD;
@@ -113,7 +114,8 @@ pub const PING_PONG: u8 = 0;
 pub const LOOP: u8 = 1;
 
 /// The header: next page (u16), the wave clock (u16 ticks), per side: wave budget (u8 × 2), alive (u16 ×
-/// 2), units lost (u16 × 2); then each pad's owner (`world::PADS`, a side).
+/// 2), units lost (u16 × 2); then each pad's owner (`world::PADS`, a side), the knobs, each pad's pressure,
+/// the carrier, each pad's sector.
 pub mod head {
     pub const CURSOR: u16 = 0;
     pub const WAVE: u16 = 2;
@@ -128,17 +130,21 @@ pub mod head {
     pub const PRESSURE: u16 = 26;
     /// The carrier's unit id (u16; its deck is a landing place, `carrier`).
     pub const CARRIER: u16 = 32;
+    /// Per pad: its sector (baked by `war::bake` from `world::PADS`, which the C64 doesn't have): where
+    /// `front` counts the sides for it.
+    pub const PAD_SECTOR: u16 = 34;
 }
-pub const HEADER_LEN: u16 = 34;
+pub const HEADER_LEN: u16 = 39;
 /// The pads (`world::PADS`; `war` checks the count).
 pub const PADS: u16 = 5;
-const _: () = assert!(head::OWNER + PADS <= HEADER_LEN);
+const _: () = assert!(head::PAD_SECTOR + PADS <= HEADER_LEN);
 
 /// The front: each side's road to the enemy (`FRONT_ROUTE`) runs through pads (a waypoint's pad, plus
 /// one, in its u's top bits: `PAD_SHIFT`). The director ends each road at the first pad the other side
-/// holds; a pad whose sector holds enough of the other side changes
-/// hands (`CAPTURE` or more, and more than the owner's, for `HOLD_PASSES` passes in a row). Reinforcements on a front road arrive at
-/// its last pad before the front (the defender's short supply line). So the front walks, both ways.
+/// holds; a pad (any but home, on a road or not: `head::PAD_SECTOR`) whose sector holds enough of the
+/// other side changes hands (`CAPTURE` or more, and more than the owner's, for `HOLD_PASSES` passes in a
+/// row). Reinforcements on a front road arrive two waypoints short of the front (the defender's short
+/// supply line, outside the fight for the pad). So the front walks, both ways.
 pub const FRONT_ROUTE: [u8; 2] = [2, 3];
 pub const PAD_SHIFT: u16 = 12;
 pub const CAPTURE: u8 = 2;
@@ -164,7 +170,8 @@ pub const NEAR: u16 = crate::layout::GAUGES + crate::cockpit::gauge::COUNT as u1
 pub const NEAR_MAX: u8 = 12;
 
 /// The most ticks a unit's move (and `live`'s projection of it) catches up at once: longer than a lap of
-/// the war on the C64 (31 frames of several ticks), so the carrier's deck never stalls between its moves.
+/// the war on the C64 (31 turns on alternate frames: 62 frames of several ticks), so the carrier's deck
+/// never stalls between its moves.
 pub const CATCH_UP: u16 = 1023;
 /// The map's far edge, 1/16 texel (units stay on it).
 const EDGE: i16 = 2047 << 4;
@@ -661,8 +668,8 @@ fn decide_unit<H: Hw + ?Sized>(hw: &mut H, slot: u16) {
 
 /// Friends in its sector (itself among them) a unit fallen back waits for before it goes back in.
 pub const RALLY: u8 = 4;
-/// Its chance in 256, each decision (about every 31 frames: a lap of the page file), of going back in
-/// without them: about 1 in 8, so a straggler alone waits about 30 s, not for good.
+/// Its chance in 256, each decision (every 31 turns, 62 frames: a lap of the page file), of going back
+/// in without them: about 1 in 8, so a straggler alone waits about 30 s at 30 fps, not for good.
 pub const BORED: u8 = 32;
 
 /// A decision (`brain::unit`) as acted on (`act`), and whether as the brain chose it (to learn from). A
@@ -778,10 +785,31 @@ fn director<H: Hw + ?Sized>(hw: &mut H, now: u16) {
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.world4"))]
 fn front<H: Hw + ?Sized>(hw: &mut H) {
-    // The owners (and knobs, between), and the pressure on each pad.
-    let mut h = [0u8; (head::PRESSURE + PADS - head::OWNER) as usize];
+    // The owners (and knobs, between), the pressure on each pad, and each pad's sector.
+    let mut h = [0u8; (head::PAD_SECTOR + PADS - head::OWNER) as usize];
     hw::read_into(hw, HEADER + head::OWNER as u32, crate::layout::BOUNCE, &mut h);
-    let (owner, pressure) = h.split_at_mut((head::PRESSURE - head::OWNER) as usize);
+    let (owner, rest) = h.split_at_mut((head::PRESSURE - head::OWNER) as usize);
+    let (pressure, sector) = rest.split_at_mut((head::PAD_SECTOR - head::PRESSURE) as usize);
+    // Taken? Every pad, on a road or not (the hospital is on none). Home is the allies' last stand: never
+    // taken.
+    for p in 0..PADS as usize {
+        if p == HOME {
+            continue;
+        }
+        let mut counts = [0u8; 2];
+        hw::read_into(hw, sector_at(sector[p]) + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
+        let o = owner[p] as usize & 1;
+        if counts[1 - o] >= CAPTURE && counts[1 - o] > counts[o] {
+            pressure[p] += 1;
+            if pressure[p] >= HOLD_PASSES {
+                owner[p] = 1 - o as u8;
+                pressure[p] = 0;
+            }
+        } else {
+            pressure[p] = 0;
+        }
+    }
+    // Each side's road, as far as the first pad the other side holds.
     for side in 0..2 {
         let entry = ROUTES + FRONT_ROUTE[side] as u32 * ROUTE_ENTRY as u32;
         let mut e = [0u8; ROUTE_ENTRY as usize];
@@ -789,32 +817,10 @@ fn front<H: Hw + ?Sized>(hw: &mut H) {
         let (first, all) = (e[0], e[3]);
         let mut reach = all;
         for k in 0..all {
-            let mut wp = [0u8; 4];
+            let mut wp = [0u8; 2];
             hw::read_into(hw, WAYPOINTS + (first + k) as u32 * 4, crate::layout::BOUNCE, &mut wp);
-            let (u, v) = (u16::from_le_bytes([wp[0], wp[1]]), u16::from_le_bytes([wp[2], wp[3]]));
-            let pad = (u >> PAD_SHIFT) as usize;
-            if pad == 0 || pad > PADS as usize {
-                continue;
-            }
-            let p = pad - 1;
-            // Taken? (Each side's road visits the pads it fights over; once a side, once is enough.) Home
-            // is the allies' last stand: never taken.
-            if side == 0 && p != HOME {
-                let sector = (((u & 0x7FF) >> 7) | ((v >> 7) << 4)) as u8;
-                let mut counts = [0u8; 2];
-                hw::read_into(hw, sector_at(sector) + sec::COUNT as u32, crate::layout::BOUNCE, &mut counts);
-                let o = owner[p] as usize & 1;
-                if counts[1 - o] >= CAPTURE && counts[1 - o] > counts[o] {
-                    pressure[p] += 1;
-                    if pressure[p] >= HOLD_PASSES {
-                        owner[p] = 1 - o as u8;
-                        pressure[p] = 0;
-                    }
-                } else {
-                    pressure[p] = 0;
-                }
-            }
-            if owner[p] != side as u8 {
+            let pad = (u16::from_le_bytes(wp) >> PAD_SHIFT) as usize;
+            if pad != 0 && pad <= PADS as usize && owner[pad - 1] != side as u8 {
                 reach = k + 1;
                 break;
             }
@@ -822,10 +828,12 @@ fn front<H: Hw + ?Sized>(hw: &mut H) {
         hw.poke(crate::layout::BOUNCE, reach);
         hw::stash(hw, crate::layout::BOUNCE, entry + 1, 1);
     }
-    for (k, &b) in h.iter().enumerate() {
+    // The owners and pressure back (the sectors are the bake's).
+    let back = (head::PAD_SECTOR - head::OWNER) as usize;
+    for (k, &b) in h[..back].iter().enumerate() {
         hw.poke(crate::layout::BOUNCE + k as u16, b);
     }
-    hw::stash(hw, crate::layout::BOUNCE, HEADER + head::OWNER as u32, h.len() as u16);
+    hw::stash(hw, crate::layout::BOUNCE, HEADER + head::OWNER as u32, back as u16);
 }
 
 /// A unit's sector's record in the REU.

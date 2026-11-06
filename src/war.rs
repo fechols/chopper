@@ -110,7 +110,9 @@ pub fn routes(w: &World) -> Vec<(Vec<(i32, i32)>, u8)> {
         (vec![pad(0), pad(1), (1000, 980), pad(2), pad(4), beach], PING_PONG),
         (west.to_vec(), PING_PONG),
         (carrier.to_vec(), PING_PONG),
-        (vec![pad(4), pad(2), (1100, 1200), beach], LOOP),
+        // The air patrols: the enemy's raids the hospital (pad 3), where the allies' also loops, so the
+        // fights over it are in the air (a platoon at a time, short of `world_sim::CAPTURE`: it holds).
+        (vec![pad(4), pad(2), pad(3), beach], LOOP),
         (vec![carrier[1], pad(0), pad(1), pad(3)], LOOP),
     ]
 }
@@ -262,6 +264,9 @@ pub fn bake(w: &World) -> Vec<u8> {
         out[h + ws::head::ALIVE as usize + 2 * side..][..2].copy_from_slice(&alive[side].to_le_bytes());
     }
     out[h + ws::head::OWNER as usize..][..PADS.len()].copy_from_slice(&OWNERS);
+    for (p, pad) in PADS.iter().enumerate() {
+        out[h + ws::head::PAD_SECTOR as usize + p] = ((pad.u as u16 >> 7) | (pad.v as u16 >> 7) << 4) as u8;
+    }
     out[h + ws::head::KNOBS as usize..][..5].copy_from_slice(&ws::Knobs::DEFAULT.to_bytes());
     let carrier = units.iter().position(|un| un.kind == kind::CARRIER).expect("a carrier") as u16;
     out[h + ws::head::CARRIER as usize..][..2].copy_from_slice(&carrier.to_le_bytes());
@@ -321,8 +326,8 @@ pub fn set_knobs(reu: &mut [u8], k: ws::Knobs) {
     reu[ws::HEADER as usize + ws::head::KNOBS as usize..][..5].copy_from_slice(&k.to_bytes());
 }
 
-/// Run the war for `ticks` with no player near, a page every `per_frame` ticks (as the C64 at about 15
-/// frames a second): the model's REU holds the war after.
+/// Run the war for `ticks` with no player near, a page every `per_frame` ticks (a war turn is every
+/// other frame, so 4 is the C64 at 30 frames a second): the model's REU holds the war after.
 pub fn run(m: &mut crate::model::Machine, from: u32, ticks: u32, per_frame: u32) {
     let mut t = from;
     while t < from + ticks {

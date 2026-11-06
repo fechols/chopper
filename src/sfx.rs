@@ -310,8 +310,9 @@ pub static ENGINES: [[u8; PATCH]; patch::COUNT - patch::ONE_SHOTS] = [
     [0x02, 0, TRI, 0xA0, 0xC8, 0, 0x04, 2, PULSE, 0xA0, 0x88, 0, 0x01, 0, NOISE, 0xA0, 0x98, 0, 0x37, LP, 0x40, 0, 0, 1, 255, 1],
     // ROTOR: a sub-audio narrow pulse (the blades' thumps), a triangle ringing off it, the turbine's hiss.
     [0x01, 2, PULSE, 0x80, 0xA6, 0, 0x0E, 0, TRI | RING, 0x80, 0x86, 0, 0x06, 0, NOISE, 0x80, 0x46, 0, 0x17, LP, 0x60, 0, 0, 2, 255, 1],
-    // DIESEL: the carrier's giant diesel, never revving: a rumble, no edges to pop: a 30 Hz triangle and a
-    // 36 Hz saw beating against it (a soft throb about 6 times a second, the cylinders), and low noise
+    // DIESEL: the carrier's giant diesel, never revving: a rumble, no edges to pop: a 31 Hz triangle and a
+    // 37 Hz saw (NTSC, `config/chopper.cfg`; 30 and 36 on PAL) beating against it (a soft throb about 6
+    // times a second, the cylinders), and low noise
     // (the rumble's body), all through a deep low-pass with little resonance (nothing rings).
     [0x02, 0, TRI, 0xA0, 0xC8, 0x00, 0x02, 0, SAW, 0xA0, 0xA8, 0x60, 0x03, 0, NOISE, 0xA0, 0xB8, 0x00, 0x17, LP, 0x18, 0, 0, 0, 255, 1],
 ];

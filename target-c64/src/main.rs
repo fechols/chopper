@@ -1,6 +1,6 @@
 //! Chopper for the C64 Ultimate: the floor and the 3D objects. The attract-mode helicopter
-//! (`chopper::agent`, shared with the host, run from the AI code overlay) waits on the pad for the
-//! rotor, lifts off and roams the 2048×2048-texel island, steered by the GOAP-planned decision tree in
+//! (`chopper::agent`, shared with the host, run from the AI code overlay) waits on the carrier's deck for
+//! the rotor, lifts off and roams the 2048×2048-texel island, steered by the GOAP-planned decision tree in
 //! the REU (`chopper::goap`, `chopper::brain`). Each frame the objects in view
 //! are streamed from the REU, transformed and sorted (`chopper::geom::draw`, `asm/geom.S`); then band by
 //! band every view line is cut into runs (`asm/spans.S`) and drawn by `asm/floor.S`, one REU DMA per
@@ -476,7 +476,7 @@ pub extern "C" fn main() -> i16 {
     video_init(c);
 
 
-    // The helicopter on the pad, its clock the sound's (tools/emu.py --start overwrites both once MAGIC
+    // The helicopter on the deck, its clock the sound's (tools/emu.py --start overwrites both once MAGIC
     // is set).
     let mut seen = frames_elapsed();
     let agent = unsafe { &mut *(AGENT as *mut Agent) };

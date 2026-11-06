@@ -1,7 +1,8 @@
 //! The attract-mode helicopter: a small flight sim stepped once per NTSC frame of the clock, with the
 //! same bits on the host and the C64, steered by the baked decision tree (`brain`, planned by
-//! `goap`). The clock starts with the rotor sound (`asm/audio.S`). The helicopter sits on the home pad
-//! until the rotor is at full power (the sound's 1:20), lifts off, and then roams: it flies to seeded
+//! `goap`). The clock starts with the rotor sound (`asm/audio.S`). The helicopter sits on the carrier's
+//! deck (`boot`; home, if the carrier is gone) until the rotor is at full power (the sound's 1:20), lifts
+//! off, and then roams: it flies to seeded
 //! random waypoints over the island, climbing over or turning round the mountains its probes see in the
 //! baked hazard map (`format::HAZARD`).
 //!
