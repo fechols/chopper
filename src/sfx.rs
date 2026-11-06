@@ -6,9 +6,14 @@
 //! the same three voices on both chips (a [`patch`]), each chip with its own master volume (its ear's
 //! gain) and its own low-pass cutoff (its ear's muffling). So the filter colours that one sound only.
 //!
-//! - **Where it is** ([`place`]): its bearing from the nose pans it (a source on the right is loud in the
-//!   right chip, quieter in the left); behind the player the cutoffs close (muffled), and the far ear's
-//!   more (the head's shadow); distance lowers the gain and dulls it a little more (the air).
+//! - **Where it is** ([`place`], a model of a head): its lateral angle (in 3D, the ears tilting with
+//!   the bank) sets the ears' lag, the far ear's level and its muffling (the head's shadow), from tables
+//!   shaped like a head's; behind the player both cutoffs close (muffled); its 3D distance lowers the
+//!   gain (1/distance) and dulls it (the air). Levels and cutoffs add in octaves, so the cues agree and
+//!   each moves a sound the same whatever the others do.
+//! - **Smoothly** (`asm/hud.S` `sfx_slew`, from [`SLEW`]): the frame sets each chip's volume and
+//!   cutoff as targets; the raster IRQ glides the chips to them at 60 Hz, so a pan sounds the same
+//!   whatever the frame rate.
 //! - **What sounds** ([`sounds`], once a frame after the effects pass): the frame's new effects (their
 //!   slots in `combat::FX` begun since the last frame: impacts, splashes, explosions, wreck fires, the
 //!   war's muzzle flashes, the far ones quieter and duller), the player's new tracers and missiles, a hit
@@ -24,16 +29,18 @@
 //!   second) triggers sounds, releases their gates, sweeps their cutoffs and places them again (the
 //!   player turning pans what is playing).
 //! - **The ears' lag** ([`place`]'s last): a sound is gated on the near ear's chip first and on the far
-//!   one that many raster lines later ([`start`]), as it reaches the far ear later round a head. An
-//!   engine's lag then follows the player turning ([`drive`]).
+//!   one that many raster lines later ([`start`]), as it reaches the far ear later round a head. Its lag
+//!   then follows the player turning ([`lag`]: an engine's in [`drive`], a one-shot's once its pitch
+//!   sweep is done in [`track`]).
 //! - **Engines** ([`engines`]): the two nearest vehicles that have one (`squad::MEMBERS`) take the pairs
 //!   no effect is using, held until they drop out of the two; any effect takes a pair from an engine
 //!   (a free pair first), and the engine is back once it is done. Their pitch rises while they move.
 //!
-//! Three overlays: the one-shots ([`sounds`], `.text.sfx`), then the engines ([`motors`], `.text.sfxeng`)
-//! in turn in the first window, each with its own patches; placing and starting a sound ([`place`],
-//! [`set`], [`start`], fed the patch by its caller) in a library in the second (`.text.sfxlib`, at $A000,
-//! fetched before both).
+//! Three overlays: the one-shots ([`sounds`], `.text.sfx`, with [`place`]: it places every pair each
+//! frame, [`aim`]), then the engines ([`motors`], `.text.sfxeng`) in turn in the first window, each with
+//! its own patches; setting and starting a sound ([`set`], [`start`], fed the patch by its caller, from
+//! its stored place, [`PLACED`]) in a library in the second (`.text.sfxlib`, at $A000, fetched before
+//! both).
 //!
 //! The state is at [`STATE`] ($FF00, below the vectors): nothing draws from it, so it is not in the
 //! snapshot gate. Cleared at boot (RAM outlives a reset), it is set up on the first frame (its [`MAGIC`]
@@ -77,8 +84,8 @@ pub mod pair {
     pub const ITD: u16 = 11;
     pub const DOP: u16 = 12;
 }
-/// Flags: its gates released; the player's own (centred, wherever the player flies); far off. An
-/// engine's: its left chip running slow since the last frame, its right one ([`drive`]).
+/// Flags: its gates released; the player's own (centred, wherever the player flies); far off; its left
+/// chip running slow since the last frame, its right one (the ears' lag drawn along: [`lag`]).
 pub const RELEASED: u8 = 1;
 pub const OWN: u8 = 2;
 pub const FAR: u8 = 4;
@@ -90,7 +97,97 @@ pub const SLOW_R: u8 = 16;
 /// first and set last, so the IRQ never sees half a sweep.
 pub const SWEEP: u16 = 0xFF20;
 pub const SWEEP_PAIR: u16 = 7;
-const _: () = assert!(STATE + state::PAIRS + PAIRS * PAIR <= SWEEP && SWEEP + PAIRS * SWEEP_PAIR <= 0xFF40);
+/// Each pair's sound's height (u16, 1/16 texel), beside its place in its entry ([`pair::U`]).
+pub const HEIGHT: u16 = 0xFF2E;
+/// The IRQ's slews (`asm/hud.S` has these addresses): [`SLEW_CH`] targets, then the values on the SIDs.
+/// Channel `4 p + 2 chip` is pair `p`'s chip's `$D418` (the filter's mode and the volume), the next
+/// its `$D416` (the cutoff). Once a video frame the IRQ moves each value a quarter of the way to its
+/// target (at least 1) and writes it, so a sound pans and dulls at the same pace whatever the frame rate
+/// (its placing, 13-20 times a second, sets the targets: [`set`]); a sound begun snaps them ([`set`]).
+pub const SLEW: u16 = 0xFF32;
+pub const SLEW_CH: u16 = 8;
+// (`asm/hud.S` has these addresses.)
+const _: () = assert!(SWEEP == 0xFF20 && SLEW == 0xFF32);
+const _: () = assert!(STATE + state::PAIRS + PAIRS * PAIR <= SWEEP && SWEEP + PAIRS * SWEEP_PAIR <= HEIGHT);
+/// Each pair's place ([`place`]'s five bytes: the volumes, the cutoff factors, the lag), worked out in the
+/// one-shots' overlay where [`place`] is ([`aim`], each frame, and [`play`] for a sound begun) and read by
+/// [`set`] (in the library, also for the engines afterwards: their places a frame old). An engine begun
+/// starts silent and centred ([`QUIET`]) and glides to its place from the next frame.
+pub const PLACED: u16 = 0xFF42;
+pub const PLACE: u16 = 5;
+const _: () = assert!(HEIGHT + 2 * PAIRS <= SLEW && SLEW + 2 * SLEW_CH <= PLACED && SLEW_CH == 4 * PAIRS);
+/// Non-zero while [`set`] snaps a sound's levels (targets, values and SIDs together): the IRQ's slews
+/// skip that video frame (`asm/hud.S` `sfx_slew`). (With a target written and not its value, or a value
+/// and not its target, they would glide between the old sound's and the new, writing a volume byte of
+/// neither's filter mode.)
+pub const HOLD: u16 = 0xFF4C;
+const _: () = assert!(PLACED + PAIRS * PLACE <= HOLD && HOLD < 0xFFFA);
+/// A place: silent and centred, the cutoffs open (an engine begun).
+pub const QUIET: (u8, u8, u8, u8, i8) = (0, 0, 255, 255, 0);
+
+/// Pair `p`'s place stored ([`PLACED`]).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxlib"))]
+fn store<H: Hw + ?Sized>(hw: &mut H, p: u16, at: (u8, u8, u8, u8, i8)) {
+    let e = PLACED + p * PLACE;
+    hw.poke(e, at.0);
+    hw.poke(e + 1, at.1);
+    hw.poke(e + 2, at.2);
+    hw.poke(e + 3, at.3);
+    hw.poke(e + 4, at.4 as u8);
+}
+
+/// The place of a sound at (`u`, `v`), height `h` (1/16 texel; `flags` its: the player's own centred,
+/// the far battle's).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn locate(a: &Agent, u: u16, v: u16, h: u16, flags: u8) -> (u8, u8, u8, u8, i8) {
+    if flags & OWN != 0 {
+        return (15, 15, 255, 255, 0);
+    }
+    let (pu, pv) = a.at();
+    let (dx, dy, dz) = (((u >> 4) as i16).wrapping_sub(pu), ((v >> 4) as i16).wrapping_sub(pv), ((a.h >> 8) as i16).wrapping_sub((h >> 4) as i16));
+    place(dx, dy, dz, a.yaw, a.roll as u16, flags & FAR != 0)
+}
+
+/// Every pair playing placed where its sound is now ([`PLACED`]): the frame's, before [`set`] (here for
+/// the one-shots, then for the engines in their overlay). An engine is placed where `follow` left it last
+/// frame, a frame late: placing it after `follow` would need this overlay and the engines' in the first
+/// window at once (a second fetch each frame); the IRQ's slews glide over the step.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn aim<H: Hw + ?Sized>(hw: &mut H, a: &Agent) {
+    for p in 0..core::hint::black_box(PAIRS) {
+        let s = STATE + state::PAIRS + p * PAIR;
+        if hw.peek(s + pair::PATCH) != 0 {
+            let at = locate(a, rd(hw, s + pair::U), rd(hw, s + pair::V), rd(hw, HEIGHT + 2 * p), hw.peek(s + pair::FLAGS));
+            store(hw, p, at);
+        }
+    }
+}
+
+/// A channel's SID register (from `$D400`), as the IRQ's table (`asm/hud.S` `sfx_reg`).
+#[cfg(not(target_arch = "mos"))]
+fn slew_reg(ch: u16) -> u16 {
+    (LEFT - 0xD400) + (ch & 2) * ((RIGHT - LEFT) / 2) + (ch >> 2) * PAIR_STEP + if ch & 1 == 0 { 0x18 } else { 0x16 }
+}
+
+/// The IRQ's slews once (the host's copy of `asm/hud.S` `sfx_slew`, for the tests: the C64 has the IRQ).
+#[cfg(not(target_arch = "mos"))]
+pub fn slew<H: Hw + ?Sized>(hw: &mut H) {
+    if hw.peek(HOLD) != 0 {
+        return;
+    }
+    for ch in 0..SLEW_CH {
+        let (t, c) = (hw.peek(SLEW + ch), hw.peek(SLEW + SLEW_CH + ch));
+        if t == c {
+            continue;
+        }
+        let n = if t > c { c + ((t - c) >> 2) + 1 } else { c - ((c - t - 1) >> 2) - 1 };
+        hw.poke(SLEW + SLEW_CH + ch, n);
+        hw.poke(0xD400 + slew_reg(ch), n);
+    }
+}
 
 /// The sounds.
 pub mod patch {
@@ -183,7 +280,7 @@ pub static PATCHES: [[u8; PATCH]; patch::ONE_SHOTS] = [
     // IMPACT: a noise burst, a pitch drop, a ring-mod click.
     [0x24, 0, NOISE, 0x06, 0x00, -1i8 as u8, 0x12, 0, TRI | RING, 0x04, 0x00, -2i8 as u8, 0x05, 0, TRI, 0x06, 0x00, 0, 0x37, LP, 0xA0, -2i8 as u8, 6, 2, 18, 4],
     // SPLASH: filtered noise opening then closing, a slow release.
-    [0x30, 0, NOISE, 0x19, 0x09, 0, 0x14, 0, NOISE, 0x29, 0x08, 0, 0x02, 0, TRI, 0x07, 0x00, 0, 0x23, LP, 0x50, -1i8 as u8, 0, 4, 45, 3],
+    [0x30, 0, NOISE, 0x19, 0x09, 0, 0x14, 0, NOISE, 0x29, 0x08, 0, 0x02, 0, TRI, 0x07, 0x00, 0, 0x27, LP, 0x50, -1i8 as u8, 0, 4, 45, 3],
     // EXPLOSION: a noise rumble, a falling triangle boom, a deep noise tail; the cutoff closing.
     [0x0C, 0, NOISE, 0x0A, 0x0A, 0, 0x0A, 0, TRI, 0x09, 0x09, -1i8 as u8, 0x03, 0, NOISE, 0x0B, 0x0B, 0, 0x47, LP, 0xC0, -2i8 as u8, 8, 6, 110, 9],
     // CRACKLE: a wreck catching fire: two short noise snaps.
@@ -208,7 +305,7 @@ pub static ENGINES: [[u8; PATCH]; patch::COUNT - patch::ONE_SHOTS] = [
     // TANK: a deep narrow pulse, a triangle ringing off it (the tracks' clank), a noise rumble.
     [0x03, 4, PULSE, 0x90, 0xB6, 0, 0x07, 0, TRI | RING, 0x90, 0x86, 0, 0x01, 0, NOISE, 0x90, 0x96, 0, 0x27, LP, 0x50, 0, 0, 2, 255, 1],
     // BOAT: an outboard's saw buzz, a triangle under it, the spray's hiss.
-    [0x06, 0, SAW, 0x80, 0x96, 0, 0x0C, 0, TRI, 0x80, 0x86, 0, 0x08, 0, NOISE, 0x80, 0x46, 0, 0x15, LP, 0x70, 0, 0, 4, 255, 1],
+    [0x06, 0, SAW, 0x80, 0x96, 0, 0x0C, 0, TRI, 0x80, 0x86, 0, 0x08, 0, NOISE, 0x80, 0x46, 0, 0x17, LP, 0x70, 0, 0, 4, 255, 1],
     // SHIP: a ship's deep triangle drone, a thin low pulse, the wash.
     [0x02, 0, TRI, 0xA0, 0xC8, 0, 0x04, 2, PULSE, 0xA0, 0x88, 0, 0x01, 0, NOISE, 0xA0, 0x98, 0, 0x37, LP, 0x40, 0, 0, 1, 255, 1],
     // ROTOR: a sub-audio narrow pulse (the blades' thumps), a triangle ringing off it, the turbine's hiss.
@@ -218,6 +315,31 @@ pub static ENGINES: [[u8; PATCH]; patch::COUNT - patch::ONE_SHOTS] = [
     // (the rumble's body), all through a deep low-pass with little resonance (nothing rings).
     [0x02, 0, TRI, 0xA0, 0xC8, 0x00, 0x02, 0, SAW, 0xA0, 0xA8, 0x60, 0x03, 0, NOISE, 0xA0, 0xB8, 0x00, 0x17, LP, 0x18, 0, 0, 0, 255, 1],
 ];
+// Every voice of a sound placed in the world goes through its chip's filter (the ears' muffling and the
+// head's shadow are the cutoff: a voice past it would be heard unshadowed). The player's own (centred)
+// may skip it: the hit's clang and the lock's beep do.
+const fn filtered(t: &[u8; PATCH]) -> bool {
+    let mut v = 0;
+    while v < 3 {
+        if t[v * VOICE + 2] != 0 && t[field::ROUTE] & (1 << v) == 0 {
+            return false;
+        }
+        v += 1;
+    }
+    true
+}
+const _: () = {
+    let mut k = 0;
+    while k < PATCHES.len() {
+        assert!(filtered(&PATCHES[k]) || k == patch::HIT as usize || k == patch::LOCK as usize);
+        k += 1;
+    }
+    let mut k = 0;
+    while k < ENGINES.len() {
+        assert!(filtered(&ENGINES[k]));
+        k += 1;
+    }
+};
 // An engine sweeps nothing: its voices' last bytes are frequency low bytes, not the IRQ's deltas (its
 // sweep never runs), and its start tick is not kept (no cutoff sweep reads its age).
 const _: () = {
@@ -228,44 +350,191 @@ const _: () = {
     }
 };
 
-/// A sound's place for each ear: (left volume, right volume, left cutoff factor, right one, the left
-/// ear's lag behind the right): volumes 0..=15, factors /256 of the patch's cutoff, the lag in units of
-/// a 256th of a tick (65 µs, about a raster line), -[`ITD_MAX`]..=[`ITD_MAX`] (the sound reaching the
-/// far ear later round the head: up to about 0.65 ms). `dx`, `dy`: from the player (texels; east,
-/// north), `yaw` the player's heading (binary angle, 0 north, clockwise). `far`: the battle on the
-/// horizon.
+/// A sound's place for each ear (a model of a head, tuned by ear but shaped like a measured one): (left
+/// volume, right volume, left cutoff factor, right one, the left ear's lag behind the right): volumes
+/// 0..=15, factors /256 of the patch's cutoff, the lag in units of a 256th of a tick (65 µs, about a
+/// raster line), -[`ITD_MAX`]..=[`ITD_MAX`]. `dx`, `dy`, `dz`: the source from the player (texels;
+/// east, north, down: the player's height over it), `yaw` the player's heading (binary angle, 0 north,
+/// clockwise), `roll` its bank (binary angle, right side down positive: the ears tilt with the view).
+/// `far`: the battle on the horizon.
+///
+/// Every cue comes from the source's direction and distance alone, so they always agree:
+/// - **Its lateral angle** (`x`: the cosine to the ears' axis, 16ths, 0 ahead, behind or straight
+///   below; 16 abeam): the lag ([`ITD_LINES`], round a sphere), the far ear's level ([`ILD`]) and its
+///   muffling ([`SHADOW`], the head's shadow).
+/// - **Its distance** (3D: a source below is near, and centres as the player passes over it): the gain
+///   (as 1/distance) and the air's dulling.
+///
+/// Levels and cutoffs are worked in 16ths of an octave and added, so each cue moves a sound the same
+/// whatever the others do (the shadow is the same octave behind as ahead, the level gap the same near as
+/// far) and only the final 4-bit volumes round ([`VOL`], in the log domain: the nearest step by ratio).
+/// Behind (`fwd`, the cosine to the nose) both ears are muffled more: the pinnae's front/back cue.
 #[inline(never)]
-#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxlib"))]
-pub fn place(dx: i16, dy: i16, yaw: u16, far: bool) -> (u8, u8, u8, u8, i8) {
-    // Gain 0..=16: full within 16 texels, then falling as 1/distance.
-    let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
-    let d = ax.max(ay) + (ax.min(ay) >> 1);
-    let mut g = (384 / (d.min(4000) + 8)).min(16) as u8;
-    if far {
-        g >>= 1;
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub fn place(dx: i16, dy: i16, dz: i16, yaw: u16, roll: u16, far: bool) -> (u8, u8, u8, u8, i8) {
+    let (dh, r) = spans(dx, dy, dz);
+    let (mut lat, mut fwd) = (0i8, 16i8);
+    if r != 0 {
+        let (side, ahead) = bearing(dx, dy, yaw);
+        let k = cosine(dh, r);
+        lat = onto(side, k);
+        fwd = onto(ahead, k);
+        if roll != 0 {
+            let down = cosine(dz.unsigned_abs(), r) as i8;
+            lat = tilt(lat, if dz < 0 { -down } else { down }, roll);
+        }
     }
-    // Its bearing from the nose: `side` -16 (left) ..= 16 (right), `ahead` -16 (behind) ..= 16.
-    let (side, ahead) = if d == 0 {
-        (0, 16)
-    } else {
-        // (The sine table's step, Q14 in an i16: ±16384, so / 1024 is ±16.)
-        let rel = ((crate::world_sim::heading_inline(dx, dy) as u16) << 8).wrapping_sub(yaw);
-        // (Toward 0: the two sides alike.)
-        ((crate::camera::sin(rel) as i16) / 1024, (crate::camera::sin(rel.wrapping_add(0x4000)) as i16) / 1024)
-    };
-    // Each ear: down to a quarter on the far side (`near`, `far` the ears' shares of the side, 0..=16).
-    let (r, l) = (side.max(0) as u8, (-side).max(0) as u8);
-    let vol = |s: u8| ((g as u16 * (16 - (s * 3 >> 2)) as u16 + 8) >> 4).min(15) as u8;
-    // Muffled behind (to about 3/8 open), the far ear more (the head's shadow), and with distance.
-    let air = (d >> 2).min(60) as u8 + if far { 40 } else { 0 };
-    let open = 255u8.saturating_sub(((16 - ahead) as u8) * 5).saturating_sub(air);
-    let cut = |s: u8| open.saturating_sub(s * 2).max(16);
-    // (Rounded toward 0: the two sides alike.)
-    (vol(r), vol(l), cut(r), cut(l), ((side * 5 + if side < 0 { 7 } else { 0 }) >> 3) as i8)
+    ears(lat, fwd, r, far)
+}
+
+/// The distance across the ground and in 3D (`max + min / 2`, then with the height).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn spans(dx: i16, dy: i16, dz: i16) -> (u16, u16) {
+    let (ax, ay, az) = (dx.unsigned_abs(), dy.unsigned_abs(), dz.unsigned_abs());
+    let dh = ax.max(ay) + (ax.min(ay) >> 1);
+    (dh, dh.max(az).saturating_add(dh.min(az) >> 1))
+}
+
+/// The bearing from the nose: (`side` -16 left ..= 16 right, `ahead` -16 ..= 16), [`sin16`]'s.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn bearing(dx: i16, dy: i16, yaw: u16) -> (i8, i8) {
+    let rel = crate::world_sim::heading_inline(dx, dy).wrapping_sub(angle8(yaw as i16));
+    (sin16(rel), sin16(rel.wrapping_add(64)))
+}
+
+/// A binary angle to a byte's (256 a turn), rounded on the magnitude (a bank and its mirror alike).
+#[inline(always)]
+fn angle8(a: i16) -> u8 {
+    let m = ((a.unsigned_abs() + 0x80) >> 8) as u8;
+    if a < 0 { m.wrapping_neg() } else { m }
+}
+
+/// The sine of a byte's angle in 16ths, rounded ([`SIN16`]): the sounds' own, not `camera::sin`, whose
+/// asm multiply puts its callers on llvm-mos's soft stack (more code).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn sin16(a: u8) -> i8 {
+    let p = (a & 63) as usize;
+    let v = (if a & 64 == 0 { SIN16[p] } else { SIN16[64 - p] }) as i8;
+    if a & 128 == 0 { v } else { -v }
+}
+
+/// `16 sin` over a quarter turn (65 steps of a byte's angle), rounded.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static SIN16: [u8; 65] = [
+    0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 8, 8, 8, 9, 9, 9, 10, 10, 10, 10, 11, 11, 11, 12, 12, 12, 12, 13, 13, 13, 13, 14,
+    14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16,
+];
+
+/// `16 n / r` (n ≤ r, r > 0): a cosine in 16ths. (Both scaled into 12 bits, for the 16-bit divide.)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn cosine(n: u16, r: u16) -> u8 {
+    let (n, r) = if r > 4095 { (n >> 4, r >> 4) } else { (n, r) };
+    ((n << 4) / r.max(1)).min(16) as u8
+}
+
+/// A bearing's cosine `c` (16ths) onto the ground's `k`: `c k / 16`, rounded on the magnitude (the two
+/// sides alike).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn onto(c: i8, k: u8) -> i8 {
+    let m = ((c.unsigned_abs() as u16 * k as u16 + 8) >> 4) as i8;
+    if c < 0 { -m } else { m }
+}
+
+/// The ears' axis tilted by the bank (`roll`, right side down positive): a source below (`down`, 16ths)
+/// moves toward the lower ear. Rounded on the magnitude (the two banks alike).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn tilt(lat: i8, down: i8, roll: u16) -> i8 {
+    let a = angle8(roll as i16);
+    let (sr, cr) = (sin16(a) as i16, sin16(a.wrapping_add(64)) as i16);
+    let v = lat as i16 * cr + down as i16 * sr;
+    let m = ((v.unsigned_abs() + 8) >> 4).min(16) as i8;
+    if v < 0 { -m } else { m }
+}
+
+/// The two ears' volumes, cutoff factors and lag (see [`place`]) from the lateral cosine `lat`, the
+/// forward one `fwd` (16ths) and the distance `r` (texels).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn ears(lat: i8, fwd: i8, r: u16, far: bool) -> (u8, u8, u8, u8, i8) {
+    let x = (lat.unsigned_abs() as usize).min(16);
+    // The distance's attenuation (16ths of an octave of amplitude: 6 dB an octave of distance), full
+    // within 16 texels; the horizon's battle 6 dB down.
+    let att = log2q(r.min(4000) + 8).saturating_sub(LOG2Q_24) + if far { 16 } else { 0 };
+    let near = vol(att);
+    let wide = vol(att + ILD[x]);
+    // Muffled behind (1.25 octaves, abeam half that), by the air (an octave by 512 texels; the horizon's
+    // more), and the far ear by the head's shadow.
+    let dull = ((16 - fwd) as u8 * 5 >> 3) + (r >> 5).min(16) as u8 + if far { 6 } else { 0 };
+    let open = cutoff(dull);
+    let shade = cutoff(dull + SHADOW[x]);
+    let itd = ITD_LINES[x] as i8;
+    if lat > 0 { (wide, near, shade, open, itd) } else if lat < 0 { (near, wide, open, shade, -itd) } else { (near, near, open, open, 0) }
 }
 
 /// The ears' lag at most ([`place`]'s units): a source abeam.
 pub const ITD_MAX: i8 = 10;
+
+/// The ears' lag (raster lines) by the lateral cosine (16ths): Woodworth's sphere, `(a/c)(asin x + x)`,
+/// each 16th's mean, [`ITD_MAX`] (0.64 ms, a head's) abeam. (Each 16th's mean, not its end: the curve
+/// is steep abeam, and this keeps every step to a line.)
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static ITD_LINES: [u8; 17] = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 7, 8, 9, 10];
+/// The far ear's level below the near's (16ths of an octave: 0.38 dB) by the lateral cosine: a
+/// broadband 10.5 dB abeam, linear in the cosine, as a head's is below its high-band peak.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static ILD: [u8; 17] = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 18, 19, 21, 23, 25, 26, 28];
+/// The far ear's cutoff lowered (16ths of an octave) by the lateral cosine: an octave abeam, the head's
+/// shadow over the highs.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static SHADOW: [u8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+/// A volume (0..=15) by its attenuation from 15 (16ths of an octave): `15 / 2^(a / 16)`, the step
+/// nearest by ratio (so a level gap keeps its size in dB as far as 4 bits allow); silent below 0.75.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static VOL: [u8; 70] = [
+    15, 14, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+];
+/// `16 log2(1 + m / 16)`: an octave's 16ths by the mantissa's top 4 bits.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static LOG2M: [u8; 16] = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15];
+/// `255 / 2^(m / 16)`: a cutoff factor by an octave's 16ths.
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+pub static CUTM: [u8; 16] = [255, 244, 234, 224, 214, 205, 197, 188, 180, 173, 165, 158, 152, 145, 139, 133];
+/// [`log2q`] of 24: [`place`]'s distance where the gain begins to fall (16 texels, + 8).
+const LOG2Q_24: u8 = 73;
+
+/// `16 log2(n)` (n ≥ 1), to a 16th.
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn log2q(mut n: u16) -> u8 {
+    let mut e = 15u8;
+    while n & 0x8000 == 0 {
+        n <<= 1;
+        e -= 1;
+    }
+    (e << 4) + LOG2M[((n >> 11) & 15) as usize]
+}
+
+/// A volume by its attenuation ([`VOL`]).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn vol(att: u8) -> u8 {
+    if (att as usize) < VOL.len() { VOL[att as usize] } else { 0 }
+}
+
+/// A cutoff factor (/256) that many 16ths of an octave down, at most 4 octaves (16).
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
+fn cutoff(q: u8) -> u8 {
+    let q = q.min(63);
+    (CUTM[(q & 15) as usize] >> (q >> 4)).max(16)
+}
 
 #[inline(always)]
 fn rd<H: Hw + ?Sized>(hw: &mut H, a: u16) -> u16 {
@@ -321,6 +590,7 @@ pub fn sounds<H: Hw + ?Sized>(hw: &mut H, a: &Agent) -> u16 {
     }
     hw.poke(STATE + state::FLASH, flash);
     hw.poke(STATE + state::LOCK, lock);
+    aim(hw, a);
     for p in 0..PAIRS {
         let s = STATE + state::PAIRS + p * PAIR;
         let id = hw.peek(s + pair::PATCH);
@@ -339,7 +609,8 @@ pub fn sounds<H: Hw + ?Sized>(hw: &mut H, a: &Agent) -> u16 {
             hw.poke(s + pair::FLAGS, flags | RELEASED);
             release(hw, p, t);
         }
-        set(hw, a, p, t, now);
+        let itd = set(hw, p, t, now, false);
+        track(hw, p, itd, dt);
     }
     dt
 }
@@ -358,7 +629,7 @@ pub fn motors<H: Hw + ?Sized>(hw: &mut H, a: &Agent, dt: u16) {
             continue;
         }
         let t = engine_patch(id);
-        let itd = set(hw, a, p, t, now);
+        let itd = set(hw, p, t, now, false);
         drive(hw, p, t, itd, dt);
     }
 }
@@ -431,6 +702,8 @@ fn engines<H: Hw + ?Sized>(hw: &mut H, a: &Agent, now: u16, dt: u16) {
             let e = best[k];
             if e != 0 && platoon(rd(hw, e + entry::VID)) == was {
                 follow(hw, s, e, qu, qv, dt);
+                let h = rd(hw, e + entry::H);
+                wr(hw, HEIGHT + 2 * p, h);
                 best[k] = 0;
                 keep[p as usize] = true;
                 break;
@@ -452,7 +725,9 @@ fn engines<H: Hw + ?Sized>(hw: &mut H, a: &Agent, now: u16, dt: u16) {
             next += 1;
             let sound = ENGINE_OF[(hw.peek(e + entry::MESH) >> 1) as usize];
             let (u, v, vid) = (rd(hw, e + entry::U), rd(hw, e + entry::V), rd(hw, e + entry::VID));
-            start(hw, a, p, sound, &ENGINES[(sound - patch::ENGINE) as usize % ENGINES.len()], u, v, 0, now, REVS_START);
+            let h = rd(hw, e + entry::H);
+            store(hw, p, QUIET);
+            start(hw, p, sound, &ENGINES[(sound - patch::ENGINE) as usize % ENGINES.len()], u, v, h, 0, now, REVS_START);
             wr(hw, s + pair::VID, vid);
             wr(hw, s + pair::START, span(u.wrapping_sub(qu), v.wrapping_sub(qv)));
             hw.poke(s + pair::DOP, 0);
@@ -466,7 +741,8 @@ fn engines<H: Hw + ?Sized>(hw: &mut H, a: &Agent, now: u16, dt: u16) {
 
 /// Pair `s` (its entry) kept on the vehicle at entry `e` (its platoon's): its revs and Doppler brought
 /// up to date (the player at (`qu`, `qv`), 1/16 texel), then its vehicle, place and distance. Another of
-/// its platoon taken over is not moving: its place and distance taken as they are.
+/// its platoon taken over is not moving: its place and distance taken as they are. (Its height: the
+/// caller's.)
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxeng"))]
 fn follow<H: Hw + ?Sized>(hw: &mut H, s: u16, e: u16, qu: u16, qv: u16, dt: u16) {
@@ -493,7 +769,8 @@ fn follow<H: Hw + ?Sized>(hw: &mut H, s: u16, e: u16, qu: u16, qv: u16, dt: u16)
     wr(hw, s + pair::VID, vid);
 }
 
-/// How far an offset (1/16 texel, wrapping) reaches: `max + min / 2`, as [`place`]'s.
+/// How far an offset (1/16 texel, wrapping) reaches across the ground: `max + min / 2`, as [`place`]'s.
+/// (The engines' Doppler: on the ground, as their overlay has no room for the height's.)
 #[inline(always)]
 fn span(du: u16, dv: u16) -> u16 {
     let (ax, ay) = ((du as i16).unsigned_abs(), (dv as i16).unsigned_abs());
@@ -513,27 +790,7 @@ fn span(du: u16, dv: u16) -> u16 {
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxeng"))]
 fn drive<H: Hw + ?Sized>(hw: &mut H, p: u16, t: &[u8; PATCH], itd: i8, dt: u16) {
     let s = STATE + state::PAIRS + p * PAIR;
-    let flags = hw.peek(s + pair::FLAGS);
-    // The last frame's slow chip, its ticks credited: the left ear's lag up, or down.
-    let step = dt.min(255) as i16;
-    let mut lag = hw.peek(s + pair::ITD) as i8 as i16;
-    if flags & SLOW_L != 0 {
-        lag += step;
-    } else if flags & SLOW_R != 0 {
-        lag -= step;
-    }
-    let lag = lag.clamp(-127, 127);
-    hw.poke(s + pair::ITD, lag as u8);
-    let diff = itd as i16 - lag;
-    // The chip slowed now: the left (its ear later), the right, or neither (2).
-    let (slow, mark) = if 2 * diff.abs() <= step {
-        (2, 0)
-    } else if diff > 0 {
-        (0, SLOW_L)
-    } else {
-        (1, SLOW_R)
-    };
-    hw.poke(s + pair::FLAGS, flags & !(SLOW_L | SLOW_R) | mark);
+    let slow = lag(hw, s, itd, dt);
     let revs = hw.peek(s + pair::SCORE) as u16;
     let depth = t[field::REV_DEPTH] as u16;
     let dop = hw.peek(s + pair::DOP) as i8 as i16;
@@ -544,6 +801,67 @@ fn drive<H: Hw + ?Sized>(hw: &mut H, p: u16, t: &[u8; PATCH], itd: i8, dt: u16) 
             let hi = t[o] as u16;
             let mut f = (hi << 8 | t[o + 5] as u16) + ((hi * depth * revs) >> 4);
             f = f.wrapping_add(((f >> 8) as i16 * dop) as u16);
+            if chip == slow {
+                f -= f >> 8;
+            }
+            hw.poke(c + 7 * v, f as u8);
+            hw.poke(c + 7 * v + 1, (f >> 8) as u8);
+        }
+    }
+}
+
+/// The ears' lag of pair `s` (its entry) brought up to date and drawn toward `itd` ([`drive`]'s, and a
+/// one-shot's once its sweep is done: [`track`]): the last frame's slow chip credited its ticks (`dt`
+/// this frame's), then the chip to slow until the next frame: 0 the left (its ear later), 1 the right,
+/// 2 neither. (Inline: a copy in the library, [`track`]'s, and in the engines' overlay, [`drive`]'s.)
+#[inline(always)]
+fn lag<H: Hw + ?Sized>(hw: &mut H, s: u16, itd: i8, dt: u16) -> u16 {
+    let flags = hw.peek(s + pair::FLAGS);
+    let step = dt.min(255) as i16;
+    let mut lag = hw.peek(s + pair::ITD) as i8 as i16;
+    if flags & SLOW_L != 0 {
+        lag += step;
+    } else if flags & SLOW_R != 0 {
+        lag -= step;
+    }
+    let lag = lag.clamp(-127, 127);
+    hw.poke(s + pair::ITD, lag as u8);
+    let diff = itd as i16 - lag;
+    let (slow, mark) = if 2 * diff.abs() <= step {
+        (2, 0)
+    } else if diff > 0 {
+        (0, SLOW_L)
+    } else {
+        (1, SLOW_R)
+    };
+    hw.poke(s + pair::FLAGS, flags & !(SLOW_L | SLOW_R) | mark);
+    slow
+}
+
+/// A one-shot's ears' lag on pair `p` following the player turning, as an engine's ([`drive`], [`lag`]):
+/// once its pitch sweep is done (the IRQ's: till then it owns the frequencies, and the lag stays its
+/// onset's), each voice at the sweep's last pitch, the lagging ear's chip a 256th slow until the next
+/// frame, written only when that chip changes. (A noise voice's generator is clocked by its frequency
+/// too: its lag moves the same.)
+#[inline(never)]
+#[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxlib"))]
+fn track<H: Hw + ?Sized>(hw: &mut H, p: u16, itd: i8, dt: u16) {
+    let w = SWEEP + p * SWEEP_PAIR;
+    if hw.peek(w) != 0 {
+        return;
+    }
+    let s = STATE + state::PAIRS + p * PAIR;
+    let was = hw.peek(s + pair::FLAGS) & (SLOW_L | SLOW_R);
+    let slow = lag(hw, s, itd, dt);
+    // (The same chip slow as last frame: the chips already are. Just past the sweep both are on its last
+    // pitch, neither slow: `start` cleared the marks.)
+    if hw.peek(s + pair::FLAGS) & (SLOW_L | SLOW_R) == was {
+        return;
+    }
+    for chip in 0..core::hint::black_box(2u16) {
+        let c = LEFT + chip * (RIGHT - LEFT) + p * PAIR_STEP;
+        for v in 0..core::hint::black_box(3u16) {
+            let mut f = (hw.peek(w + 1 + v) as u16) << 8;
             if chip == slow {
                 f -= f >> 8;
             }
@@ -581,8 +899,8 @@ fn events<H: Hw + ?Sized>(hw: &mut H, a: &Agent, now: u16, dt: u16, flash: u8, l
             _ => continue,
         };
         let far = if hw.peek(e + 1) != 0 { FAR } else { 0 };
-        let (u, v) = (rd(hw, e + 4), rd(hw, e + 6));
-        play(hw, a, sound, u, v, far, now);
+        let (u, v, h) = (rd(hw, e + 4), rd(hw, e + 6), rd(hw, e + 8));
+        play(hw, a, sound, u, v, h, far, now);
     }
     // The player's: new tracers and missiles, a hit, the lock.
     for k in 0..PROJ_MAX {
@@ -594,23 +912,25 @@ fn events<H: Hw + ?Sized>(hw: &mut H, a: &Agent, now: u16, dt: u16, flash: u8, l
         };
         // (Launched this frame: the effects pass has taken this frame's ticks off its life already.)
         if ((ttl - hw.peek(p + proj::TTL)) as u16) <= dt {
-            play(hw, a, sound, 0, 0, OWN, now);
+            play(hw, a, sound, 0, 0, 0, OWN, now);
         }
     }
     if flash > hw.peek(STATE + state::FLASH) {
-        play(hw, a, patch::HIT, 0, 0, OWN, now);
+        play(hw, a, patch::HIT, 0, 0, 0, OWN, now);
     }
     if lock >= crate::hud::LOCK_TICKS && hw.peek(STATE + state::LOCK) < crate::hud::LOCK_TICKS {
-        play(hw, a, patch::LOCK, 0, 0, OWN, now);
+        play(hw, a, patch::LOCK, 0, 0, 0, OWN, now);
     }
 }
 
-/// Sound `sound` at (`u`, `v`) (1/16 texel; `OWN`: the player's) onto a pair, if it wins one.
+/// Sound `sound` at (`u`, `v`), height `h` (1/16 texel; `OWN`: the player's) onto a pair, if it wins one.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
-fn play<H: Hw + ?Sized>(hw: &mut H, a: &Agent, sound: u8, u: u16, v: u16, flags: u8, now: u16) {
+fn play<H: Hw + ?Sized>(hw: &mut H, a: &Agent, sound: u8, u: u16, v: u16, h: u16, flags: u8, now: u16) {
     let t = &PATCHES[sound as usize];
-    let g = if flags & OWN != 0 { 16 } else { gain(a, u, v, flags) };
+    let at = locate(a, u, v, h, flags);
+    // (Its gain: the near ear's volume, + 1.)
+    let g = if flags & OWN != 0 { 16 } else { at.0.max(at.1) + 1 };
     let score = (t[field::PRIORITY] as u16 * g as u16).min(255) as u8;
     if score == 0 {
         return;
@@ -656,24 +976,26 @@ fn play<H: Hw + ?Sized>(hw: &mut H, a: &Agent, sound: u8, u: u16, v: u16, flags:
     if (score as u16) < least {
         return;
     }
-    start(hw, a, best, sound, t, u, v, flags, now, score);
+    store(hw, best, at);
+    start(hw, best, sound, t, u, v, h, flags, now, score);
 }
 
 /// Sound `sound` (its patch `t`: from the caller's overlay) begun on pair `p` (its state: at (`u`, `v`),
-/// `flags`, `score`).
+/// height `h`, `flags`, `score`).
 ///
 /// The IRQ's sweep off; the voices set up on both chips held silent (the test bit), the cutoffs and
-/// volumes placed, then gated: the near ear's chip first, the far one's [`place`]'s lag later (raster
+/// volumes placed (snapped: no slew), then gated: the near ear's chip first, the far one's [`place`]'s lag later (raster
 /// lines: [`wait`]), so the sound reaches the far ear later, as round a head. Then the sweep on.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxlib"))]
-fn start<H: Hw + ?Sized>(hw: &mut H, a: &Agent, p: u16, sound: u8, t: &[u8; PATCH], u: u16, v: u16, flags: u8, now: u16, score: u8) {
+fn start<H: Hw + ?Sized>(hw: &mut H, p: u16, sound: u8, t: &[u8; PATCH], u: u16, v: u16, h: u16, flags: u8, now: u16, score: u8) {
     let s = STATE + state::PAIRS + p * PAIR;
     hw.poke(s + pair::PATCH, sound + 1);
     hw.poke(s + pair::FLAGS, flags);
     wr(hw, s + pair::U, u);
     wr(hw, s + pair::V, v);
+    wr(hw, HEIGHT + 2 * p, h);
     wr(hw, s + pair::START, now);
     hw.poke(s + pair::SCORE, score);
     let w = SWEEP + p * SWEEP_PAIR;
@@ -684,6 +1006,7 @@ fn start<H: Hw + ?Sized>(hw: &mut H, a: &Agent, p: u16, sound: u8, t: &[u8; PATC
         for v in 0..3u16 {
             hw.poke(c + 7 * v + 4, 0x08);
         }
+        hw.poke(c + 0x15, 0);
         hw.poke(c + 0x17, t[field::ROUTE]);
         for v in 0..3u16 {
             let o = v as usize * VOICE;
@@ -696,7 +1019,7 @@ fn start<H: Hw + ?Sized>(hw: &mut H, a: &Agent, p: u16, sound: u8, t: &[u8; PATC
             hw.poke(r + 6, t[o + 4]);
         }
     }
-    let itd = set(hw, a, p, t, now);
+    let itd = set(hw, p, t, now, true);
     hw.poke(s + pair::ITD, itd as u8);
     // The near ear (the right when the left lags), then the far.
     let near = (itd > 0) as u16;
@@ -737,38 +1060,34 @@ pub(crate) fn wait<H: Hw + ?Sized>(hw: &mut H, lines: u8) {
     }
 }
 
-/// A sound's gain (0..=16) where it is.
-#[inline(always)]
-fn gain(a: &Agent, u: u16, v: u16, flags: u8) -> u8 {
-    let (pu, pv) = a.at();
-    let (dx, dy) = (((u >> 4) as i16).wrapping_sub(pu), ((v >> 4) as i16).wrapping_sub(pv));
-    let (l, r, _, _, _) = place(dx, dy, a.yaw, flags & FAR != 0);
-    l.max(r) + 1
-}
-
-/// Pair `p`'s two chips' volumes and cutoffs for where its sound is now (`t` its patch); the ears' lag
-/// for there ([`place`]'s).
+/// Pair `p`'s two chips' volumes and cutoffs for where its sound is now ([`PLACED`]; `t` its patch), as
+/// the IRQ's targets ([`SLEW`]); `snap`: the values too, onto the chips at once (a sound begun). The
+/// ears' lag for there.
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfxlib"))]
-fn set<H: Hw + ?Sized>(hw: &mut H, a: &Agent, p: u16, t: &[u8; PATCH], now: u16) -> i8 {
+fn set<H: Hw + ?Sized>(hw: &mut H, p: u16, t: &[u8; PATCH], now: u16, snap: bool) -> i8 {
     let s = STATE + state::PAIRS + p * PAIR;
-    let flags = hw.peek(s + pair::FLAGS);
-    let (vl, vr, cl, cr, itd) = if flags & OWN != 0 {
-        (15, 15, 255, 255, 0)
-    } else {
-        let (pu, pv) = a.at();
-        let (dx, dy) = (((rd(hw, s + pair::U) >> 4) as i16).wrapping_sub(pu), ((rd(hw, s + pair::V) >> 4) as i16).wrapping_sub(pv));
-        place(dx, dy, a.yaw, flags & FAR != 0)
-    };
+    let e = PLACED + p * PLACE;
+    let (vl, vr, cl, cr, itd) = (hw.peek(e), hw.peek(e + 1), hw.peek(e + 2), hw.peek(e + 3), hw.peek(e + 4) as i8);
     // The cutoff swept a tick, then closed for the ear.
     let age = now.wrapping_sub(rd(hw, s + pair::START)).min(255) as i16;
     let open = (t[field::CUTOFF] as i16 + t[field::CUT_SWEEP] as i8 as i16 * age).clamp(0, 255) as u16;
     for chip in 0..core::hint::black_box(2u16) {
         let (vol, cut) = if chip == 0 { (vl, cl) } else { (vr, cr) };
-        let c = LEFT + chip * (RIGHT - LEFT) + p * PAIR_STEP;
-        hw.poke(c + 0x15, 0);
-        hw.poke(c + 0x16, ((open * cut as u16) >> 8) as u8);
-        hw.poke(c + 0x18, t[field::MODE] | vol);
+        let (ch, v, c) = (SLEW + 4 * p + 2 * chip, t[field::MODE] | vol, ((open * cut as u16) >> 8) as u8);
+        if snap {
+            hw.poke(HOLD, 1);
+            let r = LEFT + chip * (RIGHT - LEFT) + p * PAIR_STEP;
+            hw.poke(ch + SLEW_CH, v);
+            hw.poke(ch + SLEW_CH + 1, c);
+            hw.poke(r + 0x18, v);
+            hw.poke(r + 0x16, c);
+        }
+        hw.poke(ch, v);
+        hw.poke(ch + 1, c);
+        if snap {
+            hw.poke(HOLD, 0);
+        }
     }
     itd
 }
@@ -777,6 +1096,12 @@ fn set<H: Hw + ?Sized>(hw: &mut H, a: &Agent, p: u16, t: &[u8; PATCH], now: u16)
 #[inline(never)]
 #[cfg_attr(target_arch = "mos", unsafe(link_section = ".text.sfx"))]
 fn init<H: Hw + ?Sized>(hw: &mut H, now: u16) {
+    // (The slews first, each at its target: the IRQ leaves the chips be.)
+    for ch in 0..SLEW_CH {
+        let v = if ch & 1 == 0 { LP } else { 0 };
+        hw.poke(SLEW + ch, v);
+        hw.poke(SLEW + SLEW_CH + ch, v);
+    }
     for p in 0..PAIRS {
         hw.poke(SWEEP + p * SWEEP_PAIR, 0);
         for chip in 0..core::hint::black_box(2u16) {

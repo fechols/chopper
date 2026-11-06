@@ -3054,24 +3054,24 @@ fn far_fire_is_cut_before_a_near_effect() {
 fn a_sound_is_placed_by_its_bearing_and_range() {
     use crate::sfx::place;
     // Facing north (yaw 0): east is to the right.
-    let (l, r, cl, cr, itd) = place(-30, 0, 0, false);
+    let (l, r, cl, cr, itd) = place(-30, 0, 0, 0, 0, false);
     assert!(l > r && cl > cr, "left: ({l}, {r}) cut ({cl}, {cr})");
     assert_eq!(itd, -crate::sfx::ITD_MAX, "abeam on the left: the right ear lags most");
-    let (l, r, _, _, itd) = place(30, 0, 0, false);
+    let (l, r, _, _, itd) = place(30, 0, 0, 0, 0, false);
     assert!(r > l, "right: ({l}, {r})");
     assert_eq!(itd, crate::sfx::ITD_MAX, "abeam on the right: the left ear lags most");
-    let (al, ar, acl, acr, aitd) = place(0, 30, 0, false);
-    let (bl, br, bcl, bcr, bitd) = place(0, -30, 0, false);
+    let (al, ar, acl, acr, aitd) = place(0, 30, 0, 0, 0, false);
+    let (bl, br, bcl, bcr, bitd) = place(0, -30, 0, 0, 0, false);
     assert_eq!((aitd, bitd), (0, 0), "dead ahead and astern: no lag");
     assert_eq!((al, ar), (bl, br), "ahead and behind as loud");
     assert!(bcl + 60 < acl && bcr + 60 < acr, "behind muffled: ahead ({acl}, {acr}), behind ({bcl}, {bcr})");
     // Turned to face east, the same source north is now on the left.
-    let (l, r, _, _, _) = place(0, 30, 0x4000, false);
+    let (l, r, _, _, _) = place(0, 30, 0, 0x4000, 0, false);
     assert!(l > r, "turned: ({l}, {r})");
-    let near = place(0, 20, 0, false);
-    let far = place(0, 300, 0, false);
+    let near = place(0, 20, 0, 0, 0, false);
+    let far = place(0, 300, 0, 0, 0, false);
     assert!(far.0 < near.0 && far.2 < near.2, "far quieter and duller: {near:?} {far:?}");
-    assert!(place(0, 300, 0, true).0 <= far.0, "the battle on the horizon quieter still");
+    assert!(place(0, 300, 0, 0, 0, true).0 <= far.0, "the battle on the horizon quieter still");
 }
 
 /// The sound effects' pairs: two sounds at once; a near explosion takes a pair from a far muzzle flash,
@@ -3232,6 +3232,7 @@ fn list_vehicles(m: &mut Machine, vehicles: &[(u16, u8, u16, u16)]) {
         m.ram[e + entry::MESH as usize] = crate::actors::mesh_of(kind, 0);
         m.ram[e + entry::U as usize..][..2].copy_from_slice(&(u << 4).to_le_bytes());
         m.ram[e + entry::V as usize..][..2].copy_from_slice(&(v << 4).to_le_bytes());
+        m.ram[e + entry::H as usize..][..2].copy_from_slice(&0u16.to_le_bytes());
     }
 }
 
@@ -3417,9 +3418,9 @@ fn a_sound_reaches_the_far_ear_later() {
         let (lo, hi) = (*l.first().unwrap().min(r.first().unwrap()), *l.last().unwrap().max(r.last().unwrap()));
         (l, r, w[lo..hi].iter().filter(|(a, _)| *a == 0xD012).count())
     };
-    // An explosion abeam to the right (facing north).
+    // An explosion abeam to the right (facing north), level with the player.
     a.t += 4;
-    spawn(&mut m, crate::effects::effect::EXPLOSION, 1040 << 4, 1100 << 4, 0, a.t as u16 - 1);
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1040 << 4, 1100 << 4, 10 << 4, a.t as u16 - 1);
     let mut log = SidLog { m: &mut m, writes: vec![] };
     sfx::update(&mut log, &a);
     let (l, r, lines) = gates(&log.writes);
@@ -3434,7 +3435,9 @@ fn a_sound_reaches_the_far_ear_later() {
     sfx::update(&mut log, &a);
     // (The wait reads the line once to begin with.)
     assert!(gates(&log.writes).2 <= 1, "ahead: both ears at once");
-    // A tank's engine ahead, then the player turned to face west: it is abeam on the right.
+    // A tank's engine ahead, then the player (on the ground with it, level) turned to face west: it is
+    // abeam on the right.
+    a.h = 0;
     a.t += 200;
     sfx::update(&mut m, &a);
     list_vehicles(&mut m, &[(7, TANK, 1024, 1120)]);
@@ -3471,15 +3474,150 @@ fn a_sound_reaches_the_far_ear_later() {
     assert!((ITD_MAX - 3..=ITD_MAX + 3).contains(&lag(&m)), "the lag drawn to abeam's (within half a frame's step): {}", lag(&m));
 }
 
-/// The ears' lag is mirror-symmetric: a source and its mirror image across the nose have opposite
-/// lags, swapped levels and cutoffs.
+/// The ears' model, swept round the player (every bearing, near to far, level with it and below it,
+/// level and banked): its cues agree and stay consistent.
+/// - **Mirror-symmetric:** a source and its mirror image across the nose (the bank mirrored too) have
+///   opposite lags, swapped levels and cutoffs.
+/// - **Continuous:** a step of the bearing (1.4°) moves the lag a line at most, and the near ear's level
+///   a step at most (the far one's two, at the 4-bit floor), from 30 texels out (nearer, the whole
+///   texels of the offsets step the bearing by degrees).
+/// - **Lateral:** the near ear is never quieter nor duller than the far one, and the lag's sign agrees.
+/// - **Consistent with distance:** the lag and the shadow (the cutoffs' ratio) are the same near and far;
+///   the pan never collapses to the centre while the near ear has 3 steps or more and the source is
+///   well off the nose.
+/// - **Independent:** the head's shadow (`cl / cr`) is the same octave ahead as behind.
+/// - **Overhead:** a source passed straight under the player centres (no lag) and never flips side.
 #[test]
-fn a_sounds_place_is_mirror_symmetric() {
-    use crate::sfx::place;
-    for &(dx, dy) in &[(1, 40), (3, 30), (30, 0), (12, -25), (40, 39), (2, -60)] {
-        let (l, r, cl, cr, itd) = place(dx, dy, 0, false);
-        let mirrored = place(-dx, dy, 0, false);
-        assert_eq!(mirrored, (r, l, cr, cl, -itd), "({dx}, {dy}) mirrored");
+fn a_sounds_place_is_consistent() {
+    use crate::sfx::{ITD_MAX, place};
+    let bearing = |k: u16, d: i16| -> (i16, i16) {
+        let a = (k << 8) as u16;
+        ((crate::camera::sin(a) * d as i32 / 16384) as i16, (crate::camera::cos(a) * d as i32 / 16384) as i16)
+    };
+    for &roll in &[0u16, 20 * 182] {
+        for &dz in &[0i16, 20, 60] {
+            for &d in &[8i16, 30, 100, 300, 700] {
+                let mut last: Option<(u8, u8, u8, u8, i8)> = None;
+                for k in 0..=256u16 {
+                    let (dx, dy) = bearing(k & 255, d);
+                    let p = place(dx, dy, dz, 0, roll, false);
+                    let (l, r, cl, cr, itd) = p;
+                    let mirror = place(-dx, dy, dz, 0, roll.wrapping_neg(), false);
+                    assert_eq!(mirror, (r, l, cr, cl, -itd), "({dx}, {dy}, {dz}) roll {roll}: mirrored");
+                    assert!(itd.abs() <= ITD_MAX);
+                    if itd > 0 {
+                        assert!(r >= l && cr >= cl, "({dx}, {dy}, {dz}) roll {roll}: on the right, the right ear nearer: {p:?}");
+                    } else if itd < 0 {
+                        assert!(l >= r && cl >= cr, "({dx}, {dy}, {dz}) roll {roll}: on the left: {p:?}");
+                    }
+                    // (Continuity from 30 texels: nearer, whole texels step the bearing by degrees.)
+                    if let Some(q) = last.filter(|_| d >= 30) {
+                        assert!((itd - q.4).abs() <= 1, "({dx}, {dy}, {dz}) roll {roll}: the lag jumps {q:?} -> {p:?}");
+                        let near = l.max(r).abs_diff(q.0.max(q.1));
+                        assert!(near <= 1, "({dx}, {dy}, {dz}) roll {roll}: the near ear jumps {q:?} -> {p:?}");
+                        assert!(l.abs_diff(q.0) <= 2 && r.abs_diff(q.1) <= 2, "({dx}, {dy}, {dz}) roll {roll}: a level jumps {q:?} -> {p:?}");
+                    }
+                    last = Some(p);
+                }
+            }
+        }
+    }
+    // Abeam to the right at every range, level with the player: the same lag and shadow; the far ear
+    // quieter while the near ear has 3 steps or more.
+    let abeam: Vec<_> = [8i16, 30, 60, 100, 200, 300].iter().map(|&d| place(d, 0, 0, 0, 0, false)).collect();
+    let first = abeam[0].2 as u32 * 256 / abeam[0].3 as u32;
+    for p in &abeam {
+        assert_eq!(p.4, ITD_MAX, "abeam: the whole lag at every range: {abeam:?}");
+        assert!(p.1 < 3 || p.0 < p.1, "abeam: the pan holds with range: {abeam:?}");
+        let ratio = p.2 as u32 * 256 / p.3 as u32;
+        assert!(ratio.abs_diff(first) <= 12, "the head's shadow the same near and far: {abeam:?}");
+    }
+    // Off the nose by 30° and more, at ranges where the near ear has 3 steps or more: never centred.
+    for k in 22..=106u16 {
+        for &d in &[20i16, 60, 120] {
+            let (dx, dy) = bearing(k, d);
+            let (l, r, _, _, itd) = place(dx, dy, 0, 0, 0, false);
+            if r >= 3 {
+                assert!(l < r && itd > 0, "({dx}, {dy}): a source on the right is heard there: ({l}, {r}) lag {itd}");
+            }
+        }
+    }
+    // The shadow ahead and behind: the same octave (the ratio within a step of the tables).
+    let (_, _, acl, acr, _) = place(30, 30, 0, 0, 0, false);
+    let (_, _, bcl, bcr, _) = place(30, -30, 0, 0, 0, false);
+    let (ra, rb) = (acl as u32 * 256 / acr as u32, bcl as u32 * 256 / bcr as u32);
+    assert!(ra.abs_diff(rb) <= 12, "the shadow the same ahead ({acl}/{acr}) as behind ({bcl}/{bcr})");
+    // Passing over a source at 20 texels' height, from 40 texels to its left to 40 to its right: the lag
+    // swings from the left to the right through 0 straight over it, a line at most a texel, never back.
+    let mut last = place(-40, 0, 20, 0, 0, false).4;
+    for x in -40..=40i16 {
+        let itd = place(x, 0, 20, 0, 0, false).4;
+        assert!(itd >= last && itd - last <= 1, "overhead at {x}: the lag {last} -> {itd}");
+        if x == 0 {
+            assert_eq!(itd, 0, "straight under: centred");
+        }
+        last = itd;
+    }
+    // Banked right, a source straight below is heard on the right (the ears tilt with the view).
+    let (l, r, _, _, itd) = place(0, 0, 30, 0, 20 * 182, false);
+    assert!(itd > 0 && r > l, "banked right: below is on the right: ({l}, {r}) lag {itd}");
+}
+
+/// The ears' tables are shaped as their documents say: the lag Woodworth's (each 16th's mean, to a
+/// line), every table rising (the lag a line a step), and the volumes the nearest by ratio.
+#[test]
+fn the_ears_tables_are_a_heads() {
+    use crate::sfx::{ILD, ITD_LINES, ITD_MAX, SHADOW, VOL};
+    let ww = |x: f64| x.min(1.0).asin() + x.min(1.0);
+    let mean = |i: usize| {
+        let (lo, hi) = (((i as f64 - 0.5) / 16.0).max(0.0), ((i as f64 + 0.5) / 16.0).min(1.0));
+        (0..200).map(|k| ww(lo + (hi - lo) * (k as f64 + 0.5) / 200.0)).sum::<f64>() / 200.0
+    };
+    for i in 0..17 {
+        assert_eq!(ITD_LINES[i] as f64, (ITD_MAX as f64 * mean(i) / mean(16)).round(), "the lag at {i}/16");
+        assert_eq!(ILD[i] as usize, (28 * i + 8) / 16, "the level gap at {i}/16");
+        if i > 0 {
+            assert!(ITD_LINES[i] - ITD_LINES[i - 1] <= 1 && ILD[i] >= ILD[i - 1] && SHADOW[i] >= SHADOW[i - 1]);
+        }
+    }
+    for (a, &v) in VOL.iter().enumerate() {
+        let t = 15.0 * 2f64.powf(-(a as f64) / 16.0);
+        let best = (1..=15u8).min_by(|&x, &y| (x as f64 / t).ln().abs().total_cmp(&(y as f64 / t).ln().abs())).unwrap();
+        assert_eq!(v, best, "the volume at {a}/16 octave down");
+    }
+    assert!(15.0 * 2f64.powf(-(VOL.len() as f64) / 16.0) < 0.75, "silent past the table");
+}
+
+/// The IRQ's slews (the host's copy): each value glides toward its target, a step at least and never
+/// past it, onto its own register (`asm/hud.S` `sfx_reg`), within half a second.
+#[test]
+fn the_sound_slews_glide_to_their_targets() {
+    use crate::sfx::{SLEW, SLEW_CH, slew};
+    let mut m = Machine::new(package());
+    let (tg, cur) = (SLEW as usize, (SLEW + SLEW_CH) as usize);
+    let targets = [0x1F, 0xC0, 0x10, 0x40, 0x13, 0xFF, 0x1A, 0x01];
+    for ch in 0..SLEW_CH as usize {
+        m.ram[tg + ch] = targets[ch];
+        m.ram[cur + ch] = 0;
+    }
+    m.ram[cur + 7] = 0xFF;
+    let mut frames = 0;
+    let mut log = SidLog { m: &mut m, writes: vec![] };
+    while (0..SLEW_CH as usize).any(|ch| log.m.ram[cur + ch] != targets[ch]) {
+        let before: Vec<u8> = log.m.ram[cur..cur + SLEW_CH as usize].to_vec();
+        slew(&mut log);
+        let m = &log.m;
+        for ch in 0..SLEW_CH as usize {
+            let (b, n, t) = (before[ch] as i16, m.ram[cur + ch] as i16, targets[ch] as i16);
+            assert!(b == t || ((n - b).signum() == (t - b).signum() && (t - n).abs() < (t - b).abs()), "ch {ch}: {b} -> {n} toward {t}");
+        }
+        frames += 1;
+        assert!(frames < 30, "glides there within half a second");
+    }
+    let regs = [0xD418u16, 0xD416, 0xD458, 0xD456, 0xD438, 0xD436, 0xD478, 0xD476];
+    for (ch, &r) in regs.iter().enumerate() {
+        let last = log.writes.iter().rev().find(|w| w.0 == r).map(|w| w.1);
+        assert_eq!(last, Some(targets[ch]), "ch {ch} onto ${r:04X} (asm/hud.S sfx_reg)");
     }
 }
 
@@ -4138,4 +4276,43 @@ fn the_clouds_depth_cull_loses_nothing() {
     }
     // (Most of the ring stops at the depth.)
     assert!(seen > 0 && early > 2 * seen, "{seen} placed, {early} stopped early");
+}
+
+/// A one-shot's lag follows the player turning once its sweep is done ([`crate::sfx`] `track`), and its
+/// frequencies are written only when the slow chip changes: none while it is settled.
+#[test]
+fn a_settled_one_shot_leaves_its_frequencies_be() {
+    use crate::combat::{self, spawn};
+    use crate::sfx::{self, LEFT, PAIR, PAIR_STEP, RIGHT, STATE, SWEEP, SWEEP_PAIR, patch, state};
+    let mut m = Machine::new(package());
+    combat::init(&mut m);
+    let mut a = crate::agent::Agent::new();
+    (a.u, a.v, a.h, a.t) = (1024 << 8, 1100 << 8, 10 << 8, 1000);
+    sfx::update(&mut m, &a);
+    // An explosion ahead, level with the player.
+    a.t += 4;
+    spawn(&mut m, crate::effects::effect::EXPLOSION, 1024 << 4, 1130 << 4, 10 << 4, a.t as u16 - 1);
+    sfx::update(&mut m, &a);
+    let at = |p: u16| (STATE + state::PAIRS + p * PAIR) as usize;
+    let p = (0..sfx::PAIRS).find(|&p| m.ram[at(p)] == patch::EXPLOSION + 1).expect("the explosion's pair");
+    // Its sweep done (the IRQ's, which the host hasn't).
+    m.ram[(SWEEP + p * SWEEP_PAIR) as usize] = 0;
+    // The pair's frequency writes in a frame (`dt` ticks on).
+    let freqs = |m: &mut Machine, a: &mut crate::agent::Agent, dt: u32| {
+        a.t += dt;
+        let mut log = SidLog { m, writes: vec![] };
+        sfx::update(&mut log, a);
+        let ours = |r: u16| [LEFT, RIGHT].iter().any(|&c| (0..3).any(|v| [0, 1].iter().any(|&k| r == c + p * PAIR_STEP + 7 * v + k)));
+        log.writes.iter().filter(|(r, _)| ours(*r)).count()
+    };
+    assert_eq!(freqs(&mut m, &mut a, 4), 0, "settled ahead: nothing written");
+    // Turned to face west: it is abeam on the right, the left ear's chip slowed.
+    a.yaw = 0xC000;
+    assert!(freqs(&mut m, &mut a, 4) > 0, "the turn slows a chip");
+    let mut writes = vec![];
+    for _ in 0..12 {
+        writes.push(freqs(&mut m, &mut a, 4));
+    }
+    assert!(writes.ends_with(&[0, 0, 0]), "settled again: nothing written ({writes:?})");
+    assert!(m.ram[at(p)] == patch::EXPLOSION + 1, "still playing");
 }

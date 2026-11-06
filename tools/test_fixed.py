@@ -64,6 +64,48 @@ def main():
         udivsi3(mem, syms['__wrap___udivsi3'], rng, args.cases)
     if '__wrap___udivhi3' in syms:
         udivhi3(mem, syms['__wrap___udivhi3'], rng)
+    if 'sfx_slew' in syms:
+        sfx_slew(mem, syms['sfx_slew'])
+
+
+SLEW_T, SLEW_C, HOLD = 0xFF32, 0xFF3A, 0xFF4C  # chopper::sfx::SLEW, its values, HOLD
+SLEW_REG = [0x18, 0x16, 0x58, 0x56, 0x38, 0x36, 0x78, 0x76]  # each channel's SID register from $D400
+
+
+def sfx_slew(mem, entry):
+    """sfx_slew (asm/hud.S, the IRQ's) against chopper::sfx::slew's rule: every (target, value) pair, 8
+    channels a call; each value moves a quarter of the gap + 1 toward its target (never past it) onto its
+    SID register, an unchanged one is not written, and X comes back 0 (the IRQ's row 0 needs it). With
+    HOLD set, nothing moves."""
+    def want(t, c):
+        if t == c:
+            return None
+        return c + ((t - c) >> 2) + 1 if t > c else c - ((c - t - 1) >> 2) - 1
+    pairs = [(t, c) for t in range(256) for c in range(256)]
+    total, worst = 0, 0
+    for k in [-8] + list(range(0, len(pairs), 8)):
+        held = k < 0
+        mem[HOLD] = 1 if held else 0
+        chunk = [(t, (t + 64) & 0xFF) for t in range(0, 256, 32)] if held else pairs[k:k + 8]
+        for ch, (t, c) in enumerate(chunk):
+            mem[SLEW_T + ch], mem[SLEW_C + ch] = t, c
+            mem[0xD400 + SLEW_REG[ch]] = 0xEE
+        cpu = Cpu(mem, [(0x100, 0x200), (SLEW_C, SLEW_C + 8), (0xD400, 0xD480)])
+        cpu.pc = entry
+        cpu.push((RETURN - 1) >> 8)
+        cpu.push((RETURN - 1) & 0xFF)
+        while cpu.pc != RETURN:
+            cpu.step()
+        if cpu.x != 0:
+            raise SystemExit(f'sfx_slew: returned X = {cpu.x}')
+        for ch, (t, c) in enumerate(chunk):
+            n, reg = None if held else want(t, c), mem[0xD400 + SLEW_REG[ch]]
+            if (mem[SLEW_C + ch], reg) != ((c, 0xEE) if n is None else (n, n)):
+                raise SystemExit(f'sfx_slew: ch {ch} {c} toward {t}: got {mem[SLEW_C + ch]} (reg {reg:#x}), want {n}')
+        if not held:
+            total += cpu.cycles
+            worst = max(worst, cpu.cycles)
+    print(f'sfx_slew: {len(pairs)} steps exact; {total / (len(pairs) / 8):.0f} cycles a call, {worst} at most')
 
 
 def udivhi3(mem, entry, rng):

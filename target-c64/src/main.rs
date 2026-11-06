@@ -426,11 +426,15 @@ fn boot(c: &mut C64) -> u16 {
     // empty table until the first frame's is ready.
     port_a_paddles();
     // The sound effects' state afresh (RAM outlives a reset: the first frame sets it up and silences the
-    // SIDs), and no pitch sweeps for the IRQ till then.
+    // SIDs), and no pitch sweeps or slews for the IRQ till then (each slew's target its value).
     poke(chopper::sfx::STATE + chopper::sfx::state::MAGIC, 0);
     for p in 0..chopper::sfx::PAIRS {
         poke(chopper::sfx::SWEEP + p * chopper::sfx::SWEEP_PAIR, 0);
     }
+    for ch in 0..2 * chopper::sfx::SLEW_CH {
+        poke(chopper::sfx::SLEW + ch, 0);
+    }
+    poke(chopper::sfx::HOLD, 0);
     poke(0xD015, 0);
     poke(0xD017, 0);
     poke(0xD01B, 0);

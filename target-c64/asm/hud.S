@@ -8,7 +8,8 @@
 ; READY is set.
 ;
 ; Touches only A, X, Y (saved), the VIC registers, the sprite pointers and the page, and the sound
-; effects' sweeps (the SIDs and chopper::sfx::SWEEP at $FF20): no zero page, no REU, no other Rust state
+; effects' sweeps and slews (the SIDs, chopper::sfx::SWEEP at $FF20 and SLEW at $FF32): no zero page,
+; no REU, no other Rust state
 ; (it only reads the player's hit flash), so it may interrupt anything. Chopper keeps $01 = $35 throughout.
 ;
 ; The screen is a fixed 38 × 24 window (chopper::layout::D011/D016), so the fine scroll can move the
@@ -163,6 +164,7 @@ hud_irq:
     sta NEXT
     lda #TOP_LINE
     sta $d012
+    jsr sfx_slew            ; once a video frame, the last row's sprites set: the effects' levels, cutoffs
 3:
     pla
     tay
@@ -171,6 +173,56 @@ hud_irq:
     pla
     rti
 .size hud_irq, .-hud_irq
+
+; The sound effects' levels and cutoffs (chopper::sfx::SLEW: 8 targets, then the 8 values on the SIDs;
+; sfx_reg each one's register): each value moved a quarter of the way to its target (at least 1, never
+; past it) and written to its SID, so a sound pans and dulls at 60 Hz whatever the frame rate. Uses A,
+; X, Y; returns X = 0. Skipped while chopper::sfx::HOLD is set (a sound's levels being snapped). Called
+; from the frame's last row (the one scheduling row 0), past every video write. (chopper::sfx::slew is
+; the host's copy.) Resident: .victext is full.
+SLEW_T   = $FF32
+SLEW_C   = $FF3A
+SLEW_HOLD = $FF4C
+.section .text.sfx_slew,"ax",@progbits
+.type sfx_slew,@function
+sfx_slew:
+    ldx #0
+    lda SLEW_HOLD
+    bne 5f
+    ldx #7
+1:
+    lda SLEW_T,x
+    sec
+    sbc SLEW_C,x            ; A = target - value (carry clear: below it)
+    beq 4f
+    bcc 2f
+    lsr
+    lsr
+    sec
+    adc SLEW_C,x            ; value + gap / 4 + 1
+    bne 3f                  ; (always: at least 1)
+2:
+    eor #$ff                ; value - target - 1
+    lsr
+    lsr
+    eor #$ff                ; -(that / 4) - 1
+    clc
+    adc SLEW_C,x
+3:
+    sta SLEW_C,x
+    ldy sfx_reg,x
+    sta $d400,y
+4:
+    dex
+    bpl 1b
+    ldx #0
+5:
+    rts
+.size sfx_slew, .-sfx_slew
+
+; Each slew's SID register (from $D400): pair p's left chip $D418, $D416, its right chip's, by p.
+sfx_reg:
+    .byte $18, $16, $58, $56, $38, $36, $78, $76
 
 ; The row's sprite Ys and Xs (X = the row in the table; kept) and $D010, each moved by the shake's
 ; offsets (HDY lines, HDX hires px: 1-8, carrying into the X's high bit). Resident: .victext is full.
