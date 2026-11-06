@@ -1406,7 +1406,7 @@ fn moving_objects_are_drawn_where_they_are() {
     let st = crate::package::render_floor(&mut m, BUFFERS[0], &scene, &cam, Lines::Full);
     let mut rgb = m.decode(BUFFERS[0], crate::format::COLORS[0]);
     crate::hud::composite(&m, 0, &mut rgb);
-    crate::png::save_wide(std::path::Path::new("output/m2/close.png"), 160, &rgb).unwrap();
+    crate::png::save_screen(std::path::Path::new("output/m2/close.png"), &rgb).unwrap();
     assert!(st.tris as u32 + st.dropped as u32 > st.geom.tris as u32, "{st:?}");
 }
 

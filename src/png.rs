@@ -67,3 +67,11 @@ pub fn save_wide(path: &Path, w: usize, px: &[[u8; 3]]) -> Result<(), String> {
     let wide: Vec<[u8; 3]> = px.iter().flat_map(|&p| [p, p]).collect();
     save(path, 2 * w as u32, (px.len() / w) as u32, &wide)
 }
+
+/// Save a 160-wide multicolor frame as the C64 shows it: without bitmap column 39, which the 38-column
+/// window always hides (`layout::DRAWN_COLS`).
+pub fn save_screen(path: &Path, px: &[[u8; 3]]) -> Result<(), String> {
+    let w = crate::layout::DRAWN_COLS as usize * 4;
+    let shown: Vec<[u8; 3]> = px.chunks(160).flat_map(|row| row[..w].iter().copied()).collect();
+    save_wide(path, w, &shown)
+}

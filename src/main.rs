@@ -86,7 +86,7 @@ fn frame(args: &[String]) -> Result<(), String> {
     let mut rgb = m.decode(buf, COLORS[0]);
     let back = m.ram[chopper::hud::BACK as usize];
     chopper::hud::composite(&m, back, &mut rgb);
-    png::save_wide(&out.with_extension("png"), 160, &rgb)?;
+    png::save_screen(&out.with_extension("png"), &rgb)?;
     let mut bin = m.ram[buf.bitmap as usize..buf.bitmap as usize + 8000].to_vec();
     bin.extend_from_slice(&m.ram[buf.screen as usize..buf.screen as usize + 1000]);
     bin.extend(m.color_ram[..1000].iter().map(|c| c & 15));
@@ -169,7 +169,7 @@ fn flight(args: &[String]) -> Result<(), String> {
             let name = format!("t{tick:05}{tag}");
             let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
             chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
-            png::save_wide(&dir.join(format!("{name}.png")), 160, &rgb)?;
+            png::save_screen(&dir.join(format!("{name}.png")), &rgb)?;
             println!("{name}: {} lines, {} DMAs, {} I/O writes, {} runs ({} ground)", st.drawn_lines, st.dmas, st.io_writes, st.spans, st.ground_spans);
         }
     }
@@ -272,7 +272,7 @@ fn cockpit(args: &[String]) -> Result<(), String> {
     let a = chopper::agent::at(&reu, chopper::agent::LIFT + 3000);
     cockpit::update(&mut m, &a, &mut [0xFF; gauge::COUNT]);
     let px = m.decode(BUFFERS[0], COLORS[0]);
-    png::save_wide(&dir.join("panel.png"), 160, &px[cockpit::PANEL_ROW as usize * 8 * 160..])?;
+    png::save_screen(&dir.join("panel.png"), &px[cockpit::PANEL_ROW as usize * 8 * 160..])?;
     Ok(())
 }
 
@@ -495,7 +495,7 @@ fn wrecks(args: &[String]) -> Result<(), String> {
         let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
         chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
         let p = PathBuf::from(format!("{}-{age:02}s.png", out.display()));
-        png::save_wide(&p, 160, &rgb)?;
+        png::save_screen(&p, &rgb)?;
         println!("{}", p.display());
     }
     Ok(())
@@ -532,7 +532,7 @@ fn carrier_views(args: &[String]) -> Result<(), String> {
         let mut rgb = m.decode(BUFFERS[0], COLORS[0]);
         chopper::hud::composite(&m, m.ram[chopper::hud::BACK as usize], &mut rgb);
         let p = PathBuf::from(format!("output/carrier-{name}.png"));
-        png::save_wide(&p, 160, &rgb)?;
+        png::save_screen(&p, &rgb)?;
         println!("{}", p.display());
     }
     Ok(())
