@@ -126,6 +126,7 @@ Low-poly meshes, at most 16 faces each, flat-shaded like the scene. Ranges are i
 ## Sound
 
 - **The rotor:** a recorded loop, streamed from the REU to the Ultimate's sampler (`asm/stream.S`).
+- **The internal speaker:** `config/chopper-internal-speaker.cfg` is `config/chopper.cfg` plus the C64U's Speaker Mixer (mono): samplers at 0 dB and UltiSIDs at -6 dB, the same as its Audio Mixer for HDMI (+6 and 0 dB clipped the speaker), drive and tape noise off, for players without HDMI audio. (The rotor's right channel is its left 10 ms later, `format::HAAS`: if the mono sum sounds phasey, Sampler R can go OFF.)
 - **Effects on four SIDs:** the C64U's two UltiSIDs, each split in two (`config/chopper.cfg`: range split on A5), are four SIDs: $D400 and $D420 hard left, $D440 and $D460 hard right. They make two stereo pairs, so two sounds play at once (`sfx`, its own overlays after the effects pass).
   - **A whole chip per ear:** a sound plays the same three voices on its pair's left and right chips. Each chip's master volume is that ear's gain and its low-pass cutoff that ear's muffling, so the filter colours that one sound only.
   - **Placed (a cheap HRTF):** its bearing from the nose pans it; behind the player both cutoffs close (muffled) and the far ear's more (the head's shadow); distance lowers the gain and dulls it. A sound playing is placed again every frame, so turning pans it.

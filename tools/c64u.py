@@ -3,7 +3,7 @@
 frame and dump it for `chopper compare`. Device class (REST + DMA socket) from ../talonhd/tools/c64u.py,
 itself adapted from impact/tools/c64u_device.py (MIT).
 
-    python tools/c64u.py config [config/chopper.cfg]
+    python tools/c64u.py config [config/chopper.cfg | config/chopper-internal-speaker.cfg]
     python tools/c64u.py run dist/chopper.prg
     python tools/c64u.py upload-reu dist/chopper.reu [--no-reset]
     python tools/c64u.py status
@@ -14,11 +14,12 @@ itself adapted from impact/tools/c64u_device.py (MIT).
 `config` applies chopper's settings (NTSC, 64 MHz turbo, the 16 MB REU without a preload image, the
 Ultimate Audio sampler mapped at $DF20 and audible) to the running configuration, not to flash: run it
 before `upload-reu`/`run` when another project may have left its own on the machine.
+`config/chopper-internal-speaker.cfg` is the same plus the Speaker Mixer: the game's sound on the C64U's
+internal speaker too, for players without HDMI audio.
 
 Host from --host or C64U_HOST (default 192.168.66.178); password (if any) from C64U_PASSWORD.
 """
 import argparse
-import configparser
 import json
 import os
 from pathlib import Path
@@ -129,6 +130,30 @@ def status(dev):
                 setup_us=st[14] | st[15] << 8, geom_us=st[16] | st[17] << 8, tris=st[18], objects=st[19], pop=st[20])
 
 
+def read_cfg(path):
+    """A C64U config file as the device's own loader reads it (F1 > load from USB): `[Section]` headers,
+    `Item=Value` lines, the value everything after the first `=` with only the line end taken off. So a
+    leading space stays: the device spells 0 dB ` 0 dB`, written `Vol UltiSid 1= 0 dB` (no quotes: the
+    menu takes quotes literally and rejects the value). Blank lines and `;`/`#` comments are skipped; a
+    setting before any section, or a quoted value, stops with an error (neither would load on the
+    device). A byte-order mark is allowed."""
+    settings, section = {}, None
+    for n, line in enumerate(Path(path).read_text(encoding='utf-8-sig').splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith((';', '#')):
+            continue
+        if line.startswith('[') and line.rstrip().endswith(']'):
+            section = settings.setdefault(line.strip()[1:-1], {})
+        elif '=' in line:
+            item, value = line.split('=', 1)
+            if section is None:
+                raise SystemExit(f'{path}:{n}: {item.strip()!r} before any [Section]')
+            if len(value.strip()) >= 2 and value.strip()[0] == value.strip()[-1] == '"':
+                raise SystemExit(f'{path}:{n}: {item.strip()} is quoted; the device takes quotes literally '
+                                 f'(write a leading space as is: `{item.strip()}={value.strip()[1:-1]}`)')
+            section[item.strip()] = value.rstrip()
+    return settings
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--host', default=os.environ.get('C64U_HOST', '192.168.66.178'))
@@ -148,12 +173,7 @@ def main():
     args = ap.parse_args()
     dev = Device(args.host)
     if args.cmd == 'config':
-        cfg = configparser.ConfigParser(interpolation=None, delimiters=('=',))
-        cfg.optionxform = str
-        cfg.read(args.cfg, encoding='utf-8')
-        # (A value in double quotes keeps its spaces: the device spells 0 dB " 0 dB".)
-        unquote = lambda v: v[1:-1] if len(v) >= 2 and v[0] == v[-1] == '"' else v
-        settings = {section: {k: unquote(v) for k, v in cfg[section].items()} for section in cfg.sections()}
+        settings = read_cfg(args.cfg)
         dev.request('POST', '/v1/configs', settings)
         for section, items in settings.items():
             now = dev.request('GET', '/v1/configs/' + urllib.parse.quote(section)).get(section, {})
