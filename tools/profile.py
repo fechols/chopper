@@ -72,12 +72,15 @@ def main():
     ap.add_argument('--skip', type=int, default=1, help='with --start: frames run before profiling')
     ap.add_argument('--mode', choices=['full', 'doubled', 'adaptive'], help='hold MODE (else adaptive)')
     ap.add_argument('--dma-us', type=float, default=2.0, help='C64U cost of one REU command, in us (the emulator charges none)')
+    ap.add_argument('--c64u-timing', action='store_true', help="charge the C64U's measured I/O waits (tools/c64u_timing.py)")
     args = ap.parse_args()
     start = emu.host_agent('dist/chopper.reu', args.start) if args.start is not None else None
     prg = Path('dist/chopper.prg').read_bytes()
     mem = bytearray(0x10000)
     mem[0x801:0x801 + len(prg) - 2] = prg[2:]
     cpu = emu.C64(mem, bytearray(Path('dist/chopper.reu').read_bytes()))
+    if args.c64u_timing:
+        emu.attach_timing(cpu)
     cpu.pc = emu.symbols(args.elf)['_start']
     cpu.push(0xFF)
     cpu.push(0xFE)
@@ -145,11 +148,14 @@ def main():
     for name, c in by.most_common(20):
         n = calls[name] / args.frames
         per = f'{n:7.0f} calls {c / args.frames / n:6.0f} cyc' if n else ''
-        print(f'{c / total * 100:5.1f}%  {c / args.frames / 64000:6.2f} ms  {name:12s} {per}')
-    print(f'total {total / args.frames / 64000:.2f} ms a frame')
+        print(f'{c / total * 100:5.1f}%  {c / args.frames / cpu.khz:6.2f} ms  {name:12s} {per}')
+    print(f'total {total / args.frames / cpu.khz:.2f} ms a frame')
     d = dmas[0] / args.frames
-    print(f'REU: {d:.0f} commands, {dmas[1] / args.frames:.0f} bytes a frame '
-          f'(~{d * args.dma_us / 1000:.2f} ms more on the C64U at {args.dma_us} us a command)')
+    if args.c64u_timing:
+        print(f'REU: {d:.0f} commands, {dmas[1] / args.frames:.0f} bytes a frame (their waits are in the total)')
+    else:
+        print(f'REU: {d:.0f} commands, {dmas[1] / args.frames:.0f} bytes a frame '
+              f'(~{d * args.dma_us / 1000:.2f} ms more on the C64U at {args.dma_us} us a command)')
     for path, n in paths.most_common(25):
         print(f'{n / args.frames:7.1f}  {path}')
 

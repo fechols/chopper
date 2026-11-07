@@ -4,23 +4,28 @@
 ; against the host byte for byte.
 ;
 ; Run record (12 bytes, written by asm/spans.S): len, flags (bit 7: fill; else the mip level), then a
-; fill byte (at 2), or u (16.8, bytes 2-4), v (5-7), du (8.8, 8-9), dv (10-11). Ground: the REU address is bank:v_hi:u_hi, the bank from the
-; level's tile table (TILES + 256·level, entry (v_tile & 15)·16 + (u_tile & 15)), looked up again only
-; when a tile coordinate changes. Mid and bank are written when they change (shadowed), lo always and
-; last (the C64U reloads the whole address on any address write). The C64 address is set at each ground
-; run's start and auto-increments.
+; fill byte (at 2), or u (16.8, bytes 2-4), v (5-7), du (8.8, 8-9), dv (10-11). Ground: the REU address is
+; bank:v_hi:u_hi, the bank from the level's tile table (TILES + 256·level, entry (v_tile & 15)·16 +
+; (u_tile & 15)), looked up again only when a tile coordinate changes.
 ;
-; In a magnified run (steps within half a texel a byte), a ground byte at the address of the last fetch (the
-; texel repeated) is copied from the byte before it instead of fetched again; the next fetch then sets
-; its C64 address again. Other runs take the plain loop.
+; An I/O write costs about 67 cycles on the C64U, a one-byte DMA about two: a fetch writes as few address
+; registers as it can (`ADDRESS`). Mid and bank are written when they change (shadowed), lo last (the C64U
+; reloads the whole address from the values last written on any address write). When nothing changed but
+; u_hi = the last fetch's + 1, nothing is written at all: the transfer's own increment already holds the
+; address (it survives only while no address register is written, so this is the one case it is used).
 ;
-; Zero page $A0-$B6 while a line is drawn (nothing is kept there between calls: the REU shadows live in
+; Plain runs (a step over a texel a byte) fetch each byte into LINEBUF + XB, the C64 address set at the
+; run's start and auto-incremented. Runs within a texel a byte (du_hi and dv_hi 0 or -1) fetch each texel
+; once into SCRATCH (a fixed C64 address) and store it for every byte it covers: the fractions' carries say
+; when u or v crosses a texel (`magnified`), so a repeated texel costs neither a fetch nor a compare.
+;
+; Zero page $A0-$B7 while a line is drawn (nothing is kept there between calls: the REU shadows live in
 ; SAVE_MID / SAVE_BANK).
 
 RUNP     = $A0    ; (2) the current run record
 XB     = $A2    ; next byte of the line buffer
 REM    = $A3    ; bytes left in the run
-LEN    = $A4    ; in a ground run: nonzero when the next fetch must set its C64 address (XB)
+LEN    = $A4    ; the run's length
 UL     = $A5    ; u: 16.8 (UHH = tile column)
 UH     = $A6
 UHH    = $A7
@@ -37,9 +42,11 @@ BK     = $B1
 SHMID  = $B2
 SHBANK = $B3
 TP     = $B4    ; (2) the level's tile table
-SHLO   = $B6    ; the REU address lo of the last fetch (with SHMID and SHBANK, its whole address)
+SHLO   = $B6    ; the REU address lo of the last fetch ($FF: none, so the next writes lo)
+BANKOFF = $B7   ; added to every bank: 0 on even lines, format::ODD_BANK_OFFSET on odd (their copy)
 
 LINEBUF = $BF00
+SCRATCH = $BFFF       ; the fixed C64 address of a magnified run's fetches (LINEBUF's page, past the line)
 TILES   = $C000
 SPANS   = $C400
 STAGE   = $8C00
@@ -48,54 +55,35 @@ TABLE_LEVELS = 3      ; floor::TABLE_LEVELS: levels from here are one tile (`loo
 SEA_BANK = 85         ; format::SEA_BANK
 PATCH   = $C5F0       ; layout::FOG_PATCHES (`floor::Patches`): count, then byte, keep, bits
 FOG_RAW = $C61A       ; layout::FOG_RAW: the painted bytes as drawn (byte 3i for patch i)
+R_HAZE  = $C640 + 82  ; asm/spans.S R_HAZE: the line's haze byte (`floor::haze_byte`)
 SAVE_MID  = $C7D4
 SAVE_BANK = $C7D5
 FETCH   = $91
 RECORD  = 12
 COLS    = 39          ; floor::DRAWN (layout::DRAWN_COLS): the bytes a line draws
 
-; Mid written when it changes (X = 1 if it did). The bank is written by `lookup`, when it changes: a new
-; bank means a new tile, so a new u or v texel too (steps here are under a texel).
-.macro SHADOWS
-    ldx #0
+; The REU address for (VH, UH) with the bank already written by `lookup`: mid if it changed, then lo,
+; unless neither changed and UH is the last fetch's lo + 1 (the counter's own increment; never across
+; $FF, where it carries into mid). SHLO is $FF at every run's start (floor_line, pdone, mend), so the
+; skip trusts only an increment made inside the run: between runs `lookup`'s bank write reloads lo from
+; the last value written, and the $DF0A / $DF02 writes might. Inside a run a new bank means a new tile,
+; so a new mid or UH = 0 (steps here are under 128 texels), and lo is written whenever the bank was.
+.macro ADDRESS
     lda VH
     cmp SHMID
-    beq 4f
+    beq 1f
     sta $df05
     sta SHMID
-    inx
-4:
-.endm
-
-; u += du, v += dv; a new tile coordinate means a new bank (looked up again for each axis that moved).
-.macro STEP
+    jmp 2f
+1:  lda UH
+    beq 2f
     clc
-    lda UL
-    adc DUL
-    sta UL
-    lda UH
-    adc DUH
-    sta UH
-    lda UHH
-    adc DUS
-    cmp UHH
-    beq 6f
-    sta UHH
-    jsr lookup
-6:  clc
-    lda VL
-    adc DVL
-    sta VL
-    lda VH
-    adc DVH
-    sta VH
-    lda VHH
-    adc DVS
-    cmp VHH
-    beq 7f
-    sta VHH
-    jsr lookup
-7:
+    sbc SHLO
+    beq 3f
+2:  lda UH
+    sta $df04
+3:  lda UH
+    sta SHLO
 .endm
 
 .section .text.floor_draw,"ax",@progbits
@@ -142,6 +130,15 @@ floor_line:
     lda #0
     sta XB
     sta TP
+    lda #$ff
+    sta SHLO
+    ; An odd line (its haze is floor::HAZE_ODD) reads the map's pixel-shifted copy.
+    ldx #0
+    lda R_HAZE
+    cmp #$11            ; floor::HAZE_ODD
+    bne 1f
+    ldx #$c0            ; format::ODD_BANK_OFFSET
+1:  stx BANKOFF
 run:
     ldy #0
     lda (RUNP),y
@@ -208,23 +205,23 @@ ground:
     dex
 3:  stx DVS
     jsr lookup
-    ; A magnified run (both steps within half a texel a byte: -$80 <= d < $80 in 8.8) repeats texels
-    ; often enough to look for them; nearer 1 they are too rare to pay for the test.
-    lda DUL
-    clc
-    adc #$80
+    ; Within a texel a byte (du_hi and dv_hi 0 or -1): the texel-run path.
     lda DUH
-    adc #0
-    bne plain
-    lda DVL
     clc
-    adc #$80
+    adc #1
+    cmp #2
+    bcs plain
     lda DVH
-    adc #0
-    beq magnified
+    clc
+    adc #1
+    cmp #2
+    bcs plain
+    jmp magnified
 plain:
-    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned), auto-incremented by each fetch. Each
-    ; step writes the next byte's mid (always) and lo (last); `lookup` writes the bank.
+    ; The C64 address: LINEBUF + XB (LINEBUF is page-aligned), auto-incremented by each fetch. A fetched
+    ; byte is the DMA and two register writes, 4 bus cycles; the maths fits in the windows between them
+    ; (the u and v steps in the DMA's ~68 cycles, the tile check in mid's ~16: docs/validation.md, "C64U
+    ; I/O timing"). Each step writes mid and lo (last); `lookup` writes the bank.
     lda XB
     sta $df02
     lda VH
@@ -272,8 +269,11 @@ ptile_v:
     jsr lookup
     jmp plo
 pdone:
+    ; (Mid as written; lo unknown to the run fill's command-only test, so it writes lo first.)
     lda VH
     sta SHMID
+    lda #$ff
+    sta SHLO
     clc
     lda XB
     adc LEN
@@ -281,40 +281,84 @@ pdone:
     jmp next
 
 magnified:
-    ; The first byte is fetched (SHLO cannot match), into LINEBUF + XB (LEN, nonzero, says to set it).
-    lda UH
-    eor #$ff
-    sta SHLO
-mbyte:
-    SHADOWS
-    lda UH
-    cmp SHLO
-    bne 1f
-    txa
-    bne 1f
-    ; The last fetch's texel again (never a run's first byte, so XB > 0).
+    ; u (v) crosses a texel on a carry out of its fraction when du (dv) >= 0, on none when it is < 0 (du_hi
+    ; = -1: the integer part then steps down): the branches are patched to bcs / bcc.
+    lda DUH             ; 0 -> $b0 (bcs), $ff -> $90 (bcc)
+    and #$20
+    eor #$b0
+    sta mub
+    lda DVH
+    and #$20
+    eor #$b0
+    sta mvb
+    sta mvb2
+    lda #$80            ; a fixed C64 address: SCRATCH ($DF03 is LINEBUF's page)
+    sta $df0a
+    lda #<SCRATCH
+    sta $df02
     ldx XB
-    lda LINEBUF-1,x
-    sta LINEBUF,x
-    stx LEN
-    jmp 6f
-    ; The C64 address after a copied byte or at the run's start.
-1:  ldy LEN
-    beq 2f
-    ldy XB
-    sty $df02
-    ldy #0
-    sty LEN
-2:  lda UH
-    sta $df04
-    sta SHLO
+    ldy REM
+mfetch:
+    ADDRESS
     lda #FETCH
     sta $df01
-6:  inc XB
-    STEP
-    dec REM
-    beq next
-    jmp mbyte
+    lda SCRATCH
+mput:
+    sta LINEBUF,x
+    inx
+    dey
+    beq mend
+    clc
+    lda UL
+    adc DUL
+    sta UL
+mub: bcs mucross
+    clc
+    lda VL
+    adc DVL
+    sta VL
+mvb: bcs mvcross
+    lda SCRATCH         ; the same texel
+    jmp mput
+mucross:
+    lda UH              ; (the carry as the fraction left it: +1, or -1 with du_hi = -1)
+    adc DUH
+    sta UH
+    lda UHH
+    adc DUS
+    cmp UHH
+    beq 1f
+    sta UHH
+    sty REM
+    jsr lookup
+    ldy REM
+1:  clc
+    lda VL
+    adc DVL
+    sta VL
+mvb2: bcs mvcross
+    jmp mfetch
+mvcross:
+    lda VH
+    adc DVH
+    sta VH
+    lda VHH
+    adc DVS
+    cmp VHH
+    bne 2f
+    jmp mfetch
+2:  sta VHH
+    sty REM
+    jsr lookup
+    ldy REM
+    jmp mfetch
+mend:
+    stx XB
+    lda #$ff            ; (the next run writes lo first: see ADDRESS)
+    sta SHLO
+    lda #0
+    sta $df0a
+    jmp next
 
 next:
     lda XB
@@ -373,7 +417,9 @@ lookup:
     ora BK
     tay
     lda (TP),y
-3:  sta BK
+3:  clc
+    adc BANKOFF         ; (the odd lines' copy)
+    sta BK
     cmp SHBANK
     beq 1f
     sta $df06

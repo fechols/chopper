@@ -236,11 +236,11 @@ fn a_level_line_is_one_run() {
 
 #[test]
 fn tiles_map_to_their_banks_and_the_sea_beyond() {
-    use crate::format::{LEVEL_BANK, SEA_BANK};
-    assert_eq!(floor::tile_bank(0, 0, 0), LEVEL_BANK[0]);
-    assert_eq!(floor::tile_bank(0, 7, 7), LEVEL_BANK[0] + 63);
-    assert_eq!(floor::tile_bank(0, 8, 0), SEA_BANK);
-    assert_eq!(floor::tile_bank(0, 0xFF, 3), SEA_BANK); // just west of the map
+    use crate::format::{LEVEL_BANK, ODD_BANK_OFFSET, SEA_BANK};
+    assert_eq!(floor::tile_bank(1, 0, 0), LEVEL_BANK[1]);
+    assert_eq!(floor::tile_bank(1, 3, 3), LEVEL_BANK[1] + 15);
+    assert_eq!(floor::tile_bank(1, 4, 0), SEA_BANK);
+    assert_eq!(floor::tile_bank(1, 0xFF, 3), SEA_BANK); // just west of the map
     assert_eq!(floor::tile_bank(3, 0, 0), LEVEL_BANK[3]);
     assert_eq!(floor::tile_bank(3, 1, 0), SEA_BANK);
     for k in 4..floor::LEVELS {
@@ -248,12 +248,25 @@ fn tiles_map_to_their_banks_and_the_sea_beyond() {
         assert_eq!(floor::tile_bank(k, 0, 1), SEA_BANK);
         assert_eq!(floor::tile_bank(k, 0xFF, 0), SEA_BANK);
     }
-    // A texel's address in the image holds that texel.
+    // Every floor bank's copy for the odd lines, 64 banks lower, is that bank one pixel over; level 0 is
+    // not in the image (its banks hold the copies, the rest free).
     let reu = package();
     let w = crate::world::generate(1983);
-    for (u, v) in [(0usize, 0usize), (255, 256), (1024, 760), (2047, 2047), (1500, 33)] {
-        let a = floor::texel_addr(0, (u as i32) << 8, (v as i32) << 8) as usize;
-        assert_eq!(reu[a], crate::world::dither(w.texels[v * 2048 + u], u, v), "texel ({u}, {v})");
+    for bank in crate::format::FLOOR_BANKS.into_iter().flatten() {
+        let (from, to) = ((bank as usize) << 16, (bank.wrapping_add(ODD_BANK_OFFSET) as usize) << 16);
+        // (The shared banks from their level's rows: the header and the scene are written after the copy.)
+        let first = match bank {
+            crate::format::HEADER_BANK => (floor::MIP_OFFSET[5] as usize) << 8,
+            crate::format::SCENE_BANK => (floor::MIP_OFFSET[4] as usize) << 8,
+            _ => 0,
+        };
+        for i in (first..0x10000).step_by(97) {
+            assert_eq!(reu[to + i], floor::rotate(reu[from + i]), "bank {bank} byte {i:#x}");
+        }
+    }
+    for (u, v) in [(0, 0), (300, 700)] {
+        let (even, odd) = (floor::texel_addr_line(1, u << 8, v << 8, false), floor::texel_addr_line(1, u << 8, v << 8, true));
+        assert!(even >> 16 >= 64 && odd >> 16 < 64 && reu[odd as usize] == floor::rotate(reu[even as usize]));
     }
     // Every level's texels where a run reads them (`floor::MIP_OFFSET` added), and the sea just off the
     // map at the shared-bank levels (out to 60 texels on every side).
@@ -3872,15 +3885,15 @@ fn the_fog_line_and_the_horizon_are_painted_to_the_pixel() {
 /// pixel, as its own depth says, over the first line's texels. Painting only turns ground to haze or
 /// sky, so where this line's ground would reach past the first's the edge stays at the first line's
 /// (counted, rare in the pairs adaptive doubling picks); ground never shows where it should not. The
-/// haze is in the other phase. (Ground drawn as code 0, the first line's haze 0xAA as code 2, so the
-/// second's, 0xFF, is code 3.)
+/// line is the first one pixel over, so the first line's haze is in the other phase. (Ground drawn as
+/// code 0, the haze 0xAA as code 2: its own rotation, as the real haze's two phases are each other's.)
 #[test]
 fn a_doubled_pairs_second_line_has_its_own_fog_line() {
     use crate::hw::Hw;
     let mut rng = Rng(0x0f06_5eed);
     let deg = |d: i32| (d * 182) as u16;
     const HAZE1: u8 = 0xAA;
-    const HAZE2: u8 = HAZE1 ^ (floor::HAZE_BYTE ^ floor::HAZE_ODD);
+    const HAZE2: u8 = floor::rotate(HAZE1);
     const BUF: u16 = crate::layout::LINEBUF;
     let mut m = Machine::new(&[]);
     let (mut pixels, mut held, mut pairs) = (0u32, 0u32, 0u32);
@@ -3914,14 +3927,14 @@ fn a_doubled_pairs_second_line_has_its_own_fog_line() {
                 x += s.len as u16;
             }
             floor::apply_fog(&mut m, &fog, BUF);
-            let fits = floor::second_line(&mut m, &spans[..n], &mut fog, fa.dir, gb, HAZE2, fa.at(y + 1), BUF);
+            let fits = floor::second_line(&mut m, &mut fog, fa.dir, gb, HAZE2, fa.at(y + 1), BUF);
             assert!(fits, "camera {cam:?} line {}: a fifth fog patch on an adaptive pair", y + 1);
             pairs += 1;
             let a = rays.line(y + 1);
             for i in 0..4 * floor::DRAWN as usize {
                 let (bb, p) = (i / 4, i % 4);
                 let code = m.peek(BUF + bb as u16) >> (6 - 2 * p) & 3;
-                let got = match code { 0 => 2, 3 => 1, 1 => 0, _ => panic!("line {y}: the first line's haze left at byte {bb}") };
+                let got = match code { 0 => 2, 2 => 1, 1 => 0, _ => panic!("line {y}: a stray code 3 at byte {bb}") };
                 let wc = -(a[1] + floor::mul_small(rays.bb[1], bb as u8)) as f64;
                 let w = wc - (2.0 * p as f64 - 3.0) * dw0 / 8.0;
                 let want = if w >= fog_w { 2 } else if w > 0.0 { 1 } else { 0 };

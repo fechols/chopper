@@ -387,6 +387,20 @@ fn squad(c: &mut C64, agent: &chopper::agent::Agent) {
     chopper::squad::expand(c, agent.t as u16, pu, pv, agent.yaw);
 }
 
+/// The tiled levels' bank tables (`layout::TILES`, `asm/floor.S` `lookup`). Resident, not in `.text.boot`:
+/// in the boot function its loop pushed `boot`'s registers onto the soft stack and the boot image past
+/// `.spantext`. Level 0's table is unused: it is not in the REU (`floor::level_for`).
+#[inline(never)]
+fn tile_tables() {
+    for level in 0..floor::TABLE_LEVELS {
+        // Entry by entry (`floor::tile_table`): a 256-byte table on the soft stack would push the boot's
+        // frame into llvm-mos's static frames.
+        for i in 0..=255u8 {
+            poke(TILES + level as u16 * 256 + i as u16, floor::tile_bank(level, i & 15, i >> 4));
+        }
+    }
+}
+
 /// Everything before the frame buffer is first drawn: this code runs from the frame buffer itself
 /// (`.text.boot`, target-c64/link.ld), so it must not touch it. Returns the turbo probes.
 #[inline(never)]
@@ -417,13 +431,7 @@ fn boot(c: &mut C64) -> u16 {
         poke(PATS + i as u16, p[0]);
         poke(PATS + 16 + i as u16, p[1]);
     }
-    for level in 0..floor::TABLE_LEVELS {
-        // Entry by entry (`floor::tile_table`): a 256-byte table on the soft stack would push the boot's
-        // frame into llvm-mos's static frames.
-        for i in 0..=255u8 {
-            poke(TILES + level as u16 * 256 + i as u16, floor::tile_bank(level, i & 15, i >> 4));
-        }
-    }
+    tile_tables();
     // The HUD: hires sprites in light green in front of the view, multiplexed by asm/hud.S from an
     // empty table until the first frame's is ready.
     port_a_paddles();

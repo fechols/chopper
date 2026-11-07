@@ -586,7 +586,7 @@ w0tt:
     sta W0V+3
     rts
 
-; LVL = the first level 0..5 with max(|du|, |dv|) >> level <= $180, else 5 (`floor::make_line`).
+; LVL = the first level 1..5 with max(|du|, |dv|) >> level <= $180 >> MIP_BIAS, else 5 (`floor::make_line`).
 level:
     lda DU
     sta GT
@@ -626,8 +626,8 @@ level:
     sta GT+2
 3:  lda GT+2
     bne 5f
-    ldx #0
-4:  ; s <= 385·2^x − 1  <=>  s >> x <= $180
+    ldx #1              ; (level 0 is not in the REU: `floor::level_for`)
+4:  ; s <= thresh[x]  <=>  s >> x <= $180 >> MIP_BIAS
     lda thlo,x
     cmp GT
     lda thhi,x
@@ -1096,45 +1096,20 @@ fog_second:
     dec FN
     bne 1b
 2:  lda R_HAZE
-    sta FT              ; the first line's haze
-    eor #$55            ; (floor::HAZE_BYTE ^ floor::HAZE_ODD)
+    eor #$55            ; this line's haze (floor::HAZE_BYTE ^ floor::HAZE_ODD)
     sta R_HAZE
-    lda #<SPANS
-    sta OUTP
-    lda #>SPANS
-    sta OUTP+1
-    ldx #0
-3:  ldy #0
-    lda (OUTP),y
-    sta FN              ; the run's length
-    beq 6f              ; (none is empty: floor::make_line's debug_assert; else 256 bytes filled)
-    iny
-    lda (OUTP),y
-    bpl 5f              ; ground
-    iny
-    lda (OUTP),y
-    cmp FT
-    bne 5f
-    lda R_HAZE
-4:  sta LINEBUF,x
-    inx
-    dec FN
-    bne 4b
-    beq 6f
-5:  txa
-    clc
-    adc FN
-    tax
-6:  cpx #DRAWN
-    bcs 7f
-    lda OUTP
-    clc
-    adc #REC
-    sta OUTP
-    bcc 3b
-    inc OUTP+1
-    bne 3b              ; (always)
-7:  lda #0
+    ; The whole line one pixel over (`floor::rotate`): its texels as an odd line's copy has them, the first
+    ; line's haze in this line's phase, sky unchanged.
+    ldx #DRAWN-1
+3:  lda LINEBUF,x
+    asl
+    adc #0
+    asl
+    adc #0
+    sta LINEBUF,x
+    dex
+    bpl 3b
+    lda #0
     sta PATCH
     lda LDIR
     beq 8f
@@ -1241,7 +1216,11 @@ pow:   .byte 1, 2, 4, 8, 16, 32
 kmax:  .byte 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4
        .byte 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 0
 koffl: .byte 0, 4, 8, 12, 16, 20
-thlo:  .byte <384, <769, <1539, <3079, <6159, <12319
-thhi:  .byte >384, >769, >1539, >3079, >6159, >12319
+; s >> x <= MAX_STEP >> MIP_BIAS  <=>  s <= ((MAX_STEP >> MIP_BIAS) + 1)·2^x - 1 (floor::MAX_STEP, floor::MIP_BIAS:
+; keep MIP_BIAS equal to the Rust constant)
+MIP_BIAS = 0
+STEP_LIM = ($180 >> MIP_BIAS) + 1
+thlo:  .byte <(STEP_LIM-1), <(2*STEP_LIM-1), <(4*STEP_LIM-1), <(8*STEP_LIM-1), <(16*STEP_LIM-1), <(32*STEP_LIM-1)
+thhi:  .byte >(STEP_LIM-1), >(2*STEP_LIM-1), >(4*STEP_LIM-1), >(8*STEP_LIM-1), >(16*STEP_LIM-1), >(32*STEP_LIM-1)
 ; floor::MIP_OFFSET
 moff:  .byte 0, 0, 0, 0, 64, 96

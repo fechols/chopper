@@ -143,20 +143,33 @@ class C64(Cpu):
         self.sid_writes = []   # the SID registers written since the last frame's report (--sid)
         self.keys = 0       # agent::input bits held as keys (KEYS: W A S D, SPACE, left SHIFT)
         self.pa, self.ddra = 0xFF, 0   # CIA 1 port A as last written, and its direction
+        # --c64u-timing: the C64U's measured I/O waits (tools/c64u_timing.py) added to the cycles, and its
+        # real clocks (64.37 MHz, NTSC Phi2), so the C64's own stopwatches report hardware-like time.
+        self.bus = None
+        self.turbo = TURBO
+        self.khz = 64000
+        # EMU_IO=1: the floor kernel's REU traffic (PC in floor_begin..floor_hi): register writes, and each
+        # fetch's REU address against the last one's (repeat, +1, lo, mid, bank).
+        self.floor_pc = (0, 0, 0)
+        self.floor_regs = [0] * 16
+        self.floor_kinds = {}
+        self.floor_last = None
 
     def t(self):
-        return self.cycles // TURBO
+        return int(self.cycles // self.turbo)
 
     def read(self, address):
         address &= 0xFFFF
         if 0xD000 <= address < 0xE000:
+            if self.bus:
+                self.cycles = self.bus.access(self.cycles, address, False)
             if address == 0xD012:
                 # Raster polls back to back are band_publish waiting: count the time between them.
                 if self.last_d012 is not None and self.cycles - self.last_d012 < 64:
                     self.wait_cycles += self.cycles - self.last_d012
                 self.last_d012 = self.cycles
             if address in (0xD011, 0xD012):
-                line = (self.cycles // LINE_CYCLES) % LINES
+                line = int(self.cycles // (65 * self.turbo)) % LINES
                 return (self.io[0x011] & 0x7F) | (0x80 if line > 255 else 0) if address == 0xD011 else line & 0xFF
             if address == 0xDC00:
                 return 0xFF ^ (self.stick & 0x1F)
@@ -183,6 +196,9 @@ class C64(Cpu):
         value &= 0xFF
         if 0xD000 <= address < 0xE000:
             self.io_writes += 1
+            if self.bus:
+                self.cycles = self.bus.access(self.cycles, address, True, value,
+                                              (self.regs[7] | self.regs[8] << 8) or 0x10000)
             if 0xDC00 <= address < 0xDE00:
                 cia = (address >> 8) & 1
                 if address == 0xDC00:
@@ -202,6 +218,8 @@ class C64(Cpu):
                 return
             if 0xDF00 <= address < 0xDF10:
                 self.regs[address & 0xF] = value
+                if self.floor_pc[0] <= self.pc < self.floor_pc[1]:
+                    self.floor_regs[address & 0xF] += 1
                 if 0xDF04 <= address <= 0xDF06:
                     self.latch[address - 0xDF04] = value
                     self.regs[4:7] = self.latch
@@ -218,6 +236,8 @@ class C64(Cpu):
             raise KernelError(f'write ${value:02X} to the vector at ${address:04X} from PC ${self.pc:04X}')
         if GUARD and self.mem[STATUS] == 0xC1 and any(a <= address < b for a, b in GUARD):
             raise KernelError(f'write ${value:02X} to guarded ${address:04X} from PC ${self.pc:04X}')
+        if 0xBF00 <= address < 0xBF28 and self.floor_pc[0] <= self.pc < self.floor_pc[2]:
+            self.floor_kinds['stored'] = self.floor_kinds.get('stored', 0) + 1
         if hidden_column(address) and self.mem[STATUS] == 0xC1:
             raise KernelError(f'write ${value:02X} to the hidden column 39 at ${address:04X} from PC ${self.pc:04X}')
         self.mem[address] = value
@@ -225,7 +245,7 @@ class C64(Cpu):
     def poll_irq(self):
         """The raster interrupt: latch it when the beam reaches the compare line, take it when enabled and
         the I flag is clear."""
-        line = (self.cycles // LINE_CYCLES) % LINES
+        line = int(self.cycles // (65 * self.turbo)) % LINES
         if line != self.raster:
             compare = self.io[0x012] | (self.io[0x011] & 0x80) << 1
             # (Every line the beam passed since the last poll: a DMA can stall the CPU over a line.)
@@ -291,6 +311,23 @@ class C64(Cpu):
         r[4], r[5], r[6] = addr & 0xFF, (addr >> 8) & 0xFF, (addr >> 16) & 0xFF
         r[7], r[8] = 1, 0
         self.dmas += 1
+        if self.floor_pc[0] <= self.pc < self.floor_pc[1] and n == 1:
+            a = addr - 1
+            last = self.floor_last
+            if last is None:
+                kind = 'first'
+            elif a == last:
+                kind = 'repeat'
+            elif a == last + 1 and a & 0xFF:
+                kind = 'inc'
+            elif a >> 8 == last >> 8:
+                kind = 'lo'
+            elif a >> 16 == last >> 16:
+                kind = 'mid'
+            else:
+                kind = 'bank'
+            self.floor_kinds[kind] = self.floor_kinds.get(kind, 0) + 1
+            self.floor_last = a
 
 
 # The bitmap's column 39 (layout::DRAWN_COLS): never shown in the 38-column window, so once the main loop
@@ -318,11 +355,17 @@ def symbols(elf):
     return {p[2]: int(p[0], 16) for p in (l.split() for l in out.splitlines()) if len(p) == 3}
 
 
+def host_exe():
+    """The host binary the frames are compared with: EMU_HOST, else target/release/chopper(.exe)."""
+    if os.environ.get('EMU_HOST'):
+        return Path(os.environ['EMU_HOST'])
+    exe = ROOT / 'target/release/chopper.exe'
+    return exe if exe.exists() else ROOT / 'target/release/chopper'
+
+
 def host_agent(reu, tick):
     """The host's agent state after `tick` ticks (`chopper agent`, `agent::Agent::to_bytes`)."""
-    exe = ROOT / 'target/release/chopper.exe'
-    if not exe.exists():
-        exe = ROOT / 'target/release/chopper'
+    exe = host_exe()
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / 'agent.bin'
         subprocess.run([str(exe), 'agent', '--reu', str(reu), '--at', str(tick), '--out', str(out)],
@@ -355,9 +398,7 @@ def snapshot(cpu):
 
 
 def host_frame(reu, state, mode):
-    exe = ROOT / 'target/release/chopper.exe'
-    if not exe.exists():
-        exe = ROOT / 'target/release/chopper'
+    exe = host_exe()
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / 'f'
         (Path(d) / 'state.bin').write_bytes(state)
@@ -371,6 +412,14 @@ def host_frame(reu, state, mode):
             print('  host:', r.stdout.strip())
             Path(os.environ['EMU_HOST_LOG']).write_bytes(state)
         return out.with_suffix('.bin').read_bytes()
+
+
+def attach_timing(cpu):
+    """Charge `cpu` (a `C64`) the C64U's I/O waits and run it on the C64U's clocks."""
+    import c64u_timing
+    cpu.bus = c64u_timing.BusModel()
+    cpu.turbo = c64u_timing.TURBO
+    cpu.khz = c64u_timing.CPU_HZ / 1000
 
 
 def main():
@@ -390,6 +439,8 @@ def main():
     ap.add_argument('--leap', type=int, default=0, help='and the clock this many ticks further on (the first '
                     'frame runs them all through the AI overlay)')
     ap.add_argument('--sid', action='store_true', help='print the four SIDs each frame (the sound effects)')
+    ap.add_argument('--c64u-timing', action='store_true', help="charge the C64U's measured I/O waits "
+                    "(tools/c64u_timing.py): hardware-like ms, the status block's floor and render times printed")
     ap.add_argument('--keys', action='store_true', help='play --input on the keyboard (W A S D, SPACE, left '
                     'SHIFT), not the stick')
     args = ap.parse_args()
@@ -403,7 +454,12 @@ def main():
     mem[load:load + len(prg) - 2] = prg[2:]
     reu = bytearray(Path(args.reu).read_bytes())
     cpu = C64(mem, reu)
-    cpu.pc = symbols(args.elf)['_start']
+    if args.c64u_timing or os.environ.get('EMU_C64U'):
+        attach_timing(cpu)
+    syms = symbols(args.elf)
+    cpu.pc = syms['_start']
+    if os.environ.get('EMU_IO'):
+        cpu.floor_pc = (syms['floor_begin'], syms['lvbank'], syms['fog_apply'])
     cpu.push(0xFF)
     cpu.push(0xFE)
 
@@ -461,7 +517,7 @@ def main():
             pending = None
             state_before = snapshot(cpu)
             checked += 1
-            st = cpu.mem[STATUS:STATUS + 23]
+            st = cpu.mem[STATUS:STATUS + 28]
             tick = st[2] | st[3] << 8 | st[21] << 16 | st[22] << 24
             # The bitmap, then screen RAM and colour RAM (the cockpit's cells have their own colours).
             got = bytes(cpu.mem[BUFFERS[0]:BUFFERS[0] + 8000]) + bytes(cpu.mem[SCREEN:SCREEN + 1000]) + \
@@ -493,9 +549,19 @@ def main():
                 print('  differ at', [(i, f'{a:02x}', f'{b:02x}') for i, (a, b) in enumerate(zip(got, want)) if a != b][:16])
             dmas = d1 - d0
             print(f'frame {checked}: tick {tick}, {"doubled" if mode & 1 else "adaptive" if mode & 4 else "full"}: {bad} mismatched bytes; '
-                  f'bands {(c1 - c0) / 64000:.2f} ms ({dmas} DMAs), geometry {(g1 - g0) / 64000:.2f} ms, '
-                  f'{st[18]} triangles; raster wait {cpu.wait_cycles / 64000:.2f} ms')
+                  f'bands {(c1 - c0) / cpu.khz:.2f} ms ({dmas} DMAs), geometry {(g1 - g0) / cpu.khz:.2f} ms, '
+                  f'{st[18]} triangles; raster wait {cpu.wait_cycles / cpu.khz:.2f} ms' +
+                  (f'; status floor {(st[23] | st[24] << 8) * 4 / 1000:.2f} ms, render {(st[4] | st[5] << 8) * 4 / 1000:.2f} ms'
+                   f' (I/O stall {cpu.bus.stall / cpu.khz:.2f} ms so far)' if cpu.bus else ''))
             cpu.wait_cycles = 0
+            if os.environ.get('EMU_IO'):
+                regs = cpu.floor_regs
+                writes = sum(regs[i] for i in (1, 2, 3, 4, 5, 6))
+                print(f'  floor I/O: {writes} REU writes (cmd {regs[1]}, c64 lo {regs[2]}, lo {regs[4]}, '
+                      f'mid {regs[5]}, bank {regs[6]}) = {writes * 1.07 / 1000:.2f} ms at 1.07 us; fetches by '
+                      f'address against the last: ' + ', '.join(f'{k} {v}' for k, v in sorted(cpu.floor_kinds.items())))
+                cpu.floor_regs = [0] * 16
+                cpu.floor_kinds = {}
             if args.sid:
                 # Each of the four SIDs (sfx: pairs $D400+$D440, $D420+$D460): volume, cutoff high byte, the
                 # voices' frequency high bytes and controls; the writes this frame (the IRQ's sweeps among them).

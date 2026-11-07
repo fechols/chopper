@@ -290,3 +290,97 @@ C64U (package version 8), byte-exact on held, paused frames (full tick 484, doub
 
 There is no vblank wait before a flip now. Publishing costs ~1.6 ms a frame plus rare raster waits
 (`profile.py --render`).
+
+## C64U I/O timing (2026-11-06, hardware)
+
+Floor-kernel experiments did not follow "an I/O write ~1.07 µs, a cycle 16 ns, and they add": moving
+the same three REU writes closer together cost ~1 µs a byte. `tools/iobench.py` measures the rules
+instead. It generates `target-c64/bench/iobench.S` (175 slots, CIA 2 timer A, IRQs off) and takes the
+x-axis (CPU cycles an iteration) from the interpreter. Two runs agree to 0.85% on average; the worst,
+4.8%, is on slots at a step edge. C64U firmware 1.1.0, NTSC.
+
+- **The CPU is a uniform 64.37 MHz (15.53 ns a cycle).** zp, abs and page-crossing loads, stores, taken
+  branches, jmp, jsr/rts and self-modified code all cost exactly their 6502 cycles. Code placement makes
+  no difference (an 88-cycle body at page +$00, +$7E, +$F0, +$F8: within 0.001 µs).
+- **A VIC write (`$D020`) is free:** it costs its cycles, nothing more. The waits are the REU's
+  (`$DF0x`), not I/O in general.
+- **REU register accesses happen on ~1 MHz bus cycles, so the time between them is a staircase, not a
+  slope.** Bus-cycle fits: rms 85 ns ($DF04) and 54 ns ($DF01), against ~300 ns for an additive model.
+
+| access | bus cycles | CPU free after it before the next REU access waits a cycle |
+|---|---|---|
+| a register write (`$DF02-$DF0A`) | 1 | ~16 cycles (the CPU resumes ~0.76 µs into the cycle) |
+| a 1-byte DMA (`$DF01`) | 2 | ~68 cycles (the CPU resumes ~0.95 µs in; the transfer runs on) |
+
+  A register write and up to 16 cycles of work: 1.04 µs; 18-74 cycles: 2.08 µs; 82-138: 3.13 µs. A DMA
+  and up to 70 cycles: 2.08 µs; 72-134: 3.12 µs.
+- **DMA address modes** (incrementing, fixed C64, fixed C64+REU) cost the same.
+- **Reading the byte a DMA just wrote** costs +0.08 µs against another address, and nothing after ~64
+  cycles. Negligible.
+- **Clustered against spread writes:** three writes then 66-96 cycles of work beat the same writes with
+  22-32 cycles after each by 1.0 µs, since each gap over ~16 cycles costs a bus cycle. Never worse.
+- **The floor's plain loop as replicas** (39-byte runs, µs a byte). They reproduce the held-tick
+  hardware deltas (+2.3 ms and +4.6 ms over ~2,200 bytes at tick 12400):
+
+| layout | v-major (mid changes every byte) | u-forward (mostly last + 1) |
+|---|---|---|
+| baseline (`HEAD`: mid, lo, command every byte) | 4.21 | 4.21 |
+| `ADDRESS` (shadowed mid, +1 skip, writes after all the maths) | +1.00 | -0.86 |
+| E2 (the same, writes spaced like the baseline) | +1.95 | -0.84 |
+
+So the cost of a fetched byte is in bus cycles: 2 for the DMA, 1 for each address write, plus 1 for
+each window whose CPU work overruns its budget. The baseline's 4.2 µs is 2 + 1 + 1, with its maths
+fitted into the windows (u and v steps after the DMA, the tile check after mid). A command-only byte
+could cost 2 bus cycles (~2.1 µs) if all its work fits in the ~68 cycles after the DMA. The replicas
+spend ~107, so they get 3.
+
+### The timing model in the emulator (2026-11-06)
+
+`tools/c64u_timing.py` (`BusModel`) charges each I/O access the bus wait the bench measured; `emu.py
+--c64u-timing` and `profile.py --c64u-timing` use it, and the C64's own stopwatches then report modelled
+time. `python tools/iobench.py fit` replays the bench's traced accesses through it and grid-fits the
+parameters (REU bus cycle 64.75 CPU cycles, resume after a register write 44, after a read 34, after a DMA
+55; CIA on Phi2). Further bench groups: SID writes and `$D012` reads cost ~1 cycle (G), CIA writes and REU
+status reads wait like REU writes (G), and a DMA moves ~4 bytes a bus cycle (H: 1-4 bytes cost the same;
+255 bytes ~63 cycles). Error: 3.1-3.6% rms a slot on every group, the fitted and the unfitted, the model
+uniformly ~3% fast.
+
+Against the held-tick hardware floor times (floor_us; emulator frame 1 after `--start`, the held-tick
+equivalent; later emulator frames carry state a held tick doesn't and drift):
+
+| build | tick 3 | tick 8000 | tick 12400 |
+|---|---|---|---|
+| baseline | 13.93 / 14.40 | 16.70 / 17.10 | 18.33 / 19.00 |
+| run fill (E1) | 13.53 / 13.95 | 16.71 / 17.20 | 18.34 / 19.00 |
+| clustered plain loop | 14.12 / 14.60 | 15.60 / 16.10 | 20.36 / 21.30 |
+| E2 plain loop | 16.00 / 16.50 | 16.18 / 16.70 | 22.60 / 23.60 |
+
+(model / hardware, ms.) Every delta has the right sign and size (worst: E2 at 12400, +4.27 against +4.60);
+tick 12416 models at 28.38 against 28.35.
+
+## Mip bias and the odd lines' map (2026-11-06)
+
+- **Mip bias** (`floor::MIP_BIAS`): modelled floor time summed over ticks 3, 6000, 8000, 12400 and 12416:
+  bias 0 102.1 ms, 1 94.8 (-7%), 2 85.5 (-16%), 3 82.0 (-20%), 4 80.8 (-21%). Fetches fall faster (-30%
+  at bias 1, -55% at 2) than time: past bias 2 the line set-up and the fill loop's own work are most of
+  it. Fat texels showed dithers as vertical stripes.
+- **The fix:** level 0 left the REU (64 banks; nothing but the floor read it) for pixel-shifted copies of
+  the floor banks, read by odd lines; doubled pairs rotate their second line on the CPU. The REU had
+  only 18 empty banks before.
+- **First chosen: bias 1 with the checkerboard** (later set back to 0, below). Gate: 0 mismatched bytes (adaptive, doubled, full, tick
+  12400), `cargo test` 126 pass. Held-tick hardware floor_us, today's build against this one: tick 3
+  14.40 -> 12.25, 6000 26.08 -> 24.60, 8000 17.10 -> 14.40, 12400 19.06 -> 18.30, 12416 28.35 -> 29.14;
+  -6.0% in all (the model said -6.3%).
+- **Space:** the tiled levels' bank-table fill moved out of `boot` (`tile_tables`): the boot function's
+  register allocation tipped into soft-stack spills and its image overflowed into `.spantext` by 51
+  bytes. Resident code ends at `$4FE8` (limit `$5000`).
+- **One dither phase in the map:** `world::dither` gave two-colour dithers a phase per texel (a
+  checkerboard of texels). Toward the horizon, where lines step about a texel each, that flip and the odd
+  line's shift cancelled into vertical bars (seen on the C64U at tick 8000, the forest's `$33`). Every
+  period-2 texel, the fields included, now stores one phase; period-4 patterns keep their random
+  rotation. Bake only (the C64 program is unchanged): `cargo test` 126 pass, the gate 18 of 18 frames
+  byte-exact, and the C64U at tick 8000 shows checkerboards to the horizon.
+- **Back to bias 0** (the finest ground; level 0 stays out of the REU and the checkerboard stays):
+  held-tick hardware floor_us, bias 1 -> 0: tick 3 12.40 -> 13.20, 6000 24.74 -> 26.16, 8000 14.46 ->
+  16.51, 12400 18.03 -> 19.70, 12416 28.99 -> 29.46; +6.5% in all (the model said +6.4%), and the same
+  total as before this work (105.0 ms). Gate: 0 mismatched bytes (adaptive, doubled, full, tick 12400).

@@ -26,7 +26,8 @@ pub fn bake(world: &World) -> Vec<u8> {
         let b = (LEVEL_BANK[k] as usize) << 16;
         reu[b..b + 0x10000].fill(world::texel::WATER);
     }
-    for (k, level) in world::mips(&world.texels).iter().enumerate() {
+    // (Level 0 is not stored: the floor reads level 1 and up, and its banks hold the odd lines' copies.)
+    for (k, level) in world::mips(&world.texels).iter().enumerate().skip(1) {
         let n = floor::MAP_TEXELS as usize >> k;
         assert_eq!(level.len(), n * n);
         let off = floor::MIP_OFFSET[k] as usize;
@@ -41,6 +42,14 @@ pub fn bake(world: &World) -> Vec<u8> {
     }
     let sea = (SEA_BANK as usize) << 16;
     reu[sea..sea + 0x10000].fill(world::texel::WATER);
+    // The odd lines' copies: every floor bank, each byte one pixel over (before the header and the scene
+    // are written into the shared banks: their copies are just the level and the sea).
+    for bank in FLOOR_BANKS.into_iter().flatten() {
+        let (from, to) = ((bank as usize) << 16, (bank.wrapping_add(ODD_BANK_OFFSET) as usize) << 16);
+        for i in 0..0x10000 {
+            reu[to + i] = floor::rotate(reu[from + i]);
+        }
+    }
     crate::scene::install(&mut reu, &crate::scene::bake(world));
     let h = HEADER as usize;
     reu[h..h + 8].copy_from_slice(MAGIC);
@@ -186,13 +195,13 @@ pub fn render_floor(m: &mut Machine, buf: Buffer, scene: &[u8], cam: &FloorCam, 
             let (n, gb) = floor::make_line(cam, &rays, &a, floor::haze_byte(line), fa.at(y), &mut spans, &mut fog);
             st.spans += n as u32;
             st.ground_spans += spans[..n].iter().filter(|s| s.fill().is_none()).count() as u32;
-            let c = floor::draw_line(m, &spans[..n], &fog, LINEBUF, &mut shadow);
+            let c = floor::draw_line(m, &spans[..n], &fog, LINEBUF, &mut shadow, line & 1 == 1);
             st.dmas += c.dmas;
             st.io_writes += c.io_writes;
             floor::copy_line(m, LINEBUF, STAGE, line);
             if doubled {
-                // The second line: the first's texels, its own fog line and haze phase.
-                floor::second_line(m, &spans[..n], &mut fog, fa.dir, gb, floor::haze_byte(line + 1), fa.at(y + 1), LINEBUF);
+                // The second line: the first's bytes one pixel over, its own fog line.
+                floor::second_line(m, &mut fog, fa.dir, gb, floor::haze_byte(line + 1), fa.at(y + 1), LINEBUF);
                 floor::copy_line(m, LINEBUF, STAGE, line + 1);
             }
             st.drawn_lines += 1;

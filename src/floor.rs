@@ -3,8 +3,11 @@
 //!
 //! **Map** (`format`): one byte per texel (four multicolor pixels, so a texel is a colour or a dither),
 //! in tiles of 256×256 texels, one 64 KiB REU bank each, so a texel's address is `bank:v_lo:u_lo` as in
-//! mode7. Mip levels 1-3 (1/2, 1/4, 1/8 size) are tiled the same way. [`tile_bank`] maps a level's tile
-//! coordinates to its bank; tiles off the map show the sea.
+//! mode7. The floor reads mip levels 1-5 (1/2 to 1/32 size; level 0, the full map, is not in the REU);
+//! 1-3 are tiled the same way. [`tile_bank`] maps a level's tile coordinates to its bank; tiles off the
+//! map show the sea. **Odd lines** read a copy of every floor bank with each byte one multicolour pixel
+//! over ([`rotate`], `format::ODD_BANK_OFFSET`): a texel stretched over many lines is a checkerboard
+//! there, not columns of the same 4-pixel pattern (as the haze is, [`haze_byte`]).
 //!
 //! **Rays**: screen byte `b` of view line `y` samples pixel `(4b + 2, y + 0.5)`. Its camera-space ray
 //! `((x − 80)/FX, (CY − y)/FY, 1)` rotated into the world is affine in `b`: `D = A_y + b·B`. Below the
@@ -64,8 +67,16 @@ pub fn haze_byte(line: u8) -> u8 {
 
 /// Ground beyond this many texels (along the ray, roughly) is drawn as haze.
 pub const HAZE_TEXELS: i32 = 320;
-/// The steepest step a run may read from a level, 8.8 texels per byte (above it, the next level).
+/// The steepest step a run may read from a level, 8.8 texels per byte (above it, the next level), before
+/// [`MIP_BIAS`].
 pub const MAX_STEP: i32 = 0x180;
+/// Mip bias: a run reads its level as if [`MAX_STEP`] were `MAX_STEP >> MIP_BIAS`, so each step of bias
+/// is one level coarser and texels twice as wide (bias 1: 0.375-0.75 texels a byte, so a texel covers
+/// 1.3-2.7 bytes and the run fill in `asm/floor.S` stores the repeats instead of fetching them; ~7% less
+/// floor time than bias 0, `docs/validation.md`). Bias 0 for the finest ground: level 0 is not stored, so
+/// near the camera level 1 is magnified at any bias. Twin: `MIP_BIAS` in `asm/spans.S` (its
+/// `thlo`/`thhi` thresholds); the emu gate catches a mismatch.
+pub const MIP_BIAS: u8 = 0;
 
 /// The floor camera: position in 16.8 texels (u east, v north), altitude in 8.8 texels, orientation
 /// (Q14, camera → world: columns right, up, forward; world axes u, up, v).
@@ -216,8 +227,9 @@ pub const DBL_DEN: i16 = 4;
 ///
 /// (either handedness: only the sign changes): the numerator is the byte's alone, the denominator the
 /// line's, and neither depends on the altitude. A run reads the level whose step a byte is at most
-/// [`MAX_STEP`] (1.5 of its texels, under 1 when level 0 is magnified), so a line steps at most `1.5·ρ`
-/// of them. In the maximum norm (the one [`level_for`] uses), with the numerator's largest value (at
+/// `MAX_STEP >> MIP_BIAS` (1.5 of its texels at [`MIP_BIAS`] 0, under 1 when level 1 is magnified), so
+/// a line steps at most `1.5·ρ` of them (`DBL_NUM`; at a bias b the error is `2^-b` of the budget below).
+/// In the maximum norm (the one [`level_for`] uses), with the numerator's largest value (at
 /// one end of the line: it is convex in b) scaled by 40 and the denominator by FY, both affine in their
 /// variable: a line passes when `DBL_DEN · Dn(y) ≥ DBL_NUM · N`. At a budget of half a texel
 /// (`DBL_DEN` 2), level flight never passes below the horizon (the bottom line is 24° down; far up in
@@ -500,10 +512,11 @@ pub fn ground_offset(hc: u8, x: i32, z: i32, w: i32) -> (i32, i32) {
     (off(x), off(z))
 }
 
-/// The mip level whose step stays within [`MAX_STEP`], or `None` beyond the last.
+/// The mip level whose step stays within [`MAX_STEP`] (after [`MIP_BIAS`]), or `None` beyond the last.
+/// Level 1 at least: level 0 is not in the REU (`asm/spans.S` `level` starts there too).
 pub(crate) fn level_for(du: i32, dv: i32) -> Option<u8> {
     let s = du.abs().max(dv.abs());
-    (0..LEVELS).find(|&k| s >> k <= MAX_STEP)
+    (1..LEVELS).find(|&k| s >> k <= MAX_STEP >> MIP_BIAS)
 }
 
 /// Append `len` bytes of `fill`, extending the last run when it is the same fill.
@@ -705,13 +718,29 @@ pub fn tile_table(level: u8) -> [u8; 256] {
     core::array::from_fn(|i| tile_bank(level, i as u8 & 15, (i >> 4) as u8))
 }
 
-/// REU address of a level's texel at 16.8 coordinates.
+/// REU address of a level's texel at 16.8 coordinates, as an even line reads it.
 pub fn texel_addr(level: u8, u: i32, v: i32) -> u32 {
-    let bank = tile_bank(level, (u >> 16) as u8, (v >> 16) as u8);
+    texel_addr_line(level, u, v, false)
+}
+
+/// REU address of a level's texel at 16.8 coordinates for an even or odd line (the odd lines' pixel-
+/// shifted copy: the bank plus `format::ODD_BANK_OFFSET`, as `asm/floor.S` `lookup` adds `BANKOFF`).
+pub fn texel_addr_line(level: u8, u: i32, v: i32, odd: bool) -> u32 {
+    let bank = tile_bank(level, (u >> 16) as u8, (v >> 16) as u8).wrapping_add(if odd { crate::format::ODD_BANK_OFFSET } else { 0 });
     (bank as u32) << 16 | ((v >> 8) as u32 & 0xFF) << 8 | ((u >> 8) as u32 & 0xFF)
 }
 
-/// What a run costs the kernel (for profiles): DMAs and register writes.
+/// A texel byte one multicolour pixel over (pixels p0 p1 p2 p3 to p1 p2 p3 p0): the odd lines' copy of
+/// the map, and a doubled pair's second line (`second_line`; `asm/spans.S` `fog_second`: `asl`, `adc #0`
+/// twice). The haze's two phases are each other's rotation; sky and solid colours are their own.
+pub const fn rotate(b: u8) -> u8 {
+    b.rotate_left(2)
+}
+const _: () = assert!(rotate(HAZE_BYTE) == HAZE_ODD && rotate(SKY_BYTE) == SKY_BYTE);
+
+/// What a run costs the kernel (for profiles): DMAs and register writes, as the plain kernel makes them
+/// (lo written at every fetch). The C64's run fill fetches a repeated texel once and skips lo on a +1
+/// (`asm/floor.S` `ADDRESS`), so it does less: its real counts are `tools/emu.py`'s `EMU_IO` statistics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LineCost {
     pub dmas: u32,
@@ -723,7 +752,7 @@ pub struct LineCost {
 /// REU address registers: mid and bank when they change (`shadow`), lo always and last (the C64U
 /// reloads all three from the last written values on any address write). `$DF07/$DF08 = 1` and
 /// `$DF0A = 0` are set once per frame by [`floor_begin`].
-pub fn draw_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], fog: &Patches, buf: u16, shadow: &mut [u8; 2]) -> LineCost {
+pub fn draw_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], fog: &Patches, buf: u16, shadow: &mut [u8; 2], odd: bool) -> LineCost {
     let mut cost = LineCost::default();
     let mut x = 0u16;
     for s in spans {
@@ -741,7 +770,7 @@ pub fn draw_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], fog: &Patches, buf:
                 let (mut u, mut v) = (s.u, s.v);
                 let level = s.level();
                 for _ in 0..s.len {
-                    let addr = texel_addr(level, u, v);
+                    let addr = texel_addr_line(level, u, v, odd);
                     let (lo, mid, bank) = (addr as u8, (addr >> 8) as u8, (addr >> 16) as u8);
                     if shadow[0] != mid {
                         hw.poke(reu::REU_MID, mid);
@@ -780,29 +809,25 @@ pub fn apply_fog<H: Hw + ?Sized>(hw: &mut H, fog: &Patches, buf: u16) {
     }
 }
 
-/// The second line of a doubled pair at full resolution in the fog (`asm/spans.S` `fog_second`): over
-/// the first line's runs (`spans`, its texels), its painted bytes back as drawn, its haze fills in the
-/// other phase (`haze`, the first line's other), and the fog line painted again where it crosses this
-/// line (`fog_at`, from the first line's ground end `gb`). Painting only turns ground to haze or sky,
+/// The second line of a doubled pair at full resolution in the fog (`asm/spans.S` `fog_second`): the
+/// first line's bytes (its painted ones back as drawn), each one pixel over ([`rotate`]: the texels as an
+/// odd line reads them, the haze in this line's phase `haze`), and the fog line painted again where it
+/// crosses this line (`fog_at`, from the first line's ground end `gb`). Painting only turns ground to haze or sky,
 /// so it never needs a texel the first line did not fetch: where this line's ground would reach past
 /// the first one's, its fog edge stays at the first line's. (The adaptive pairs' edge moves too little
 /// to need more than [`MAX_PATCHES`]; with every pair doubled, the host's comparison mode, a steeply
 /// rolled fog line can want a fifth, which is dropped: a few pixels of ground left, C64 and host alike.)
 /// Returns whether every patch fit.
-pub fn second_line<H: Hw + ?Sized>(hw: &mut H, spans: &[Span], fog: &mut Patches, dir: u8, gb: u8, haze: u8, fog_at: [i32; 2], buf: u16) -> bool {
+pub fn second_line<H: Hw + ?Sized>(hw: &mut H, fog: &mut Patches, dir: u8, gb: u8, haze: u8, fog_at: [i32; 2], buf: u16) -> bool {
     for i in 0..fog.n as u16 {
         let b = hw.peek(crate::layout::FOG_RAW + 3 * i);
         hw.poke(buf + fog.p[i as usize][0] as u16, b);
     }
-    let first = haze ^ (HAZE_BYTE ^ HAZE_ODD);
-    let mut x = 0u16;
-    for s in spans {
-        if s.fill() == Some(first) {
-            for i in 0..s.len as u16 {
-                hw.poke(buf + x + i, haze);
-            }
-        }
-        x += s.len as u16;
+    // The whole line one pixel over: its texels as the odd lines' copy has them, the first line's haze
+    // in this line's phase (sky unchanged); then this line's own fog edge, painted unrotated.
+    for x in 0..DRAWN as u16 {
+        let b = hw.peek(buf + x);
+        hw.poke(buf + x, rotate(b));
     }
     fog.n = 0;
     if dir == 0 {

@@ -4,8 +4,9 @@
 //!
 //! | banks | contents |
 //! |---|---|
-//! | 0-63 | ground map level 0: 2048×2048 texels, 8×8 tiles, tile (tx, ty) in bank `ty·8 + tx` |
-//! | 64-79, 80-83, 84 | mip levels 1-3 (1024², 512², 256²), tiled the same way; levels 4 (128²) and 5 (64²) are centred in banks 89 and 86, with sea around them (`floor::MIP_OFFSET`) |
+//! | 0-25 | the odd lines' ground: banks 64-89's floor banks 64 lower, each byte one multicolour pixel over (`ODD_BANK_OFFSET`, `floor::rotate`), so a dither alternates line by line |
+//! | 26-63 | free (mip level 0, 2048² texels, is not in the image: the floor reads level 1 and up) |
+//! | 64-79, 80-83, 84 | mip levels 1-3 (1024², 512², 256²), 256² texels a tile, tile (tx, ty) in bank `LEVEL_BANK + ty·tiles + tx`; levels 4 (128²) and 5 (64²) are centred in banks 89 and 86, with sea around them (`floor::MIP_OFFSET`) |
 //! | 85 | the sea (one tile, shown off the map) |
 //! | 86 | header; mip level 5 |
 //! | 87 / 88 / 89 | objects by grid cell / per-angle visibility lists / the scene block (`geom`, `scene`); mip level 4 |
@@ -28,13 +29,19 @@ pub const REU_BANK: u32 = 0x8_0000;
 /// Longest single DMA (TALON HD: keeps raster IRQs on time).
 pub const MAX_DMA: u16 = 256;
 
-/// First bank of each mip level's tiles.
+/// First bank of each mip level's tiles (level 0's is unused: it is not in the image).
 pub const LEVEL_BANK: [u8; crate::floor::LEVELS as usize] = [0, 64, 80, 84, SCENE_BANK, HEADER_BANK];
 pub const SEA_BANK: u8 = 85;
+/// Added (mod 256) to every floor bank an odd line reads: its pixel-shifted copy, 64 banks lower.
+pub const ODD_BANK_OFFSET: u8 = 0xC0;
+/// The floor banks the odd lines have copies of: the tiled levels and the sea, and the shared banks of
+/// levels 5 and 4 (the header's and the scene's copies come along, unused).
+pub const FLOOR_BANKS: [core::ops::RangeInclusive<u8>; 3] = [64..=85, HEADER_BANK..=HEADER_BANK, SCENE_BANK..=SCENE_BANK];
+const _: () = assert!(SCENE_BANK.wrapping_add(ODD_BANK_OFFSET) < 64 && 64u8.wrapping_add(ODD_BANK_OFFSET) == 0);
 
 /// Package version: the PRG refuses an image whose header carries another one (a PRG and REU from
 /// different builds). Bump it whenever this layout changes.
-pub const PACKAGE_VERSION: u16 = 4;
+pub const PACKAGE_VERSION: u16 = 5;
 
 /// Header: magic[8], version u16.
 pub const HEADER_BANK: u8 = 86;
