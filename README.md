@@ -72,7 +72,7 @@ Eighty seconds later the RPM caution goes out, and where you take the war is up 
   in flight and your copilot, the same pilot, holds your course and keeps you off the mountains. Shot
   down or ditched, you are back on the deck or the pad, and the war has not waited for you.
 
-![Low over the ridge: mountains, the HUD and the six gauges](docs/images/mountains.png)
+![Across the valley to the ridge: mountains, the HUD and the six gauges](docs/images/mountains.png)
 
 ## Controls
 
